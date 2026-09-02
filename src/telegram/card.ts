@@ -18,7 +18,6 @@ const GREEN = "#2fe38f";
 const RED = "#ff5c72";
 const MUTED = "#8b93a3";
 const WHITE = "#f4f6fb";
-const BRAND = process.env.RH_CARD_BRAND || "0xRapzz";
 const TAGLINE = process.env.RH_CARD_TAG || "LP · ONCHAIN WATCH";
 
 // Register fonts explicitly — the VPS has no fontconfig defaults, so canvas draws blank text
@@ -134,26 +133,6 @@ function cornerBrackets(g: SKRSContext2D, W: number, H: number): void {
   corner(W - m, H - m, -1, -1);
 }
 
-/** Small diamond logo mark. */
-function logoMark(g: SKRSContext2D, x: number, y: number, s: number): void {
-  g.save();
-  g.translate(x, y);
-  g.strokeStyle = WHITE;
-  g.lineWidth = 2.2;
-  g.beginPath();
-  g.moveTo(0, -s);
-  g.lineTo(s, 0);
-  g.lineTo(0, s);
-  g.lineTo(-s, 0);
-  g.closePath();
-  g.stroke();
-  g.fillStyle = GREEN;
-  g.beginPath();
-  g.arc(0, 0, s * 0.32, 0, Math.PI * 2);
-  g.fill();
-  g.restore();
-}
-
 /**
  * Render a profit card — STRIX "onchain watch" aesthetic: full-bleed art, corner brackets,
  * monospace type, a PROFIT/LOSS badge, big neon PnL, and four corner stats. No glass panel;
@@ -198,12 +177,7 @@ export async function renderCard(d: CardData): Promise<Buffer> {
   const MX = 64;
   g.textBaseline = "alphabetic";
 
-  // ── header: logo + brand (left) · tagline + PROFIT/LOSS badge (right) ──
-  logoMark(g, MX + 12, 76, 13);
-  g.textAlign = "left";
-  g.fillStyle = WHITE;
-  g.font = `22px ${MONOB}`;
-  g.fillText(BRAND.toUpperCase(), MX + 36, 84);
+  // ── header: intentionally unbranded on the left · tagline on the right ──
   g.textAlign = "right";
   g.fillStyle = MUTED;
   g.font = `16px ${MONO}`;
