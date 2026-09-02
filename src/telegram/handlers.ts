@@ -746,6 +746,9 @@ export async function onList(mid: number | null = null, force = false): Promise<
     v4rows.forEach((r, i) => {
       const vEth = px ? r.valueUsd / px : 0;
       const fEth = px ? r.feeUsd / px : 0;
+      const basisUsd = r.depEth != null && px ? r.depEth * px : null;
+      const pnlUsd = basisUsd != null ? r.valueUsd - basisUsd : null;
+      const pnlPct = basisUsd != null && basisUsd > 0 ? (pnlUsd! / basisUsd) * 100 : null;
       totEth += vEth;
       totFee += fEth;
       if (r.depEth != null) {
@@ -758,7 +761,16 @@ export async function onList(mid: number | null = null, force = false): Promise<
       T4.push(`   ${padR("value", 7)} $${r.valueUsd.toFixed(2)}`);
       T4.push(`   ${padR("deposit", 7)} ${r.amount0} ${r.sym0} + ${r.amount1} ${r.sym1}`);
       T4.push(`   ${padR("fee", 7)} $${r.feeUsd.toFixed(2)} earned`);
-      if (r.depEth != null) T4.push(`   ${padR("deposit", 7)} ${r.depEth.toFixed(6)}Ξ (${usd(r.depEth)})`);
+      if (r.depEth != null) {
+        T4.push(`   ${padR("basis", 7)} ${r.depEth.toFixed(6)}Ξ (${usd(r.depEth)})`);
+        if (pnlUsd != null && pnlPct != null) {
+          T4.push(`   ${padR("PnL", 7)} ${pnlUsd >= 0 ? "🟩 +" : "🟥 -"}$${Math.abs(pnlUsd).toFixed(2)}  ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%`);
+        } else {
+          T4.push(`   ${padR("PnL", 7)} — (price unavailable)`);
+        }
+      } else {
+        T4.push(`   ${padR("PnL", 7)} — (deposit not recorded)`);
+      }
       T4.push(`   ${padR("age", 7)} ${fmtAge(r.ageMs)}`);
     });
     const dupe4: Record<string, number> = {};
