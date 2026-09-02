@@ -13,6 +13,19 @@ import { logger } from "../util/log.js";
 
 const log = logger("client");
 
+/** Provider errors that mean the locally selected nonce was already consumed elsewhere. */
+export function isNonceConflict(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  const code = String(e?.code ?? "").toLowerCase();
+  const message = String(e?.message ?? error ?? "").toLowerCase();
+  return (
+    code === "nonce_expired" ||
+    message.includes("nonce has already been used") ||
+    message.includes("nonce too low") ||
+    message.includes("already used")
+  );
+}
+
 /**
  * A JsonRpcProvider that reads from Alchemy but diverts `eth_sendRawTransaction` to the
  * sequencer (fastest fire). On transport failure it falls back to Alchemy so a tx is
@@ -117,11 +130,60 @@ export const logsProvider: ethers.JsonRpcProvider = env.logsRpcUrl
   : readProvider as ethers.JsonRpcProvider;
 if (usingOwnWatchRpc || usingOwnLogsRpc) log.info(`RPC split — watch:${usingOwnWatchRpc ? "own" : "main"} · logs:${usingOwnLogsRpc ? "own" : "main"}`);
 
+/**
+ * Wallet with a small nonce coordinator for multi-transaction LP sequences.
+ *
+ * The bot already serializes its own sequences, but a stale RPC nonce (or a transaction from a
+ * second signer using the same wallet) can still make a send fail. Reserve nonces locally for the
+ * normal case, and resync/retry once when the node explicitly reports a consumed nonce. A rejected
+ * send never gets a response/hash, so retrying with a fresh nonce is safe here.
+ */
+class ResilientWallet extends ethers.Wallet {
+  private nextNonce: number | null = null;
+  private nonceLoad: Promise<number> | null = null;
+
+  private resetNonce(): void {
+    this.nextNonce = null;
+    this.nonceLoad = null;
+  }
+
+  private async reserveNonce(): Promise<number> {
+    if (this.nextNonce == null) {
+      const load = this.nonceLoad ?? (this.nonceLoad = this.getNonce("pending"));
+      const base = await load;
+      if (this.nextNonce == null) this.nextNonce = base;
+      if (this.nonceLoad === load) this.nonceLoad = null;
+    }
+    const nonce = this.nextNonce;
+    this.nextNonce++;
+    return nonce;
+  }
+
+  override async sendTransaction(tx: ethers.TransactionRequest): Promise<ethers.TransactionResponse> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const nonce = tx.nonce == null || attempt > 0 ? await this.reserveNonce() : tx.nonce;
+      try {
+        return await super.sendTransaction({ ...tx, nonce });
+      } catch (e) {
+        // Any rejected send did not consume the reserved nonce; resync before the next operation.
+        this.resetNonce();
+        if (attempt === 0 && tx.nonce == null && isNonceConflict(e)) {
+          log.warn("nonce conflict — resyncing pending nonce and retrying transaction");
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error("unreachable nonce retry");
+  }
+}
+
 let _wallet: ethers.Wallet | null = null;
 export function wallet(): ethers.Wallet {
   if (!_wallet) {
     if (!env.walletKey) throw new Error("RH_WALLET_KEY is not set in .env");
-    _wallet = new ethers.Wallet(env.walletKey, provider);
+    _wallet = new ResilientWallet(env.walletKey, provider);
   }
   return _wallet;
 }

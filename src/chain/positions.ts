@@ -54,6 +54,11 @@ export function saveDeposit(tokenId: string, depositWethWei: bigint, extra: Part
 function loadDeposit(tokenId: string): DepositRecord | null {
   return readJson<Record<string, DepositRecord>>(POS_FILE, {})[String(tokenId)] ?? null;
 }
+
+/** Keep locally tracked zero-liquidity NFTs visible so a partial close can be retried/reconciled. */
+export function shouldKeepV3Position(liquidity: bigint, hasLocalDeposit: boolean): boolean {
+  return liquidity > 0n || hasLocalDeposit;
+}
 function deleteDeposit(tokenId: string): void {
   const d = readJson<Record<string, DepositRecord>>(POS_FILE, {});
   delete d[String(tokenId)];
@@ -627,7 +632,8 @@ export async function listPositions(): Promise<PositionRow[]> {
       try {
         const id: bigint = await npm.tokenOfOwnerByIndex!(w.address, i);
         const p = await npm.positions!(id);
-        if (p.liquidity === 0n) return null;
+        const dep = loadDeposit(id.toString());
+        if (!shouldKeepV3Position(p.liquidity, !!dep)) return null;
       const pool: string = await factory.getPool!(p.token0, p.token1, p.fee);
       const st = await getPoolState(pool);
       const tl = Number(p.tickLower);
@@ -682,7 +688,6 @@ export async function listPositions(): Promise<PositionRow[]> {
         Number(ethers.formatEther(wethIs0 ? fe0 : fe1)) +
         (tokRaw > 0n ? tokEth * (Number(feeTokRaw) / Number(tokRaw)) : 0);
 
-      const dep = loadDeposit(id.toString());
       const depEth = dep ? Number(ethers.formatEther(dep.depositWeth)) : null;
       const pnlEth = depEth != null ? valEth - depEth : null;
       const pnlPct = depEth ? (pnlEth! / depEth) * 100 : null;
