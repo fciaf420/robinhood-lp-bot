@@ -51,7 +51,7 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
       });
     }
   } catch (e) {
-    log.warn(`dexPairs gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`dexPairs failed: ${(e as Error).message.slice(0, 80)}`);
   }
   cache.set(key, { at: now, map });
   return map;

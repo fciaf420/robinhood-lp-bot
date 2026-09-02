@@ -5,7 +5,7 @@
  * then add both sides to the pair (mint LP). Every step is simulated before broadcast.
  */
 import { ethers } from "ethers";
-import { C } from "../../config.js";
+import { C, cfg } from "../../config.js";
 import { wallet, overrides } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { WETH_ABI, ERC20_ABI } from "../abis.js";
@@ -47,9 +47,13 @@ export interface V2OpenResult {
  * Sequence: wrap → swap zap fraction → transfer both sides → pair.mint.
  */
 export async function openV2(token: string, amountEthStr: string): Promise<V2OpenResult> {
+  if (!cfg.lp.v2Enabled) {
+    throw new Error("v2 zap disabled in optimized fork: pair-level swaps have no minimum-output protection");
+  }
+
   const w = wallet();
   const pool = await readV2Pool(token);
-  if (!pool) throw new Error("tidak ada pool v2/WETH dengan likuiditas");
+  if (!pool) throw new Error("No liquid v2/WETH pool found");
   const meta = await tokenMeta(token);
   const deposit = ethers.parseEther(amountEthStr);
 
@@ -69,9 +73,9 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
 
   // 2) swap the optimal WETH fraction → token (via the pair directly)
   const swapIn = zapSwapAmount(pool.wethReserve, deposit);
-  if (swapIn <= 0n) throw new Error("zap amount 0 — deposit terlalu kecil / pool aneh");
+  if (swapIn <= 0n) throw new Error("Zap amount is 0 — deposit is too small or the pool is invalid");
   const tokenOut = getAmountOut(swapIn, pool.wethReserve, pool.tokenReserve);
-  if (tokenOut <= 0n) throw new Error("swap zap: output 0 (pool kering?)");
+  if (tokenOut <= 0n) throw new Error("Zap swap returned 0 (is the pool illiquid?)");
 
   const pair = pairContract(pool.pair, w);
   // transfer WETH into the pair, then swap out the token to our wallet
@@ -81,26 +85,26 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
   try {
     await pair.swap!.staticCall(amount0Out, amount1Out, w.address, "0x");
   } catch (e) {
-    throw new Error(`simulasi swap v2 revert: ${short(e)}`);
+    throw new Error(`v2 swap simulation reverted: ${short(e)}`);
   }
   const swapTx = await pair.swap!(amount0Out, amount1Out, w.address, "0x", gas);
   await swapTx.wait();
 
   // 3) add liquidity: transfer both sides in the CURRENT reserve ratio, then mint
   const fresh = await readV2Pool(token);
-  if (!fresh) throw new Error("pool hilang setelah swap");
+  if (!fresh) throw new Error("Pool disappeared after the swap");
   const wethLeft = deposit - swapIn;
   const tokBal: bigint = await erc.balanceOf!(w.address);
   const tokUse = tokBal < tokenOut ? tokBal : tokenOut; // use what we actually received
   const { addWeth, addTok } = ratioAmounts(wethLeft, tokUse, fresh);
-  if (addWeth <= 0n || addTok <= 0n) throw new Error("jumlah add-liquidity 0");
+  if (addWeth <= 0n || addTok <= 0n) throw new Error("add-liquidity amount is 0");
 
   await (await weth.transfer!(pool.pair, addWeth, gas)).wait();
   await (await erc.transfer!(pool.pair, addTok, gas)).wait();
   try {
     await pair.mint!.staticCall(w.address);
   } catch (e) {
-    throw new Error(`simulasi mint v2 revert: ${short(e)}`);
+    throw new Error(`v2 mint simulation reverted: ${short(e)}`);
   }
   const mintTx = await pair.mint!(w.address, gas);
   const rc = await mintTx.wait();

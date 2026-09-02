@@ -39,7 +39,7 @@ export interface V2Pool {
 const ZERO = "0x0000000000000000000000000000000000000000";
 
 export function v2Factory(): ethers.Contract {
-  if (!C.v2Factory) throw new Error("v2Factory belum diset di config.contracts");
+  if (!C.v2Factory) throw new Error("v2Factory is not configured in config.contracts");
   return new ethers.Contract(C.v2Factory, V2_FACTORY_ABI, provider);
 }
 

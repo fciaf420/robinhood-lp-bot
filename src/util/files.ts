@@ -52,7 +52,7 @@ export function acquireLock(name = "bot.lock"): () => void {
   const existing = readJson<{ pid: number } | null>(file, null);
   if (existing && isAlive(existing.pid) && existing.pid !== process.pid) {
     throw new Error(
-      `Instance lain lagi jalan (pid ${existing.pid}). Matiin dulu, atau hapus ${file} kalau yakin mati.`,
+      `Another instance is already running (pid ${existing.pid}). Stop it first, or remove ${file} if you are sure it has stopped.`,
     );
   }
   fs.writeFileSync(file, JSON.stringify({ pid: process.pid, at: Date.now() }));

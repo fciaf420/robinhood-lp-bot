@@ -39,7 +39,7 @@ export async function gmgnAvailable(): Promise<boolean> {
     execFile("gmgn-cli", ["config", "--check"], { timeout: 8000, windowsHide: true }, (err) => resolve(!err));
   });
   available = r;
-  if (!r) log.info("gmgn-cli tidak tersedia / belum dikonfigurasi — enrichment GMGN dilewati");
+  if (!r) log.info("gmgn-cli unavailable or not configured — skipping GMGN enrichment");
   return r;
 }
 

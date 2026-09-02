@@ -29,7 +29,7 @@ export interface V2CloseResult {
   pnlEth: number | null;
 }
 
-export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> {
+export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boolean } = {}): Promise<V2CloseResult> {
   const w = wallet();
   const gas = await overrides();
   const c = pairContract(pairAddr, w);
@@ -38,7 +38,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
     c.token1!() as Promise<string>,
     c.balanceOf!(w.address) as Promise<bigint>,
   ]);
-  if (bal === 0n) throw new Error("LP balance 0 — nggak ada yang ditutup");
+  if (bal === 0n) throw new Error("LP balance is 0 — there is nothing to close");
   const wethIsT0 = t0.toLowerCase() === WETH_L;
   const tokenAddr = wethIsT0 ? t1 : t0;
   const meta = await tokenMeta(tokenAddr).catch(() => ({ symbol: "?", decimals: 18 }));
@@ -50,7 +50,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
   try {
     await c.burn!.staticCall(w.address);
   } catch (e) {
-    throw new Error(`simulasi burn v2 revert: ${((e as any)?.shortMessage || (e as Error)?.message || "").slice(0, 140)}`);
+    throw new Error(`v2 burn simulation reverted: ${((e as any)?.shortMessage || (e as Error)?.message || "").slice(0, 140)}`);
   }
   const wethBefore: bigint = await weth.balanceOf!(w.address);
   const tokBefore: bigint = await erc.balanceOf!(w.address);
@@ -65,7 +65,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
   // optionally sell the token side back through the pair → more WETH
   let swapHash: string | undefined;
   let soldToken = false;
-  if (cfg.lp.autoSwapOnClose && tokOut > 0n) {
+  if ((opts.autoSwap ?? (cfg.lp.v2Enabled && cfg.lp.autoSwapOnClose)) && tokOut > 0n) {
     try {
       const res = await c.getReserves!();
       const rToken: bigint = wethIsT0 ? res[1] : res[0];
@@ -83,7 +83,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
         soldToken = true;
       }
     } catch (e) {
-      log.warn(`auto-sell token v2 gagal (token ditinggal di wallet): ${(e as Error).message.slice(0, 80)}`);
+      log.warn(`v2 token auto-sell failed (token left in wallet): ${(e as Error).message.slice(0, 80)}`);
     }
   }
 
@@ -100,7 +100,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
   const recvEth = Number(ethers.formatEther(wethOut));
   const pnlEth = depEth != null ? recvEth - depEth : null;
 
-  // record to the unified ledger (v2 close → modal/PnL in /ledger + stats)
+  // record to the unified ledger (v2 close → deposit/PnL in /ledger + stats)
   try {
     const px = await ethUsd().catch(() => 0);
     appendLedger({
@@ -125,7 +125,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
       source: "bot",
     });
   } catch (e) {
-    log.warn(`gagal tulis ledger v2 ${pairAddr.slice(0, 10)}: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`failed to write v2 ledger ${pairAddr.slice(0, 10)}: ${(e as Error).message.slice(0, 80)}`);
   }
 
   dropV2Deposit(pairAddr);

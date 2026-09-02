@@ -24,6 +24,17 @@ const log = logger("briefing");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STATE_FILE = dataPath("briefing.json");
 
+interface BriefingState {
+  lastFiredWib?: string;
+  lastSentAt?: number;
+}
+
+/** Milliseconds until another briefing may be sent. Exported for cooldown tests. */
+export function briefingCooldownRemaining(lastSentAt: number, now = Date.now()): number {
+  if (!Number.isFinite(lastSentAt) || lastSentAt <= 0) return 0;
+  return Math.max(0, DAY_MS - Math.max(0, now - lastSentAt));
+}
+
 // ── formatting helpers ───────────────────────────────────────────────────────
 const usd = (v: number) => (v >= 0 ? "+" : "-") + "$" + Math.abs(v).toFixed(2);
 const pctS = (v: number | null) => (v == null ? "?" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%");
@@ -31,7 +42,7 @@ const dur = (ms: number | null) => {
   if (!ms || ms <= 0) return "?";
   const h = ms / 3_600_000;
   if (h < 1) return `${Math.round(ms / 60_000)}m`;
-  if (h < 24) return `${h.toFixed(1)}j`;
+  if (h < 24) return `${h.toFixed(1)}h`;
   return `${(h / 24).toFixed(1)}h`;
 };
 const clip = (s: string, n = 24) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
@@ -99,11 +110,11 @@ async function gather(): Promise<BriefData> {
   // open positions — best-effort; a slow RPC must never block the briefing
   const [v3, v4] = await Promise.all([
     listPositions().catch((e) => {
-      log.warn(`brief listPositions gagal: ${(e as Error).message.slice(0, 80)}`);
+      log.warn(`brief listPositions failed: ${(e as Error).message.slice(0, 80)}`);
       return [] as Awaited<ReturnType<typeof listPositions>>;
     }),
     listV4Positions(0).catch((e) => {
-      log.warn(`brief listV4Positions gagal: ${(e as Error).message.slice(0, 80)}`);
+      log.warn(`brief listV4Positions failed: ${(e as Error).message.slice(0, 80)}`);
       return [] as Awaited<ReturnType<typeof listV4Positions>>;
     }),
   ]);
@@ -189,20 +200,20 @@ function llmDataBlock(d: BriefData): string {
 
 async function briefLlm(dataBlock: string): Promise<string | null> {
   if (!env.briefKey) {
-    log.info("brief LLM skip — RH_BRIEF_KEY kosong (pakai fallback deterministik)");
+    log.info("brief LLM skipped — RH_BRIEF_KEY is empty (using deterministic fallback)");
     return null;
   }
   const system =
-    "Kamu analis kuantitatif buat bot liquidity-provider (LP) di DEX Uniswap v4 (chain Robinhood). " +
-    "Bot auto-hunt token, buka LP di pool fee tinggi (3-5%), lalu auto-close pas take-profit (TP), stop-loss (SL), " +
-    "keluar-range (OOR), atau volume-fade (VFADE). Kamu dikasih ringkasan aktivitas 24 jam terakhir + config strategi. " +
-    "Tulis analisa SINGKAT & TAJAM dalam Bahasa Indonesia gaya operator (lo/gue boleh), bukan formal.\n" +
-    "Format PERSIS 3 bagian, tiap bagian 1 paragraf pendek, MULAI dengan label diapit **...** :\n" +
-    "**💚 CUAN** — kenapa yang profit itu profit, entry/range-nya udah pas apa belum.\n" +
-    "**🩸 LOSS** — kenapa yang loss itu loss: apakah kita salah pasang posisi? (entry telat pas volume udah puncak? range kesempitan jadi cepet OOR? token emang jelek/rug?). Jujur, jangan sok positif.\n" +
-    "**🔧 FIX** — SATU perubahan config paling berdampak buat besok (sebut knob + angka konkret).\n" +
-    "Boleh **tebalin** nama token/angka penting. JANGAN pakai heading markdown (#) atau tag HTML. " +
-    "Pakai angka & nama token nyata dari data. Total maksimal ~180 kata, langsung insight, jangan ngulang data mentah.";
+    "You are a quantitative analyst for a liquidity-provider (LP) bot on Uniswap v4 (Robinhood Chain). " +
+    "The bot auto-hunts tokens, opens LP in high-fee pools (3-5%), then auto-closes on take-profit (TP), stop-loss (SL), " +
+    "out-of-range (OOR), or volume-fade (VFADE). You receive the last 24 hours of activity plus strategy config. " +
+    "Write a SHORT & SHARP analysis in English in an operator style, not formal.\n" +
+    "Use EXACTLY 3 sections, one short paragraph each, STARTING with a label wrapped in **...**:\n" +
+    "**💚 PROFIT** — why profitable positions worked and whether entry/range placement was correct.\n" +
+    "**🩸 LOSS** — why losing positions lost: late entry after the volume peak, a range that was too narrow, or a bad/rugged token. Be honest, not overly positive.\n" +
+    "**🔧 FIX** — ONE highest-impact config change for tomorrow (name the knob and a concrete number).\n" +
+    "You may **bold** important token names/numbers. Do NOT use Markdown headings (#) or HTML tags. " +
+    "Use real numbers and token names from the data. Maximum ~180 words, insight only, do not repeat raw data.";
   const body = JSON.stringify({
     model: env.briefModel,
     messages: [
@@ -237,11 +248,11 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
       const msg = ch.message ?? {};
       const text = String(msg.content || msg.reasoning || msg.reasoning_content || ch.text || "").trim();
       if (text) return text;
-      log.warn(`brief LLM kosong — finish=${ch.finish_reason} usage=${JSON.stringify(j?.usage)} (attempt ${attempt + 1})`);
+      log.warn(`brief LLM returned empty content — finish=${ch.finish_reason} usage=${JSON.stringify(j?.usage)} (attempt ${attempt + 1})`);
       if (attempt === 0) continue;
       return null;
     } catch (e) {
-      log.warn(`brief LLM gagal: ${(e as Error).message.slice(0, 100)} (attempt ${attempt + 1})`);
+      log.warn(`brief LLM failed: ${(e as Error).message.slice(0, 100)} (attempt ${attempt + 1})`);
       if (attempt === 0) continue;
       return null;
     }
@@ -253,23 +264,23 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
 function fallbackAnalysis(d: BriefData): string {
   const R = d.byReason;
   const out: string[] = [];
-  if (R.TP?.n) out.push(`🎯 ${R.TP.n} kena take-profit (${usd(R.TP.pnlUsd)}) — entry pas, range nangkep gerakan. Pola ini dipertahanin.`);
-  if (R.VFADE?.n) out.push(`📉 ${R.VFADE.n} exit volume-fade (${usd(R.VFADE.pnlUsd)}) — keluar sebelum pool mati, timing bagus.`);
-  if (R.SL?.n) out.push(`🛑 ${R.SL.n} kena stop-loss (${usd(R.SL.pnlUsd)}) — kemungkinan entry telat (masuk pas volume udah puncak) atau token-nya emang dump. Cek apakah minSpikeX kekecilan jadi ngejar spike yang udah lewat.`);
-  if (R.OOR?.n) out.push(`↔️ ${R.OOR.n} out-of-range (${usd(R.OOR.pnlUsd)}) — harga kabur dari band; range kemungkinan kesempitan buat volatilitas token itu${cfg.autoLp.oorAction === "close" ? " (oorAction masih close, gak re-center)" : ""}.`);
-  if (!d.closes.length) out.push("Gak ada posisi ditutup 24 jam terakhir — bot nahan atau candidate sepi.");
+  if (R.TP?.n) out.push(`🎯 ${R.TP.n} hit take-profit (${usd(R.TP.pnlUsd)}) — good entry and range captured the move. Keep this pattern.`);
+  if (R.VFADE?.n) out.push(`📉 ${R.VFADE.n} volume-fade exits (${usd(R.VFADE.pnlUsd)}) — exited before the pool went quiet, good timing.`);
+  if (R.SL?.n) out.push(`🛑 ${R.SL.n} hit stop-loss (${usd(R.SL.pnlUsd)}) — likely a late entry after the volume peak or a token dump. Check whether minSpikeX is too low and is chasing stale spikes.`);
+  if (R.OOR?.n) out.push(`↔️ ${R.OOR.n} went out-of-range (${usd(R.OOR.pnlUsd)}) — price escaped the band; the range may be too narrow for this token's volatility${cfg.autoLp.oorAction === "close" ? " (oorAction is still close, not recenter)" : ""}.`);
+  if (!d.closes.length) out.push("No positions closed in the last 24 hours — the bot is holding or candidate flow is quiet.");
 
   // one concrete suggestion, picked by the dominant failure mode
   let sugg: string;
   const sl = R.SL?.n ?? 0,
     oor = R.OOR?.n ?? 0;
-  if (oor >= 2 && oor >= sl) sugg = "Lebarin band range (mode in-range width) atau naikin oorGraceMin — mayoritas exit karena OOR = range kesempitan.";
-  else if (sl >= 2) sugg = `Perketat entry: naikin minSpikeX (skrg ${cfg.scan.minSpikeX}) biar cuma masuk pool yang lagi panas beneran, kurangi SL dari entry telat.`;
-  else if (!d.closes.length) sugg = `Longgarin gate hunt: turunin minScore (skrg ${cfg.scan.minScore}) atau naikin screenMaxMcap biar candidate lebih rame.`;
-  else if (d.wins >= d.losses && d.wins > 0) sugg = `Strategi udah net-positif — coba naikin maxOpen (skrg ${cfg.autoLp.maxOpen}) / dailyCapEth (skrg ${cfg.autoLp.dailyCapEth}) biar deploy modal lebih banyak.`;
-  else sugg = "Sample masih kecil — kumpulin data beberapa hari dulu sebelum tuning agresif.";
+  if (oor >= 2 && oor >= sl) sugg = "Widen the range (in-range width mode) or raise oorGraceMin — most exits were OOR, which suggests the range is too narrow.";
+  else if (sl >= 2) sugg = `Tighten entry: raise minSpikeX (currently ${cfg.scan.minSpikeX}) to enter only genuinely hot pools and reduce late-entry SLs.`;
+  else if (!d.closes.length) sugg = `Loosen the hunt gate: lower minScore (currently ${cfg.scan.minScore}) or raise screenMaxMcap to produce more candidates.`;
+  else if (d.wins >= d.losses && d.wins > 0) sugg = `The strategy is net-positive — consider raising maxOpen (currently ${cfg.autoLp.maxOpen}) / dailyCapEth (currently ${cfg.autoLp.dailyCapEth}) to deploy more capital.`;
+  else sugg = "The sample is still small — collect several more days of data before aggressive tuning.";
   out.push("");
-  out.push("🧠 Saran besok: " + sugg);
+  out.push("🧠 Tomorrow's suggestion: " + sugg);
   return out.join("\n");
 }
 
@@ -280,25 +291,25 @@ export async function buildBriefing(): Promise<string> {
   const { label } = wibParts();
 
   const H: string[] = [];
-  H.push(`📋 <b>BRIEFING HARIAN</b> — <i>${esc(label)}</i>`);
+  H.push(`📋 <b>DAILY BRIEFING</b> — <i>${esc(label)}</i>`);
   H.push("━━━━━━━━━━━━━━━━━━━");
   const wl = `${d.wins}W/${d.losses}L`;
   H.push(`💰 <b>PnL 24h:</b> ${esc(usd(d.dayPnlUsd))}  (${wl}) · fee ~$${d.dayFeeUsd.toFixed(2)}`);
-  H.push(`📊 <b>Open:</b> ${d.openCount} · nilai $${d.openValUsd.toFixed(0)} · unreal ${esc(usd(d.openUnrealUsd))}${d.openOor ? ` · <b>${d.openOor} OOR</b>` : ""}`);
+  H.push(`📊 <b>Open:</b> ${d.openCount} · value $${d.openValUsd.toFixed(0)} · unrealized ${esc(usd(d.openUnrealUsd))}${d.openOor ? ` · <b>${d.openOor} OOR</b>` : ""}`);
   H.push(`🏆 <b>Lifetime:</b> ${d.life.count} trade · ${d.life.winRate.toFixed(0)}% win · ${esc(usd(d.life.pnlUsd))}`);
 
   // per-position 24h closes — GROUPED by reason (with breathing room between groups) so it isn't a
   // dense wall; the flat "dead-pool" OOR parks (usually ~$0, same token 3×) collapse to one line.
   H.push("");
-  H.push(`📕 <b>DITUTUP 24 JAM</b> · ${d.closes.length} pos`);
+  H.push(`📕 <b>CLOSED LAST 24 HOURS</b> · ${d.closes.length} positions`);
   if (!d.closes.length) {
-    H.push("   <i>— gak ada —</i>");
+    H.push("   <i>— none —</i>");
   } else {
     const groups: [string, string, NonNullable<LedgerEntry["reason"]>][] = [
       ["🎯", "TAKE-PROFIT", "TP"],
       ["🛑", "STOP-LOSS", "SL"],
       ["📉", "VOLUME-FADE", "VFADE"],
-      ["🐌", "FEE-MATI (rotasi)", "FVLOW"],
+      ["🐌", "LOW FEE RATE (rotate)", "FVLOW"],
       ["✋", "MANUAL", "manual"],
     ];
     for (const [emo, label, reason] of groups) {
@@ -309,7 +320,7 @@ export async function buildBriefing(): Promise<string> {
       for (const e of g.slice(0, 8)) {
         H.push(`   <code>${esc(clip(e.pair || e.sym, 22))}</code>  ${esc(pctS(e.pnlPct))} · ${esc(usd(e.pnlUsd ?? 0))} · ${esc(dur(e.heldMs))}`);
       }
-      if (g.length > 8) H.push(`   <i>…+${g.length - 8} lagi</i>`);
+      if (g.length > 8) H.push(`   <i>…+${g.length - 8} more</i>`);
     }
     // OOR cluster → one collapsed line (token×count + total pnl) instead of many repeated ~$0 rows
     const oor = d.closes.filter((e) => e.reason === "OOR");
@@ -326,22 +337,22 @@ export async function buildBriefing(): Promise<string> {
       const oorPnl = oor.reduce((s, e) => s + (e.pnlUsd ?? 0), 0);
       H.push("");
       H.push(`↔️ <b>OUT-OF-RANGE</b> · ${oor.length} · ${esc(usd(oorPnl))}`);
-      H.push(`   <i>${esc(names.join(", "))}${Object.keys(cnt).length > names.length ? "…" : ""} — range mati, ~0 fee</i>`);
+      H.push(`   <i>${esc(names.join(", "))}${Object.keys(cnt).length > names.length ? "…" : ""} — inactive range, ~0 fee</i>`);
     }
   }
 
   // open positions snapshot (compact)
   if (d.openList.length) {
     H.push("");
-    H.push("📗 <b>POSISI TERBUKA:</b>");
+    H.push("📗 <b>OPEN POSITIONS:</b>");
     for (const o of d.openList.slice(0, 12)) {
       H.push(`${o.inRange ? "🟢" : "🔴"} <b>${esc(clip(o.sym, 26))}</b> ${o.pnlUsd == null ? "" : esc(usd(o.pnlUsd))} ${o.inRange ? "" : "<i>(OOR)</i>"}`.trimEnd());
     }
-    if (d.openList.length > 12) H.push(`   <i>…+${d.openList.length - 12} lagi</i>`);
+    if (d.openList.length > 12) H.push(`   <i>…+${d.openList.length - 12} more</i>`);
   }
 
   H.push("");
-  H.push("🧠 <b>ANALISA</b>" + (env.briefKey ? "" : " <i>(rule-based)</i>") + ":");
+  H.push("🧠 <b>ANALYSIS</b>" + (env.briefKey ? "" : " <i>(rule-based)</i>") + ":");
   H.push(analysisMono(analysis));
 
   return H.join("\n");
@@ -366,44 +377,88 @@ async function sendChunked(text: string): Promise<void> {
   if (buf) await send(buf);
 }
 
-/** Build + push the briefing to the owner chat. `src` is just for the log line. */
-export async function runBriefing(src: "auto" | "manual" = "manual"): Promise<void> {
+let lastSentAt = 0;
+let briefingInFlight = false;
+
+function persistState(): void {
   try {
-    log.info(`briefing (${src}) — nyusun…`);
+    writeJson(STATE_FILE, { lastFiredWib, lastSentAt });
+  } catch {
+    /* non-fatal — the in-memory guard still prevents duplicates this process */
+  }
+}
+
+/** Build + push the briefing to the owner chat. `src` is just for the log line. */
+export async function runBriefing(src: "auto" | "manual" = "manual"): Promise<boolean> {
+  const remaining = briefingCooldownRemaining(lastSentAt);
+  if (briefingInFlight || remaining > 0) {
+    if (src === "manual") {
+      const hours = Math.max(1, Math.ceil(remaining / 3_600_000));
+      await send(`⏳ Daily briefing is limited to once every 24 hours. The next one is available in about ${hours}h.`);
+    }
+    log.info(`briefing (${src}) skipped — ${briefingInFlight ? "another briefing is running" : "24h cooldown"}`);
+    return false;
+  }
+
+  // Claim before the slow build/LLM work. If the process crashes after Telegram accepts the
+  // message, a restart must not immediately send a duplicate briefing.
+  briefingInFlight = true;
+  lastSentAt = Date.now();
+  persistState();
+  try {
+    log.info(`briefing (${src}) — preparing…`);
     const text = await buildBriefing();
     await sendChunked(text);
-    log.info(`briefing (${src}) terkirim (${text.length} char)`);
+    log.info(`briefing (${src}) sent (${text.length} chars)`);
+    return true;
   } catch (e) {
-    log.warn(`briefing (${src}) gagal: ${(e as Error).message.slice(0, 120)}`);
-    if (src === "manual") await send(`❌ Briefing gagal: ${esc((e as Error).message.slice(0, 120))}`);
+    log.warn(`briefing (${src}) failed: ${(e as Error).message.slice(0, 120)}`);
+    if (src === "manual") await send(`❌ Briefing failed: ${esc((e as Error).message.slice(0, 120))}`);
+    return false;
+  } finally {
+    briefingInFlight = false;
   }
 }
 
 // ── scheduler: fire once per WIB day, at/after 07:00 WIB (00:00 UTC) ──────────
-// Keyed on the WIB calendar date persisted to disk, so a restart never double-fires and a bot that
-// was down at exactly 07:00 still catches up the moment it comes back (as long as it's still that day).
+// Keyed on the WIB calendar date persisted to disk, so a restart never double-fires. With persisted
+// state, a bot that was down at exactly 07:00 catches up when it returns (as long as it's still that day).
 let lastFiredWib = "";
+let schedulerStarted = false;
 
 function tick(): void {
   const { date, hour } = wibParts();
   if (date !== lastFiredWib && hour >= 7) {
     lastFiredWib = date;
-    try {
-      writeJson(STATE_FILE, { lastFiredWib: date });
-    } catch {
-      /* non-fatal */
+    persistState();
+    if (briefingCooldownRemaining(lastSentAt) > 0) {
+      log.info("briefing (auto) skipped — 24h cooldown");
+      return;
     }
     void runBriefing("auto");
   }
 }
 
 export function startBriefingScheduler(): void {
-  lastFiredWib = readJson<{ lastFiredWib?: string }>(STATE_FILE, {}).lastFiredWib ?? "";
-  // If we boot on a fresh day BEFORE 7am WIB, don't fire a briefing for the day that just ended.
-  // Seeding lastFiredWib="" would make the first post-7am tick fire — which is what we want. But if we
-  // boot fresh and it's already well past 7am with no state yet, seed to "yesterday" so we DO catch up
-  // today. Simplest correct behaviour: leave persisted value as-is; empty → first tick after 7am fires.
+  if (schedulerStarted) {
+    log.warn("briefing scheduler already active — duplicate start ignored");
+    return;
+  }
+  schedulerStarted = true;
+  const state = readJson<BriefingState>(STATE_FILE, {});
+  const hadPersistedState = Boolean(state.lastFiredWib || Number(state.lastSentAt) > 0);
+  lastFiredWib = state.lastFiredWib ?? "";
+  lastSentAt = Number(state.lastSentAt) || 0;
+  // Upgrade old date-only state without allowing an immediate duplicate after a restart.
+  if (!lastSentAt && lastFiredWib) {
+    const legacy = Date.parse(`${lastFiredWib}T00:00:00.000Z`);
+    if (Number.isFinite(legacy)) lastSentAt = legacy;
+  }
+  // A fresh Railway container has no state when no persistent volume is attached. Do not fire an
+  // immediate catch-up briefing after 07:00 in that case: a deploy/restart must not create a duplicate.
+  // A stable process still fires on the next day; a persistent volume preserves exact rolling timing.
+  if (!hadPersistedState && wibParts().hour >= 7) lastFiredWib = wibParts().date;
   setInterval(tick, 5 * 60_000); // check every 5 min
-  setTimeout(tick, 20_000); // and once shortly after boot (catch-up if we're already past 7am)
-  log.info(`briefing scheduler aktif (07:00 WIB) — last=${lastFiredWib || "belum pernah"}`);
+  setTimeout(tick, 20_000); // and once shortly after boot for persisted-state catch-up
+  log.info(`briefing scheduler active (07:00 WIB) — last=${lastFiredWib || "never"}`);
 }

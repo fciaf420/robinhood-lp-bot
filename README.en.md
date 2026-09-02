@@ -7,14 +7,16 @@
 ![ethers](https://img.shields.io/badge/ethers-v6-2535A0?style=for-the-badge&logo=ethereum&logoColor=white)
 ![Robinhood Chain](https://img.shields.io/badge/Robinhood_Chain-MAINNET-00C805?style=for-the-badge)
 <br>
-![Uniswap](https://img.shields.io/badge/Uniswap-v2_·_v3_·_v4-FF007A?style=for-the-badge&logo=uniswap&logoColor=white)
+![Uniswap](https://img.shields.io/badge/Uniswap-v3_·_v4-FF007A?style=for-the-badge&logo=uniswap&logoColor=white)
 ![Kyber](https://img.shields.io/badge/Kyber-AGGREGATOR-31CB9E?style=for-the-badge)
 ![Control](https://img.shields.io/badge/Control-TELEGRAM-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-EAB308?style=for-the-badge)
 
-**Automated liquidity provision on Uniswap v2 · v3 · v4 (Robinhood Chain) — fully controlled from Telegram.**
+**Automated liquidity provision on Uniswap v3 · v4 (Robinhood Chain) — fully controlled from Telegram.**
 
-Paste a CA → pick a pool → type an ETH amount → position opened. Right now.
+The optimized fork keeps v2 position discovery/withdrawal for legacy positions, but disables new v2 zap execution by default because direct pair swaps cannot enforce a minimum output.
+
+Paste a CA → pick a v3/v4 pool → type an ETH amount → position opened. Right now.
 
 [![Bahasa Indonesia](https://img.shields.io/badge/Bahasa_Indonesia-2b3137?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzIDIiPjxyZWN0IHdpZHRoPSIzIiBoZWlnaHQ9IjIiIGZpbGw9IiNmZmYiLz48cmVjdCB3aWR0aD0iMyIgaGVpZ2h0PSIxIiBmaWxsPSIjY2UxMTI2Ii8%2BPC9zdmc%2B&logoColor=white)](README.md) [![English](https://img.shields.io/badge/English-012169?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2MCAzMCI%2BPGNsaXBQYXRoIGlkPSJ0Ij48cGF0aCBkPSJNMzAsMTVoMzB2MTV6djE1aC0zMHpoLTMwdi0xNXp2LTE1aDMweiIvPjwvY2xpcFBhdGg%2BPHBhdGggZD0iTTAsMHYzMGg2MHYtMzB6IiBmaWxsPSIjMDEyMTY5Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIGNsaXAtcGF0aD0idXJsKCN0KSIgc3Ryb2tlPSIjYzgxMDJlIiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMTAiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNjODEwMmUiIHN0cm9rZS13aWR0aD0iNiIvPjwvc3ZnPg==)](README.en.md)
 
@@ -24,7 +26,7 @@ Paste a CA → pick a pool → type an ETH amount → position opened. Right now
 
 ## About
 
-**Robinhood LP Bot v2** is a liquidity-provider bot for **Robinhood Chain**, driven entirely from Telegram. Paste a contract address → the bot finds the deepest pool across **Uniswap v2 / v3 / v4** (including **USDG** pairs), buys the token through the **KyberSwap aggregator** (best route across every DEX/fee-tier, minimal price impact), then opens an LP position. All tick/price math goes through the **official Uniswap SDK** — zero precision drift, no hand-rolled `Math.pow`.
+**Robinhood LP Bot v2** is a liquidity-provider bot for **Robinhood Chain**, driven entirely from Telegram. Paste a contract address → the bot finds the deepest pool across **Uniswap v3 / v4** (including **USDG** pairs), buys the token through the **KyberSwap aggregator** (best route across every DEX/fee-tier, minimal price impact), then opens an LP position. Legacy v2 positions can still be discovered and closed. All tick/price math goes through the **official Uniswap SDK** — zero precision drift, no hand-rolled `Math.pow`.
 
 On top of the LP sits a **detection + screening** layer:
 
@@ -38,6 +40,7 @@ On top of the LP sits a **detection + screening** layer:
 
 - **Candidate hunter** (`/hunt`) — every 3 min: scan GMGN trending → screen → keep only tokens that have a **busy 3-5% fee pool**, ranked by **fee-yield** (`vol × fee%`), inside a **market-cap band** you set (small-cap = bigger fee share for small capital).
 - **Auto-farming** (`/auto`) — auto-**add** candidates that clear the gate + auto-**close** by TP / SL / out-of-range. Mode `single` (park the quote asset, rug-safe) or `inrange` (both-sided, fee immediately) — switchable live.
+- **Approval hygiene** (`/revoke`) — scan and zero known token approvals to bot protocol spenders.
 - **Reuse USDG + sweep back to ETH** — if you already hold USDG it isn't re-swapped; every close sweeps proceeds back to ETH (wallet stays clean, gas tops up).
 - **Shareable profit cards** — every close auto-generates a flex PNG (STRIX aesthetic).
 
@@ -76,6 +79,7 @@ Send `/start` → a persistent button menu (reply keyboard) appears, every funct
 | 🔄 **Swap** — `/swap` | 📡 **Feed** — `/feed` | 👁 **Watch** — `/watch` |
 | 🤖 **Auto** — `/auto` | 👛 **Wallet** — `/wallet` | ⚙️ **Settings** — `/settings` |
 | 🗑 **Close All** — `/closeall` | 💸 **Sell** — `/sell` | ❔ **Help** — `/help` |
+| 🔒 **Revoke** — `/revoke` |  |  |
 
 ---
 
@@ -136,7 +140,7 @@ Now open `.env` and fill in:
 | `RH_TG_CHAT` | **Owner chat id — THE SECURITY GATE.** Chat [@userinfobot](https://t.me/userinfobot) for your id. Only this chat can command the bot |
 | `RH_WATCH_RPC_URL` | (optional) a second Alchemy app for the scanner. Leaving it blank is fine |
 | `RH_OPENROUTER_KEY` | (optional) [openrouter.ai/keys](https://openrouter.ai/keys) — enables the LLM radar |
-| `KYBERSWAP_*` | (optional) KyberSwap aggregator endpoint — for best-route swaps (see `.env.example`) |
+| `KYBERSWAP_*` | (optional) KyberSwap aggregator — USDG pairs require it (see `.env.example`) |
 
 Generate a fresh wallet quickly:
 ```bash
@@ -201,7 +205,7 @@ Uniswap can't build a range that straddles the price with a single token, so "in
 
 🦄 UNISWAP v4 · 2 positions
    ...
-💧 UNISWAP v2 · 1 position
+💧 UNISWAP v2 · legacy positions only
    ...
 
 TOTAL 4 positions  ·  v3 1 · v4 2 · v2 1
@@ -216,7 +220,7 @@ PnL    +0.013813Ξ     +$25.47
 - `3h 20m · $2.10/hr` → still productive, leave it
 - `2d 5h · $0.04/hr` → dead, capital stuck for nothing → close it, rotate to another pool
 
-The TOTAL (v3+v4+v2 combined) always sits at the very bottom. The 🔄 **Refresh** button fetches fresh data; a plain `/list` is served from a 20-second cache (so it's instant). Each token has a **Close** / **💰 Claim** button.
+The TOTAL (v3+v4+v2 combined) always sits at the very bottom. The 🔄 **Refresh** button fetches fresh data; a plain `/list` is served from a 20-second cache (so it's instant). Each token has a **Close** / **💰 Claim** button. v4 Close and Close ALL require an explicit confirmation step.
 
 ### Close a position
 
@@ -340,7 +344,7 @@ The top layer: the bot **finds, opens, and closes positions on its own** — you
 | `/hunt` | Candidate hunter (fee 3-5% + busy tx + screening) |
 | `/auto` | Auto-farming: auto-add + auto-close · `/auto on`\|`off` · `/auto tp 100` · `/auto sl 30` · `/auto oor on`\|`off` |
 | `/v4` | Inspect a token's Uniswap v4 pools by CA |
-| `/closeall` | Close ALL positions |
+| `/closeall` | Review and confirm closing ALL positions |
 | `/sell` | Sell all stuck tokens → ETH |
 | `/wallet` | Hot-wallet balance |
 | `/settings` · `/set <key> <value>` | View / change settings |
@@ -443,7 +447,7 @@ src/
 | `config.json` | Settings (zod-validated at start) |
 | `.env` | **The keys. Secret.** (gitignored) |
 | `assets/card-bg.jpg` | Profit-card background (optional) |
-| `data/` | Runtime state — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `bot.lock`. **Don't delete** — your PnL history lives here. (gitignored) |
+| `data/` | Runtime state — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `config.runtime.json`, `bot.lock`. **Don't delete** — your PnL history and settings live here. On Railway, mount a persistent volume at `/app/data`. (gitignored) |
 
 Writes are atomic (temp + rename), so a crash mid-write won't corrupt the ledger.
 
@@ -463,7 +467,7 @@ Writes are atomic (temp + rename), so a crash mid-write won't corrupt the ledger
 
 **Use a burner wallet.** The private key sits in `.env` in plaintext. Don't put in money you're not ready to lose.
 
-**Set `RH_TG_CHAT`.** It's the owner gate — only your chat can command the bot. The bot holds a private key; don't let anyone `/closeall` or mint with your money.
+**Set `RH_TG_CHAT` before startup.** The bot refuses to start without an owner chat; only your chat can command it. The bot holds a private key; don't let anyone `/closeall` or mint with your money.
 
 ---
 

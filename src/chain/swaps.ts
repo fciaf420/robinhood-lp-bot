@@ -173,9 +173,9 @@ export async function swapWethToTokenBest(tokenAddr: string, wethRaw: bigint, fe
         log.info(`beli token via KyberSwap (best route) → ${k.amountOut}`);
         return { tx: k.tx, amountOut: k.amountOut };
       }
-      log.warn("kyber tak bisa route WETH→token → fallback pool v3 tier terdalam");
+      log.warn("Kyber could not route WETH→token → falling back to the deepest v3 pool");
     } catch (e) {
-      log.warn(`kyber gagal (${(e as Error).message.slice(0, 80)}) → fallback pool v3`);
+      log.warn(`Kyber failed (${(e as Error).message.slice(0, 80)}) → falling back to v3 pool`);
     }
   }
   // fallback: swap on the DEEPEST v3 tier (best quote across tiers), not necessarily the farmed one

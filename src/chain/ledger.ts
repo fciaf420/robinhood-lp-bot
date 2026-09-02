@@ -87,7 +87,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
   const txs = (tl?.result ?? []).filter((t) => t.isError !== "1");
   const npmTxs = txs.filter((t) => t.to?.toLowerCase() === NPM_L);
   const rtTxs = txs.filter((t) => t.to?.toLowerCase() === RT_L);
-  onProgress(`scan ${npmTxs.length} tx LP + ${rtTxs.length} tx swap…`);
+  onProgress(`scanning ${npmTxs.length} LP txs + ${rtTxs.length} swap txs…`);
 
   const P: Record<string, Agg> = {};
   const touch = (id: string): Agg =>
@@ -160,7 +160,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
   });
 
   const ids = Object.keys(P).filter((id) => P[id]!.closedAt && P[id]!.col0 + P[id]!.col1 > 0n);
-  onProgress(`nilai ${ids.length} posisi tertutup…`);
+  onProgress(`valuing ${ids.length} closed positions…`);
 
   interface Raw {
     id: string; p: Agg; tokAddr: string; tm: { symbol: string; decimals: number };

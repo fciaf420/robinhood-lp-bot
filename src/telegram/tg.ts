@@ -3,32 +3,24 @@
  *
  * SECURITY: valid commands come only from the OWNER chat. The wallet key sits behind
  * this bot; without an owner check anyone who finds the bot could /closeall or mint with
- * your funds. Owner is RH_TG_CHAT if set, otherwise the FIRST chat to /start (then
- * locked and persisted). Every inbound update is checked with isOwner() before routing.
+ * your funds. RH_TG_CHAT is required at startup and must be set explicitly.
  */
-import { env, cfg, persist } from "../config.js";
+import { cfg, env } from "../config.js";
 import { MENU_KEYBOARD } from "./menu.js";
 import { logger } from "../util/log.js";
 
 const log = logger("tg");
 const BASE = `https://api.telegram.org/bot${env.tgToken}`;
 
-let owner = env.ownerChat; // may be "" until first /start locks it
+let owner = env.ownerChat;
 
 export function isOwner(chatId: string | number): boolean {
-  if (!owner) return true; // not locked yet — first message will lock it
-  return String(chatId) === String(owner);
+  return Boolean(owner) && String(chatId) === String(owner);
 }
 
-/** Lock the bot to this chat (first /start when no RH_TG_CHAT was configured). */
+/** Legacy compatibility hook. Ownership is now configured before startup. */
 export function lockOwner(chatId: string | number): void {
-  const id = String(chatId);
-  if (!owner) {
-    owner = id;
-    cfg.telegramChatId = id;
-    persist();
-    log.info(`owner terkunci ke chat ${id} (set RH_TG_CHAT untuk permanen)`);
-  }
+  void chatId;
 }
 
 export function ownerChat(): string {
@@ -44,8 +36,11 @@ export async function call(method: string, body: unknown): Promise<any> {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(35_000),
     });
-    return await r.json();
-  } catch {
+    const result: any = await r.json();
+    if (!result?.ok) log.warn(`Telegram ${method} failed: ${String(result?.description ?? "unknown error").slice(0, 180)}`);
+    return result;
+  } catch (e) {
+    log.warn(`Telegram ${method} transport failed: ${(e as Error).message.slice(0, 120)}`);
     return null;
   }
 }
@@ -57,7 +52,7 @@ export function send(text: string, extra: Extra = {}): Promise<any> {
   if (!owner) return Promise.resolve(null); // nothing to send to yet
   // NOTE: do NOT auto-attach the reply keyboard here — a message sent with a reply keyboard
   // CANNOT be edited later ("message can't be edited"), which breaks every send-then-edit
-  // flow (/list "Memuat posisi…" → results). The keyboard is is_persistent (set on /start)
+  // flow (/list "Loading positions…" → results). The keyboard is is_persistent (set on /start)
   // and re-affirmed only on final, non-edited responses via sendMenu().
   return call("sendMessage", {
     chat_id: owner,
@@ -102,7 +97,7 @@ export async function sendPhoto(png: Buffer, caption?: string, extra: Extra = {}
     const r = await fetch(`${BASE}/sendPhoto`, { method: "POST", body: fd, signal: AbortSignal.timeout(45_000) });
     return await r.json();
   } catch (e) {
-    log.warn(`sendPhoto gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`sendPhoto failed: ${(e as Error).message.slice(0, 80)}`);
     return null;
   }
 }
@@ -116,7 +111,7 @@ export async function downloadTgFile(fileId: string): Promise<Buffer | null> {
     const r = await fetch(`https://api.telegram.org/file/bot${env.tgToken}/${fp}`, { signal: AbortSignal.timeout(30_000) });
     return Buffer.from(await r.arrayBuffer());
   } catch (e) {
-    log.warn(`downloadTgFile gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`downloadTgFile failed: ${(e as Error).message.slice(0, 80)}`);
     return null;
   }
 }

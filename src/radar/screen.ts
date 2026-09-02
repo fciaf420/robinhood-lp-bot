@@ -59,10 +59,10 @@ function communityGrade(t: GmgnTrendToken): { grade: ScreenResult["community"]; 
   const flags: string[] = [];
   const socials = [t.twitter, t.website, t.telegram].filter(Boolean).length;
   const recycled = t.twitterDup >= 3 || t.telegramDup >= 3 || t.websiteDup >= 3;
-  if (t.twitterChanged) flags.push("⚠️ twitter di-rename");
-  if (recycled) flags.push("⚠️ sosial daur-ulang");
-  if (!t.twitter) flags.push("no X");
-  if (!t.website) flags.push("no web");
+  if (t.twitterChanged) flags.push("⚠️ renamed X account");
+  if (recycled) flags.push("⚠️ recycled social account");
+  if (!t.twitter) flags.push("no X account");
+  if (!t.website) flags.push("no website");
   if (t.ctoFlag) flags.push("CTO");
   let grade: ScreenResult["community"];
   if (t.twitterChanged || recycled) grade = "sus";
@@ -109,12 +109,12 @@ const SYSTEM = [
   "You are Hermes' token analyst for the Robinhood Chain. The operator's thesis: Robinhood users increasingly favour UTILITY tokens; pure memes are fading. You judge whether a trending token is worth a closer look for LP/entry.",
   "Weigh: (1) utility vs meme — real product/use-case beats a joke coin; (2) community clarity — genuine, active, non-recycled socials; (3) FOMO/thesis — is the momentum backed by smart money + a real narrative, or an empty pump about to fade?",
   "Given hard numbers already passed the mcap/volume gate. Be skeptical of thin liquidity, recycled socials, high dev/sniper holdings.",
-  'Respond ONLY as compact JSON: {"score": <0-100 conviction>, "action": "ape"|"watch"|"skip", "summary": "<satu kalimat bahasa Indonesia, <160 char: util/meme + thesis + FOMO verdict>"}.',
+  'Respond ONLY as compact JSON: {"score": <0-100 conviction>, "action": "ape"|"watch"|"skip", "summary": "<one English sentence, <160 chars: utility/meme + thesis + FOMO verdict>"}.',
 ].join(" ");
 
 function llmPrompt(t: GmgnTrendToken, kind: string, community: string): string {
   return (
-    "Nilai token trending ini:\n" +
+    "Evaluate this trending token:\n" +
     JSON.stringify(
       {
         name: t.name,
@@ -183,7 +183,8 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
   if (opts.llm) {
     const top = trimmed.slice(0, opts.llmTop ?? 10);
     await mapLimit(top, 3, async (r) => {
-      const v: LlmVerdict | null = await llmScore(SYSTEM, llmPrompt(r.token, r.kind, r.community)).catch(() => null);
+      // Keep Telegram scans responsive: the free model is optional enrichment, not a prerequisite.
+      const v: LlmVerdict | null = await llmScore(SYSTEM, llmPrompt(r.token, r.kind, r.community), { timeoutMs: 12_000, retries: 0 }).catch(() => null);
       if (v) {
         r.thesis = v.summary;
         r.verdict = v.action;
@@ -194,6 +195,6 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
     trimmed.sort((a, b) => b.score - a.score);
   }
 
-  log.info(`screen: ${scanned} trending → ${survivors.length} lolos (flap -${excludedFlap}, unsafe -${excludedUnsafe})`);
+  log.info(`screen: ${scanned} trending → ${survivors.length} passed (flap -${excludedFlap}, unsafe -${excludedUnsafe})`);
   return { results: trimmed, scanned, excludedFlap, excludedUnsafe };
 }

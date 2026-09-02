@@ -13,7 +13,7 @@ import type { Pool as PoolT } from "@uniswap/v3-sdk";
 import type { Token } from "@uniswap/sdk-core";
 const { Pool, tickToPrice, TickMath } = v3;
 import { cfg, C } from "../config.js";
-import { provider } from "./client.js";
+import { readProvider } from "./client.js";
 import { FACTORY_ABI, POOL_ABI, ERC20_ABI } from "./abis.js";
 import { sdkToken } from "./tokens.js";
 import type { PoolInfo, MintMode } from "../types.js";
@@ -28,14 +28,14 @@ const USDG_DECIMALS = 6;
 export async function findPools(tokenAddr: string): Promise<PoolInfo[]> {
   const token = ethers.getAddress(tokenAddr);
   const weth = ethers.getAddress(C.weth);
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
-  const wc = new ethers.Contract(weth, ERC20_ABI, provider);
+  const factory = new ethers.Contract(C.factory, FACTORY_ABI, readProvider);
+  const wc = new ethers.Contract(weth, ERC20_ABI, readProvider);
   const out: PoolInfo[] = [];
 
   for (const fee of cfg.lp.feeTiers) {
     const pool: string = await factory.getPool!(token, weth, fee).catch(() => ethers.ZeroAddress);
     if (pool === ethers.ZeroAddress) continue;
-    const pc = new ethers.Contract(pool, POOL_ABI, provider);
+    const pc = new ethers.Contract(pool, POOL_ABI, readProvider);
     const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
     if (liq === 0n) continue;
     const wbal: bigint = await wc.balanceOf!(pool).catch(() => 0n);
@@ -60,13 +60,13 @@ export async function findUsdgPools(tokenAddr: string): Promise<PoolInfo[]> {
   const token = ethers.getAddress(tokenAddr);
   const usdg = ethers.getAddress(USDG);
   if (token.toLowerCase() === usdg.toLowerCase()) return [];
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
-  const uc = new ethers.Contract(usdg, ERC20_ABI, provider);
+  const factory = new ethers.Contract(C.factory, FACTORY_ABI, readProvider);
+  const uc = new ethers.Contract(usdg, ERC20_ABI, readProvider);
   const out: PoolInfo[] = [];
   for (const fee of cfg.lp.feeTiers) {
     const pool: string = await factory.getPool!(token, usdg, fee).catch(() => ethers.ZeroAddress);
     if (pool === ethers.ZeroAddress) continue;
-    const pc = new ethers.Contract(pool, POOL_ABI, provider);
+    const pc = new ethers.Contract(pool, POOL_ABI, readProvider);
     const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
     if (liq === 0n) continue;
     const ubal: bigint = await uc.balanceOf!(pool).catch(() => 0n);
@@ -115,7 +115,7 @@ export interface PoolState {
 
 /** Read a pool's live state and wrap it in an SDK `Pool`. */
 export async function getPoolState(poolAddr: string): Promise<PoolState> {
-  const pc = new ethers.Contract(poolAddr, POOL_ABI, provider);
+  const pc = new ethers.Contract(poolAddr, POOL_ABI, readProvider);
   const [slot0, spacing, token0, token1, fee, liquidity] = await Promise.all([
     pc.slot0!(),
     pc.tickSpacing!(),

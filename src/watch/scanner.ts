@@ -132,9 +132,9 @@ export async function safetyCheck(tokenAddr: string, maxTaxPct = 6): Promise<Saf
       /* no pool / cannot sell this tier */
     }
   }
-  if (!best) return { ok: false, backPct: 0, taxPct: 100, reason: "TIDAK BISA DIJUAL (simulasi revert) — honeypot" };
-  if (best.taxPct > maxTaxPct) return { ...best, ok: false, reason: `tax tersembunyi ~${best.taxPct.toFixed(1)}%` };
-  return { ...best, ok: true, reason: `sehat (balik ${best.backPct.toFixed(1)}%)` };
+  if (!best) return { ok: false, backPct: 0, taxPct: 100, reason: "CANNOT SELL (simulation reverted) — honeypot" };
+  if (best.taxPct > maxTaxPct) return { ...best, ok: false, reason: `hidden tax ~${best.taxPct.toFixed(1)}%` };
+  return { ...best, ok: true, reason: `healthy (returned ${best.backPct.toFixed(1)}%)` };
 }
 
 // stablecoins have high volume but no momentum — filter by name AND behaviour
@@ -160,7 +160,7 @@ export async function scanOnce(onLog: (msg: string) => void = () => {}): Promise
   const w = wcfg();
   const hist = loadHist();
   const toks = await tokenList(w.maxTokens);
-  onLog(`cek ${toks.length} token…`);
+  onLog(`checking ${toks.length} tokens…`);
   const md = await marketData(toks.map((t) => t.addr));
   const now = Date.now();
   const hits: SpikeHit[] = [];
@@ -178,17 +178,17 @@ export async function scanOnce(onLog: (msg: string) => void = () => {}): Promise
     if (m.vol5m < prevVol * w.riseFactor) continue;
     if (now - (hist.alerted[m.addr] || 0) < w.cooldownMin * 60_000) continue;
 
-    onLog(`spike: ${m.symbol} $${(m.vol5m / 1000).toFixed(0)}k/5m — uji keamanan…`);
+    onLog(`spike: ${m.symbol} $${(m.vol5m / 1000).toFixed(0)}k/5m — running safety check…`);
     const safe = await safetyCheck(m.addr, w.maxTaxPct);
     if (!safe.ok) {
-      onLog(`  ✗ ${m.symbol} ditolak: ${safe.reason}`);
+      onLog(`  ✗ ${m.symbol} rejected: ${safe.reason}`);
       continue;
     }
     hist.alerted[m.addr] = now;
     hits.push({ ...m, prevVol5m: prevVol, safe });
   }
   saveHist(hist);
-  if (hits.length) log.info(`${hits.length} spike lolos filter`);
+  if (hits.length) log.info(`${hits.length} spikes passed the filters`);
   return hits;
 }
 

@@ -8,8 +8,8 @@
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
 import v4sdk from "@uniswap/v4-sdk";
-import { C, cfg } from "../../config.js";
-import { wallet, provider } from "../client.js";
+import { C, cfg, env } from "../../config.js";
+import { wallet, readProvider } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { ethUsd } from "../price.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
@@ -17,6 +17,7 @@ import { NATIVE } from "./poolkey.js";
 import { bsFetch, mapLimit } from "../blockscout.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
+import { alchemyOwnedNftIds } from "../alchemy.js";
 
 const { Ether, Token, CurrencyAmount } = sdkCore as any;
 const { Pool, Position } = v4sdk as any;
@@ -86,7 +87,7 @@ export async function listClosedV4Positions(): Promise<V4ClosedRow[]> {
     /* */
   }
   if (!ids.length) return [];
-  const posm = new ethers.Contract(C.v4PositionManager, V4_POSM_ABI, provider);
+  const posm = new ethers.Contract(C.v4PositionManager, V4_POSM_ABI, readProvider);
   const rows = await mapLimit(ids, 8, async (tokenId): Promise<V4ClosedRow | null> => {
     try {
       const liq: bigint = await posm.getPositionLiquidity!(tokenId).catch(() => 0n);
@@ -164,6 +165,20 @@ function usdOfCurrency(addr: string, sym: string, px: number): number | null {
 // always warm. Callers that need FRESH state (manage TP/SL/OOR, autolp gate) pass staleOkMs=0 (default).
 let posCache: { rows: V4Row[]; at: number } | null = null;
 
+// Alchemy's NFT ownership endpoint is a reliable fallback for manually opened v4 positions
+// when Blockscout is unavailable. Cache the ownership result separately from the position-value
+// cache: the endpoint costs more than a normal eth_call, but five minutes is short enough to pick
+// up a newly received NFT without turning every 90-second manage tick into a paid API request.
+let alchemyIdCache: { ids: string[]; at: number } | null = null;
+const ALCHEMY_ID_TTL_MS = 5 * 60_000;
+
+async function discoverAlchemyV4Ids(owner: string): Promise<string[]> {
+  if (alchemyIdCache && Date.now() - alchemyIdCache.at < ALCHEMY_ID_TTL_MS) return alchemyIdCache.ids;
+  const ids = await alchemyOwnedNftIds(env.rpcUrl, owner, C.v4PositionManager!);
+  alchemyIdCache = { ids, at: Date.now() };
+  return ids;
+}
+
 export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
   if (!C.v4PositionManager || !C.v4StateView) return [];
   if (staleOkMs > 0 && posCache && Date.now() - posCache.at < staleOkMs) return posCache.rows;
@@ -172,13 +187,18 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
   const deps = readJson<Record<string, { depositWei?: string; ts?: number; mintTs?: number }>>(dataPath("v4-positions.json"), {});
   let ids: string[] = [];
   const nft = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${w.address}/nft?type=ERC-721`);
-  if (nft?.items) {
-    ids = nft.items.filter((i) => (i.token?.address_hash || "").toLowerCase() === posmL).map((i) => String(i.id));
-  } else {
-    // Blockscout enum failed (rate-limit/lag). Positions opened OUTSIDE the bot (web UI) live ONLY in
-    // this enum, so they can transiently vanish from /list until Blockscout recovers. Bot-opened ones
-    // still show via the local deps union below. Surfaced so an empty /list isn't mistaken for "no pos".
-    log.warn("/list: enum NFT Blockscout kosong/gagal (rate-limit?) — andalin deps lokal (posisi web-UI bisa ke-skip sementara)");
+  if (nft?.items) ids = nft.items.filter((i) => (i.token?.address_hash || "").toLowerCase() === posmL).map((i) => String(i.id));
+  if (!ids.length) {
+    // Blockscout can be blocked by Cloudflare or return an empty/lagging index. Alchemy's NFT API
+    // is supported on Robinhood Chain and returns the currently owned tokenIds, including positions
+    // opened manually in the Uniswap web UI. If both indexes are empty, local bot deposits still help.
+    const alchemyIds = await discoverAlchemyV4Ids(w.address);
+    if (alchemyIds.length) {
+      ids = alchemyIds;
+      log.info(`/list: using Alchemy NFT ownership fallback (${ids.length} v4 position NFT${ids.length === 1 ? "" : "s"})`);
+    } else {
+      log.warn("/list: Blockscout and Alchemy NFT enumeration returned no v4 IDs — using local deposits");
+    }
   }
   ids = [...new Set([...ids, ...Object.keys(deps)])];
   // Drop tokenIds the ledger already knows are CLOSED — deps accumulates every historical mint
@@ -192,17 +212,17 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
   }
   if (!ids.length) return [];
 
-  const posm = new ethers.Contract(C.v4PositionManager, V4_POSM_ABI, provider);
-  const sv = new ethers.Contract(C.v4StateView, STATEVIEW_ABI, provider);
+  const posm = new ethers.Contract(C.v4PositionManager, V4_POSM_ABI, readProvider);
+  const sv = new ethers.Contract(C.v4StateView, STATEVIEW_ABI, readProvider);
   const coder = ethers.AbiCoder.defaultAbiCoder();
   const px = await ethUsd().catch(() => 0);
 
   // Pre-filter via Multicall3: read getPositionLiquidity for ALL ids in ONE eth_call and drop the
   // CLOSED (0-liq) NFTs the wallet accumulates (30+). Otherwise /list pays 2 reads PER dead NFT — that
-  // is what made "Memuat posisi" crawl. Only the surviving OPEN ids get the full per-position read below.
+  // is what made "Loading positions" crawl. Only the surviving OPEN ids get the full per-position read below.
   let openIds = ids;
   try {
-    const mc = new ethers.Contract("0xcA11bde05977b3631167028862bE2a173976CA11", ["function aggregate3((address,bool,bytes)[]) view returns ((bool,bytes)[])"], provider);
+    const mc = new ethers.Contract("0xcA11bde05977b3631167028862bE2a173976CA11", ["function aggregate3((address,bool,bytes)[]) view returns ((bool,bytes)[])"], readProvider);
     const calls = ids.map((id) => ({ target: C.v4PositionManager, allowFailure: true, callData: posm.interface.encodeFunctionData("getPositionLiquidity", [id]) }));
     const res: Array<{ success: boolean; returnData: string }> = await mc.aggregate3!(calls);
     openIds = ids.filter((id, i) => {
@@ -240,7 +260,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
         }
       }
       if (owner.toLowerCase() !== w.address.toLowerCase() || liquidity === 0n) {
-        if (isFresh) log.info(`/list: skip fresh #${tokenId} (liq ${liquidity} owner ${owner.slice(0, 10)}) — baru dibuka tapi kosong/lag`);
+        if (isFresh) log.info(`/list: skip fresh #${tokenId} (liq ${liquidity} owner ${owner.slice(0, 10)}) — newly opened but empty/lagging`);
         return null;
       }
 

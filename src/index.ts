@@ -2,8 +2,8 @@
  * Entrypoint. Validates secrets, takes a single-instance lock, wires graceful shutdown,
  * then starts the Telegram loop.
  *
- * Run: node --env-file=.env --import tsx src/index.ts
- *   (or: RH_* set in the environment, then `npm start`)
+ * Run: npm start
+ *   (or: RH_* set in the environment, then `node --import tsx src/index.ts`)
  */
 import { assertSecrets } from "./config.js";
 import { acquireLock } from "./util/files.js";
@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   const release = acquireLock();
 
   const shutdown = (sig: string) => {
-    log.info(`${sig} — matiin bersih…`);
+    log.info(`${sig} — shutting down cleanly…`);
     stop();
     release();
     // give in-flight Telegram calls a beat, then exit

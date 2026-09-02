@@ -69,10 +69,10 @@ async function ensureNativeEth(needWei: bigint): Promise<void> {
   const wbal: bigint = await weth.balanceOf!(w.address).catch(() => 0n);
   if (wbal < short) {
     throw new Error(
-      `ETH native kurang buat v4 mint: butuh ${ethers.formatEther(needWei)}Ξ, ada ${ethers.formatEther(bal)}Ξ native + ${ethers.formatEther(wbal)} WETH`,
+      `Not enough native ETH for v4 mint: need ${ethers.formatEther(needWei)}Ξ, have ${ethers.formatEther(bal)}Ξ native + ${ethers.formatEther(wbal)} WETH`,
     );
   }
-  log.info(`unwrap ${ethers.formatEther(short)} WETH → ETH native (v4 butuh native)`);
+  log.info(`Unwrapping ${ethers.formatEther(short)} WETH → native ETH (v4 requires native ETH)`);
   await waitTx(await weth.withdraw!(short, await overrides()), "v4-unwrap");
 }
 
@@ -103,7 +103,7 @@ export async function openV4SingleSide(
   const w = wallet();
   const pools = await discoverV4Pools(token);
   const pool = opts.fee ? pools.find((p) => p.fee === opts.fee) ?? null : pickV4Pool(pools);
-  if (!pool) throw new Error("tidak ada pool v4/ETH dengan likuiditas");
+  if (!pool) throw new Error("No liquid v4/ETH pool found");
 
   const meta = await tokenMeta(token);
   const sdkPool = buildSdkPool(token, meta.decimals, meta.symbol, pool);
@@ -124,7 +124,7 @@ export async function openV4SingleSide(
     amount0: amountWei.toString(),
     useFullPrecision: true,
   });
-  if (position.liquidity.toString() === "0") throw new Error("liquidity 0 — deposit terlalu kecil buat range ini");
+  if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small for this range");
 
   const { calldata, value } = V4PositionManager.addCallParameters(position, {
     recipient: w.address,
@@ -137,7 +137,7 @@ export async function openV4SingleSide(
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {
-    throw new Error(`simulasi mint v4 revert: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
+    throw new Error(`v4 mint simulation reverted: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
   }
 
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...(await overrides()) });
@@ -201,7 +201,7 @@ export async function openV4InRange(
   const w = wallet();
   const pools = await discoverV4Pools(token);
   const pool = opts.fee ? pools.find((p) => p.fee === opts.fee) ?? null : pickV4Pool(pools);
-  if (!pool) throw new Error("tidak ada pool v4/ETH dengan likuiditas");
+  if (!pool) throw new Error("No liquid v4/ETH pool found");
   const meta = await tokenMeta(token);
   const sp = pool.tickSpacing;
 
@@ -257,7 +257,7 @@ export async function openV4InRange(
     let out = 0n;
     if (kyberEnabled()) {
       const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(token), ethToSwap).catch((e) => {
-        log.warn(`kyber gagal (${(e as Error).message.slice(0, 80)}) → fallback v4 direct`);
+        log.warn(`Kyber failed (${(e as Error).message.slice(0, 80)}) → falling back to direct v4`);
         return null;
       });
       if (k && k.amountOut > 0n) {
@@ -269,7 +269,7 @@ export async function openV4InRange(
     if (out <= 0n) {
       const via = (await bestSwapPool(pools, ethToSwap)) ?? pool;
       const sw = await swapEthToTokenV4(via.poolKey, ethToSwap);
-      if (sw.amountOut <= 0n) throw new Error("swap ETH→token gagal (pool kering?)");
+      if (sw.amountOut <= 0n) throw new Error("ETH→token swap failed (is the pool illiquid?)");
       swapHash = sw.tx;
     }
     swappedPct = Math.round((Number(ethToSwap) / Number(total)) * 100);
@@ -279,7 +279,7 @@ export async function openV4InRange(
 
   // 2) actual token balance now (existing + any swapped)
   const tokenBal: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
-  if (tokenBal <= 0n) throw new Error("token balance 0 — nggak ada yang bisa di-LP");
+  if (tokenBal <= 0n) throw new Error("token balance is 0 — nothing can be added to the LP");
 
   // 3) approve token via Permit2 (ERC20 → Permit2, Permit2 → PositionManager)
   if ((await erc.allowance!(w.address, PERMIT2)) < tokenBal) {
@@ -336,7 +336,7 @@ export async function openV4InRange(
   } catch {
     /* SDK without mintAmountsWithSlippage — fall through with the raw position */
   }
-  if (position.liquidity.toString() === "0") throw new Error("liquidity 0 — deposit terlalu kecil");
+  if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small");
 
   const { calldata, value } = V4PositionManager.addCallParameters(position, {
     recipient: w.address,
@@ -348,7 +348,7 @@ export async function openV4InRange(
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {
-    throw new Error(`simulasi mint v4 in-range revert: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
+    throw new Error(`v4 in-range mint simulation reverted: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
   }
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...(await overrides()) });
   const rc = await waitTx(tx, "v4-mint");
@@ -455,7 +455,7 @@ export async function openV4UsdgInRange(
   const acquire = async (addr: string, ethAmt: bigint) => {
     if (ethAmt < ethers.parseEther("0.00002")) return;
     const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(addr), ethAmt);
-    if (!k || k.amountOut <= 0n) throw new Error(`gagal beli ${addr.toLowerCase() === USDG.toLowerCase() ? "USDG" : "token"} via Kyber`);
+    if (!k || k.amountOut <= 0n) throw new Error(`Failed to buy ${addr.toLowerCase() === USDG.toLowerCase() ? "USDG" : "token"} via Kyber`);
     swapHash = k.tx;
   };
   // REUSE USDG already in the wallet: buy only the SHORTFALL on the USDG side (the stable values
@@ -519,7 +519,7 @@ export async function openV4UsdgInRange(
   } catch {
     /* SDK lacks mintAmountsWithSlippage */
   }
-  if (position.liquidity.toString() === "0") throw new Error("liquidity 0 — deposit terlalu kecil");
+  if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small");
 
   // INCREASE mode → target the existing NFT (SDK emits INCREASE_LIQUIDITY). Open mode → mint to recipient.
   const { calldata, value } = V4PositionManager.addCallParameters(position, {
@@ -531,7 +531,7 @@ export async function openV4UsdgInRange(
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {
-    throw new Error(`simulasi ${opts?.increaseTokenId ? "increase" : "mint"} v4 USDG revert: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
+    throw new Error(`v4 USDG ${opts?.increaseTokenId ? "increase" : "mint"} simulation reverted: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
   }
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...(await overrides()) });
   const rc = await waitTx(tx, "v4-mint");
@@ -581,11 +581,11 @@ export async function increaseV4Position(tokenId: string, amountEthStr: string):
     hooks: String(pk.hooks),
   };
   const usdgIs = poolKey.currency0.toLowerCase() === USDG.toLowerCase() || poolKey.currency1.toLowerCase() === USDG.toLowerCase();
-  if (!usdgIs) throw new Error("increase pair ETH belum didukung — sekarang cuma pair USDG (close & buka lagi buat ETH-pair).");
+  if (!usdgIs) throw new Error("ETH-pair increases are not supported yet — only USDG pairs are supported (close and reopen for an ETH pair).");
   const poolId = computePoolId(poolKey);
   const sv = new ethers.Contract(C.v4StateView!, STATEVIEW_ABI, provider);
   const s0 = await sv.getSlot0!(poolId);
-  if (!(s0.sqrtPriceX96 > 0n)) throw new Error("state pool posisi ini gak kebaca");
+  if (!(s0.sqrtPriceX96 > 0n)) throw new Error("the state for this position's pool is unavailable");
   const liquidity: bigint = await sv.getLiquidity!(poolId).catch(() => 0n);
   const pool: V4Pool = {
     poolKey,
@@ -608,13 +608,13 @@ export async function increaseV4Position(tokenId: string, amountEthStr: string):
  * (fromAmount1). Funds the USDG side entirely from the ETH budget via Kyber.
  */
 export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): Promise<V4OpenResult & { swapHash?: string }> {
-  if (!kyberEnabled()) throw new Error("KyberSwap belum dikonfigurasi — beli USDG butuh aggregator.");
+  if (!kyberEnabled()) throw new Error("KyberSwap is not configured — buying USDG requires the aggregator.");
   const w = wallet();
   const c0 = pool.poolKey.currency0;
   const c1 = pool.poolKey.currency1;
   const usdgIs0 = c0.toLowerCase() === USDG.toLowerCase();
   const usdgIs1 = c1.toLowerCase() === USDG.toLowerCase();
-  if (!usdgIs0 && !usdgIs1) throw new Error("pool ini bukan pair USDG");
+  if (!usdgIs0 && !usdgIs1) throw new Error("This pool is not a USDG pair");
   const usdgAddr = usdgIs0 ? c0 : c1;
   const [m0, m1] = await Promise.all([tokenMeta(c0), tokenMeta(c1)]);
   const total = ethers.parseEther(amountEthStr);
@@ -635,7 +635,7 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): 
   if (buyWei >= ethers.parseEther("0.00002")) {
     await ensureNativeEth(buyWei + NATIVE_GAS_BUFFER);
     const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(usdgAddr), buyWei);
-    if (!k || k.amountOut <= 0n) throw new Error("gagal beli USDG via Kyber");
+    if (!k || k.amountOut <= 0n) throw new Error("Failed to buy USDG via Kyber");
     swapHash = k.tx;
   }
   const heldNow: bigint = await usdgC.balanceOf!(w.address).catch(() => 0n);
@@ -644,7 +644,7 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): 
   // held balance — that's the bug that dumped ~$4 of pre-held USDG into a $2 position.
   const bought = heldNow > held0 ? heldNow - held0 : 0n;
   const usdgBal = targetUsdgRaw > 0n ? (heldNow > targetUsdgRaw ? targetUsdgRaw : heldNow) : bought;
-  if (usdgBal <= 0n) throw new Error("USDG balance 0 (gak ada USDG di wallet & gagal beli)");
+  if (usdgBal <= 0n) throw new Error("USDG balance is 0 (no USDG in wallet and purchase failed)");
 
   // 2) fresh pool state + a single-side range on the all-USDG side
   const sv = new ethers.Contract(C.v4StateView!, STATEVIEW_ABI, provider);
@@ -679,7 +679,7 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): 
     tickLower = tickUpper - width * sp;
     position = Position.fromAmount1({ pool: livePool, tickLower, tickUpper, amount1: usdgBal.toString(), useFullPrecision: true });
   }
-  if (position.liquidity.toString() === "0") throw new Error("liquidity 0 — deposit terlalu kecil buat range ini");
+  if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small for this range");
 
   // 3) approve USDG via Permit2 + mint (both settle as ERC20, no useNative)
   await approveViaPermit2(usdgAddr);
@@ -691,7 +691,7 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): 
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {
-    throw new Error(`simulasi single-side USDG revert: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
+    throw new Error(`single-side USDG simulation reverted: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
   }
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...(await overrides()) });
   const rc = await waitTx(tx, "v4-mint");

@@ -7,7 +7,7 @@
  */
 import { ethers } from "ethers";
 import { C } from "../../config.js";
-import { provider, logsProvider } from "../client.js";
+import { provider, readProvider, logsProvider, publicProvider } from "../client.js";
 import { mapLimit } from "../blockscout.js";
 import { tokenMeta } from "../tokens.js";
 import { STATEVIEW_ABI } from "./abis.js";
@@ -30,8 +30,8 @@ export interface V4Pool {
 }
 
 function stateView(): ethers.Contract {
-  if (!C.v4StateView) throw new Error("v4StateView belum diset di config.contracts");
-  return new ethers.Contract(C.v4StateView, STATEVIEW_ABI, provider);
+  if (!C.v4StateView) throw new Error("v4StateView is not set in config.contracts");
+  return new ethers.Contract(C.v4StateView, STATEVIEW_ABI, readProvider);
 }
 
 // Last-good discovery cache. Blockscout getLogs is flaky and intermittently returns empty, which
@@ -67,7 +67,7 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
   const pm = C.v4PoolManager;
   if (!pm) return [];
   // dedicated logs RPC first, then the main provider (covers a down/throttled logs key)
-  const provs = logsProvider === provider ? [provider] : [logsProvider, provider];
+  const provs = [logsProvider, provider, ...(publicProvider ? [publicProvider] : [])].filter((p, i, a) => a.indexOf(p) === i);
   for (const prov of provs) {
     try {
       return await prov.getLogs({ address: pm, topics, fromBlock: 0, toBlock: "latest" });
@@ -78,12 +78,12 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
   {
     // every full-range attempt failed (RPC range/result cap?) → scan latest→0 in windows on the main RPC
     try {
-      const latest = await provider.getBlockNumber();
+      const latest = await readProvider.getBlockNumber();
       const SPAN = 5_000_000;
       const out: ethers.Log[] = [];
       for (let hi = latest; hi >= 0; hi -= SPAN) {
         const lo = Math.max(0, hi - SPAN + 1);
-        const part = await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
+        const part = await readProvider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
         out.push(...part);
       }
       return out;
@@ -106,7 +106,7 @@ async function verify(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: st
   if (!keys.length) return [];
   const svAddr = C.v4StateView!;
   const iface = sv.interface;
-  const mc = new ethers.Contract(MULTICALL3, MC3_ABI, provider);
+  const mc = new ethers.Contract(MULTICALL3, MC3_ABI, readProvider);
   const out: V4Pool[] = [];
   const CHUNK = 40; // 40 pools = 80 sub-calls per multicall (safe eth_call size)
   for (let i = 0; i < keys.length; i += CHUNK) {
@@ -324,7 +324,7 @@ export async function nonEthV4Summary(token: string): Promise<string | null> {
   const qsyms = await Promise.all(quotes.slice(0, 3).map((q) => tokenMeta(q).then((m) => m.symbol).catch(() => q.slice(0, 8))));
   const fees = found.map((f) => f.fee).sort((a, b) => a - b);
   const feeRange = `${(fees[0]! / 10000).toFixed(2)}-${(fees[fees.length - 1]! / 10000).toFixed(2)}%`;
-  return `${found.length} pool v4 pair ${qsyms.join("/")} (fee ${feeRange}) — bukan ETH`;
+  return `${found.length} v4 ${qsyms.join("/")} pools (fee ${feeRange}) — not ETH`;
 }
 
 export function pickV4Pool(pools: V4Pool[], minLiquidity = 1n): V4Pool | null {

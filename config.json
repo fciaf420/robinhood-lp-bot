@@ -32,7 +32,8 @@
     "autoWrap": true,
     "rangeBufferSpacings": 2,
     "nativeTargetEth": 0.015,
-    "autoSwapOnClose": true
+    "autoSwapOnClose": true,
+    "v2Enabled": false
   },
   "gasPriceGwei": 0,
   "watch": {

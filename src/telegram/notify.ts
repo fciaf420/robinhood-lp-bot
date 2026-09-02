@@ -42,20 +42,20 @@ export async function notifySpike(h: SpikeHit, verdict: Verdict | null = null, p
   const T = [
     `${padR("vol 5m", 8)} ${arrow}  (${(h.vol5m / Math.max(h.prevVol5m, 1)).toFixed(1)}×)`,
     `${padR("vol 1h", 8)} $${(h.vol1h / 1000).toFixed(0)}k`,
-    `${padR("likuid", 8)} $${(h.liq / 1000).toFixed(0)}k`,
+    `${padR("liquidity", 8)} $${(h.liq / 1000).toFixed(0)}k`,
   ];
   if (h.fdv) T.push(`${padR("MCAP", 8)} ${fmtMcap(h.fdv)}`);
   if (pool) T.push(`${padR("pool LP", 8)} v4 ${pool.quote.toUpperCase()} · fee ${(pool.fee / 10000).toFixed(2)}% · vol $${(pool.volUsd / 1000).toFixed(0)}k`);
   T.push(
-    `${padR("harga", 8)} ${h.chg5m >= 0 ? "+" : ""}${h.chg5m.toFixed(1)}% (5m) · ${h.chg1h >= 0 ? "+" : ""}${h.chg1h.toFixed(1)}% (1h)`,
+    `${padR("price", 8)} ${h.chg5m >= 0 ? "+" : ""}${h.chg5m.toFixed(1)}% (5m) · ${h.chg1h >= 0 ? "+" : ""}${h.chg1h.toFixed(1)}% (1h)`,
   );
   T.push("");
-  T.push(`✅ AMAN — ${h.safe.reason}`);
-  T.push(`   tes beli 0.01Ξ → jual balik: ${h.safe.backPct.toFixed(1)}%`);
+  T.push(`✅ SAFE — ${h.safe.reason}`);
+  T.push(`   buy 0.01Ξ → sell back: ${h.safe.backPct.toFixed(1)}%`);
 
   await send(
     [
-      `🚨 <b>VOLUME NANJAK</b> · ${tokenEmoji(h.symbol)} <b>${esc(h.symbol)}</b>`,
+      `🚨 <b>VOLUME SPIKE</b> · ${tokenEmoji(h.symbol)} <b>${esc(h.symbol)}</b>`,
       pre(T.join("\n")),
       ...radarLines(verdict),
       `<code>${h.addr}</code>`,
@@ -82,13 +82,13 @@ export async function notifyNewToken(a: NewTokenAlert, verdict: Verdict | null =
     a.wethSeed > 0 ? `${padR("WETH seed", 9)} ${a.wethSeed.toFixed(4)}Ξ` : "",
     ``,
     `✅ honeypot check — ${a.safeReason}`,
-    `   beli 0.01Ξ → jual balik: ${a.backPct.toFixed(1)}%`,
+    `   buy 0.01Ξ → sell back: ${a.backPct.toFixed(1)}%`,
   ].filter(Boolean);
 
   await send(
     [
-      `🆕 <b>TOKEN BARU (feed)</b> · ${tokenEmoji(a.symbol)} <b>${esc(a.symbol)}</b>`,
-      `<i>ketangkep real-time dari sequencer — DexScreener kemungkinan belum index</i>`,
+      `🆕 <b>NEW TOKEN (feed)</b> · ${tokenEmoji(a.symbol)} <b>${esc(a.symbol)}</b>`,
+      `<i>caught in real time from the sequencer — DexScreener may not have indexed it yet</i>`,
       pre(T.join("\n")),
       ...radarLines(verdict),
       `<code>${a.token}</code>`,
@@ -116,13 +116,13 @@ export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Pro
     `${padR("vol pool", 9)} $${(pool.volUsd / 1000).toFixed(1)}k (24h)`,
     `${padR("liq pool", 9)} $${(pool.liqUsd / 1000).toFixed(1)}k`,
     `${padR("mcap", 9)} ${fmtMcap(t.marketCap)} · turnover ${turnover}`,
-    `${padR("jenis", 9)} ${r.kind} · komunitas ${r.community}`,
-    `${padR("skor", 9)} ${r.score}/100 · FOMO ${r.fomo}/100`,
+    `${padR("type", 9)} ${r.kind} · community ${r.community}`,
+    `${padR("score", 9)} ${r.score}/100 · FOMO ${r.fomo}/100`,
   ];
   await send(
     [
-      `🎯 <b>KANDIDAT LP</b> · ${tokenEmoji(t.symbol)} <b>${esc(t.symbol)}</b> ${verd}`,
-      `<i>lolos screening + tx rame + pool fee 3-5%</i>`,
+      `🎯 <b>LP CANDIDATE</b> · ${tokenEmoji(t.symbol)} <b>${esc(t.symbol)}</b> ${verd}`,
+      `<i>passed screening + active trading + 3-5% fee pool</i>`,
       pre(T.join("\n")),
       r.thesis ? `🧠 <i>${esc(r.thesis)}</i>` : "",
       r.flags.length ? `🚩 ${esc(r.flags.slice(0, 4).join(" · "))}` : "",
@@ -150,10 +150,10 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
   await send(
     [
       `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange" ? "🎯" : "🛡"}`,
-      `Otomatis dibuka ${r.sizeEth}Ξ single-side (${esc(res.side ?? "parkir quote asset")})`,
+      `Automatically opened ${r.sizeEth}Ξ single-side (${esc(res.side ?? "quote asset parked")})`,
       `${res.entryMcap ? `entry MCAP ${fmtMcap(res.entryMcap)} · ` : ""}range tick ${res.tickLower}..${res.tickUpper}`,
       res.swapHash ? `swap: <a href="${explorerTx(res.swapHash)}">tx</a> · mint: <a href="${explorerTx(res.txHash)}">tx</a>` : `mint: <a href="${explorerTx(res.txHash)}">tx</a>`,
-      `<i>Cek /list · tutup manual kapan aja</i>`,
+      `<i>Check /list · close manually at any time</i>`,
     ].join("\n"),
   );
 }
@@ -162,7 +162,7 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
 export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
   const emo = i.reason === "TP" ? "🎯💰" : i.reason === "SL" ? "🛑" : i.reason === "VFADE" ? "📉" : i.reason === "FVLOW" ? "🐌" : "🚪";
   const label =
-    i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "FEE MATI (rotasi slot)" : "OUT OF RANGE";
+      i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "LOW FEE RATE" : "OUT OF RANGE";
   const pnl =
     i.pnlPct != null
       ? `${i.pnlPct >= 0 ? "+" : ""}${i.pnlPct.toFixed(1)}%${i.pnlEth != null ? ` (${i.pnlEth >= 0 ? "+" : ""}${i.pnlEth.toFixed(6)}Ξ)` : ""}`
@@ -171,7 +171,7 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
     [
       `${emo} <b>AUTO-CLOSE · ${label}</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b> #${i.tokenId} [${i.version}]`,
       `PnL: <b>${pnl}</b>`,
-      `<i>ditutup otomatis oleh auto-manage. Cek /list · /ledger</i>`,
+      `<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
     ].join("\n"),
   );
 }
@@ -181,8 +181,8 @@ export async function notifyRebalance(i: RebalanceInfo): Promise<void> {
   await send(
     [
       `♻️ <b>REBALANCE</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b>`,
-      `posisi OOR #${i.oldTokenId} ditutup → dibuka ulang recentered #${i.newTokenId ?? "?"} di harga skarang.`,
-      `<i>modal balik in-range, lanjut makan fee. Cek /list</i>`,
+      `out-of-range position #${i.oldTokenId} closed → reopened recentered as #${i.newTokenId ?? "?"} at the current price.`,
+      `<i>capital is back in range and earning fees. Check /list</i>`,
     ].join("\n"),
   );
 }
@@ -192,8 +192,8 @@ export async function notifyCompound(i: CompoundInfo): Promise<void> {
   await send(
     [
       `🔁 <b>COMPOUND</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b> #${i.tokenId}`,
-      `fee ~$${i.feeUsd.toFixed(2)} di-harvest & di-add balik ke posisi (auto-compound).`,
-      `<i>Cek /list</i>`,
+      `~$${i.feeUsd.toFixed(2)} in fees harvested and added back to the position (auto-compound).`,
+      `<i>Check /list</i>`,
     ].join("\n"),
   );
 }
@@ -208,7 +208,7 @@ export async function notifyOutOfRange(a: OutOfRangeAlert): Promise<void> {
   await send(
     [
       `${head} · ${tokenEmoji(a.symbol)} <b>${esc(a.symbol)}</b> #${a.tokenId}`,
-      `Harga nembus ke <b>${a.side}</b> range — posisi berhenti makan fee.`,
+      `Price moved through the <b>${a.side}</b> range — the position stopped earning fees.`,
       `tick ${a.tick} · range ${a.tickLower}..${a.tickUpper}`,
       a.closeError ? `❌ ${esc(a.closeError)}` : "",
     ]

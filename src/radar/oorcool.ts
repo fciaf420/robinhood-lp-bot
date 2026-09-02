@@ -40,7 +40,7 @@ export function recordOor(addr: string): void {
   if (e.count >= cfg.autoLp.oorCooldownCount) {
     e.cooldownUntil = now + windowMs;
     e.count = 0; // reset the streak once the cooldown trips
-    log.info(`OOR cooldown ${addr} → ${cfg.autoLp.oorCooldownHours}j (kebuka-tutup OOR ${cfg.autoLp.oorCooldownCount}×)`);
+    log.info(`OOR cooldown ${addr} → ${cfg.autoLp.oorCooldownHours}h (opened/closed OOR ${cfg.autoLp.oorCooldownCount}×)`);
   }
   s[k] = e;
   save(s);

@@ -30,7 +30,7 @@ export function startWatch(): void {
   const w = wcfg();
   if (!w.enabled || timer) return;
   timer = setInterval(tick, w.intervalSec * 1000);
-  log.info(`ON — scan tiap ${w.intervalSec}s (vol5m ≥ $${(w.minVol5m / 1000).toFixed(0)}k, naik ${w.riseFactor}×)`);
+  log.info(`ON — scan every ${w.intervalSec}s (vol5m ≥ $${(w.minVol5m / 1000).toFixed(0)}k, rising ${w.riseFactor}×)`);
   void tick(); // first scan seeds the baseline
 }
 

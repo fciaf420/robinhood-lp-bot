@@ -21,7 +21,7 @@ export async function startFeed(): Promise<void> {
   try {
     await monitor.start();
   } catch (e) {
-    log.error(`gagal start: ${(e as Error).message}`);
+    log.error(`failed to start: ${(e as Error).message}`);
     monitor = null;
   }
 }
@@ -33,8 +33,8 @@ export function stopFeed(): void {
   }
 }
 
-export function feedStatus(): { on: boolean; seen: number; positions: number; newTokens: number; rangeAlerts: number } {
-  if (!monitor) return { on: false, seen: 0, positions: 0, newTokens: 0, rangeAlerts: 0 };
+export function feedStatus(): { on: boolean; seen: number; positions: number; positionTokens: number; newTokens: number; rangeAlerts: number } {
+  if (!monitor) return { on: false, seen: 0, positions: 0, positionTokens: 0, newTokens: 0, rangeAlerts: 0 };
   const s = monitor.status();
-  return { on: true, seen: s.seen, positions: s.positions, newTokens: s.newTokens, rangeAlerts: s.rangeAlerts };
+  return { on: true, seen: s.seen, positions: s.positions, positionTokens: s.positionTokens, newTokens: s.newTokens, rangeAlerts: s.rangeAlerts };
 }

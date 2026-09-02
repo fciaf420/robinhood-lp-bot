@@ -71,7 +71,7 @@ export function startManage(h?: ManageHooks): void {
   if (timer || !hooks) return;
   void tick();
   timer = setInterval(() => void tick(), (cfg.autoLp.manageSec || 90) * 1000);
-  log.info(`manage ON — tiap ${cfg.autoLp.manageSec}s`);
+  log.info(`manage ON — every ${cfg.autoLp.manageSec}s`);
 }
 export function stopManage(): void {
   if (timer) {
@@ -93,7 +93,7 @@ async function tick(): Promise<void> {
   try {
     await runManage();
   } catch (e) {
-    log.warn(`manage gagal: ${(e as Error).message.slice(0, 90)}`);
+    log.warn(`manage failed: ${(e as Error).message.slice(0, 90)}`);
   } finally {
     tickRunning = false;
   }
@@ -110,7 +110,7 @@ export function nudge(reason = "feed"): void {
   if (!cfg.autoLp.enabled || !armed() || tickRunning) return;
   if (Date.now() - lastTickAt < NUDGE_MIN_MS) return;
   stats.nudges++;
-  log.info(`manage nudge (${reason}) → cek TP/SL/OOR`);
+  log.info(`manage nudge (${reason}) → checking TP/SL/OOR`);
   void tick();
 }
 
@@ -281,11 +281,11 @@ async function doClose(it: Item, reason: CloseReason): Promise<void> {
           hooks?.onRebalance?.({ oldTokenId: it.tokenId, newTokenId: r.tokenId, sym: it.sym });
         }
       } catch (e) {
-        log.warn(`rebalance #${it.tokenId} gagal: ${(e as Error).message.slice(0, 90)}`);
+        log.warn(`rebalance #${it.tokenId} failed: ${(e as Error).message.slice(0, 90)}`);
       }
     }
   } catch (e) {
-    log.warn(`auto-close #${it.tokenId} gagal: ${(e as Error).message.slice(0, 90)}`);
+    log.warn(`auto-close #${it.tokenId} failed: ${(e as Error).message.slice(0, 90)}`);
     closing.delete(it.tokenId); // let the next tick retry
   } finally {
     releaseWallet();
@@ -309,11 +309,10 @@ async function doCompound(it: Item): Promise<void> {
       log.info(`compound v4 #${it.tokenId} skip: ${r.reason ?? "?"}`);
     }
   } catch (e) {
-    log.warn(`compound #${it.tokenId} gagal: ${(e as Error).message.slice(0, 90)}`);
+    log.warn(`compound #${it.tokenId} failed: ${(e as Error).message.slice(0, 90)}`);
   } finally {
     // brief hold so a still-high feeUsd (list lag before fees reset) can't double-fire the compound
     setTimeout(() => compounding.delete(it.tokenId), 120_000);
     releaseWallet();
   }
 }
-

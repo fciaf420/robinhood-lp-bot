@@ -5,12 +5,21 @@ import sdkCore from "@uniswap/sdk-core";
 import type { Token as TokenT } from "@uniswap/sdk-core";
 import { cfg } from "../config.js";
 const { Token } = sdkCore;
-import { provider } from "./client.js";
+import { readProvider } from "./client.js";
 import { ERC20_ABI } from "./abis.js";
 import type { TokenMeta } from "../types.js";
 
 const metaCache = new Map<string, TokenMeta>();
 const sdkCache = new Map<string, TokenT>();
+
+/** Prefer the standard symbol, then the token name, then a readable address label. */
+export function tokenLabel(symbol: unknown, name: unknown, addr: string): string {
+  for (const value of [symbol, name]) {
+    const label = String(value ?? "").trim();
+    if (label && label !== "?") return label;
+  }
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
 
 // A .catch() only handles a REJECTION — not a HANG. A rug / giant-name / gas-bomb token's view call
 // (or a momentarily stuck RPC) can leave symbol()/decimals() pending forever, which froze /list,
@@ -23,16 +32,17 @@ export async function tokenMeta(addr: string): Promise<TokenMeta> {
   const hit = metaCache.get(a);
   if (hit) return hit;
 
-  const c = new ethers.Contract(a, ERC20_ABI, provider);
-  const [symbol, decimals, supply] = await Promise.all([
+  const c = new ethers.Contract(a, ERC20_ABI, readProvider);
+  const [symbol, name, decimals, supply] = await Promise.all([
     capRead<string>(c.symbol!() as Promise<string>, "?"),
+    capRead<string>(c.name!() as Promise<string>, "?"),
     capRead<number | bigint>(c.decimals!() as Promise<number | bigint>, 18),
     capRead<bigint>(c.totalSupply!() as Promise<bigint>, 0n),
   ]);
   const dec = Number(decimals);
   const m: TokenMeta = {
     addr: a,
-    symbol: String(symbol),
+    symbol: tokenLabel(symbol, name, a),
     decimals: dec,
     supplyUi: Number(ethers.formatUnits(supply, dec)),
   };

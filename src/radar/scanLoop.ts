@@ -26,7 +26,7 @@ export function startScan(h?: ScanHooks): void {
   void tick();
   timer = setInterval(() => void tick(), cfg.scan.intervalMin * 60_000);
   log.info(
-    `hunt ON — tiap ${cfg.scan.intervalMin}m · fee ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}-${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}% · vol≥$${cfg.scan.minVolUsd} · skor≥${cfg.scan.minScore}`,
+    `hunt ON — every ${cfg.scan.intervalMin}m · fee ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}-${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}% · vol≥$${cfg.scan.minVolUsd} · score≥${cfg.scan.minScore}`,
   );
 }
 
@@ -55,7 +55,7 @@ async function tick(): Promise<void> {
   try {
     await runScan();
   } catch (e) {
-    log.warn(`scan gagal: ${(e as Error).message.slice(0, 90)}`);
+      log.warn(`scan failed: ${(e as Error).message.slice(0, 90)}`);
   }
 }
 
@@ -108,7 +108,7 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
   for (const q of qualified) {
     if (!q) continue;
     if (held.has(q.r.token.address.toLowerCase())) {
-      log.info(`skip kandidat ${q.r.token.symbol} — udah ada posisi di token itu`);
+      log.info(`skip candidate ${q.r.token.symbol} — a position already exists for this token`);
       continue;
     }
     alerted.set(q.r.token.address.toLowerCase(), now);
@@ -116,11 +116,11 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
     stats.alerts++;
     const mc = q.r.token.marketCap ?? 0;
     log.info(
-      `kandidat ${q.r.token.symbol} · mcap $${(mc / 1e3).toFixed(0)}k · pool ${(q.pool.fee / 10000).toFixed(2)}% vol $${(q.pool.volUsd / 1e3).toFixed(1)}k fees $${q.pool.feesUsd.toFixed(0)} · spike ${q.pool.spikeX.toFixed(1)}x · skor ${q.r.score}`,
+      `candidate ${q.r.token.symbol} · mcap $${(mc / 1e3).toFixed(0)}k · pool ${(q.pool.fee / 10000).toFixed(2)}% vol $${(q.pool.volUsd / 1e3).toFixed(1)}k fees $${q.pool.feesUsd.toFixed(0)} · spike ${q.pool.spikeX.toFixed(1)}x · score ${q.r.score}`,
     );
     hooks?.onCandidate(q.r, q.pool);
   }
   stats.lastFound = found;
-  log.info(`hunt scan: ${scanned} trending → ${cand.length} lolos screening → ${found} kandidat (pool 3-5% rame)`);
+  log.info(`hunt scan: ${scanned} trending → ${cand.length} passed screening → ${found} candidates (active 3-5% pool)`);
   return { found, scanned };
 }

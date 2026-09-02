@@ -64,7 +64,7 @@ async function simulateAndSend(calldata: string, value: string, label: string): 
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {
-    throw new Error(`simulasi ${label} v4 revert: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
+    throw new Error(`simulation ${label} v4 reverted: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
   }
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...(await overrides()) });
   await waitTx(tx, `v4-${label}`);
@@ -147,7 +147,7 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
     const fcCalldata = iface.encodeFunctionData("modifyLiquidities", [fcUnlock, dl]);
     txHash = await simulateAndSend(fcCalldata, "0", "force-close");
     forfeited = isGood(c0) ? m1.symbol : m0.symbol;
-    log.warn(`force-close #${tokenId}: forfeited ${forfeited} (token blokir transfer/honeypot), ETH diselamatkan`);
+    log.warn(`force-close #${tokenId}: forfeited ${forfeited} (token blocked transfer/honeypot), ETH recovered`);
   }
   const [bal0After, bal1After] = await Promise.all([balOf(c0, m0.decimals), balOf(c1, m1.decimals)]);
 
@@ -222,7 +222,7 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
   const pnlEth = !valuationBroken && basisEth != null && basisEth > 0 && pre ? outEth - basisEth : null;
   const pnlPct = pnlEth != null && basisEth ? (pnlEth / basisEth) * 100 : null;
 
-  // record to the unified ledger (so /ledger shows v4 modal/PnL + counts it in stats)
+  // record to the unified ledger (so /ledger shows v4 deposit/PnL + counts it in stats)
   try {
     appendLedger({
       tokenId: String(tokenId),
@@ -248,7 +248,7 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
       reason: reason ?? "manual",
     });
   } catch (e) {
-    log.warn(`gagal tulis ledger v4 #${tokenId}: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`failed to write v4 ledger #${tokenId}: ${(e as Error).message.slice(0, 80)}`);
   }
 
   dropDeposit(tokenId);
@@ -362,7 +362,7 @@ export async function compoundV4Position(tokenId: string): Promise<V4CompoundRes
   const [after0, after1] = await Promise.all([rawBalOf(c0), rawBalOf(c1)]);
   const fee0 = after0 > before0 ? after0 - before0 : 0n;
   const fee1 = after1 > before1 ? after1 - before1 : 0n;
-  if (fee0 <= 0n && fee1 <= 0n) return { compounded: false, reason: "gak ada fee kekumpul" };
+  if (fee0 <= 0n && fee1 <= 0n) return { compounded: false, reason: "no unclaimed fees available" };
 
   // 2) build an INCREASE from EXACTLY the collected fees; scale to what we hold so the slippage-max
   //    settle can't overpull (same guard the open path uses). Binding side sets liquidity.
@@ -381,7 +381,7 @@ export async function compoundV4Position(tokenId: string): Promise<V4CompoundRes
   } catch {
     /* SDK lacks mintAmountsWithSlippage */
   }
-  if (position.liquidity.toString() === "0") return { compounded: false, reason: "fee kekecilan/gak seimbang buat nambah liq" };
+  if (position.liquidity.toString() === "0") return { compounded: false, reason: "fees are too small or unbalanced to add liquidity" };
 
   // 3) approve both ERC20 via Permit2, then INCREASE_LIQUIDITY on the existing tokenId
   await approveViaPermit2(c0);

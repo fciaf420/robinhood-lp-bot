@@ -24,17 +24,21 @@ async function routeCallback(cq: any): Promise<void> {
   const d: string = cq.data;
   const mid: number = cq.message.message_id;
   if (!isOwner(chatId)) {
-    await call("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ bukan owner", show_alert: true });
+    await call("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ Owner only", show_alert: true });
     return;
   }
   await call("answerCallbackQuery", {
     callback_query_id: cq.id,
-    ...(d === "refresh" ? { text: "🔄 Ambil data on-chain…" } : {}),
+    ...(d === "refresh" ? { text: "🔄 Fetching fresh on-chain data…" } : {}),
   });
 
   if (d.startsWith("ca:")) return H.onCA(d.slice(3));
   if (d === "refresh") return H.onList(mid, true); // force = bypass cache, fetch fresh
+  if (d.startsWith("settings:")) return H.onSettingsButton(d, mid);
+  if (d.startsWith("auto:")) return H.onAutoButton(d, mid);
+  if (d.startsWith("feed:")) return H.onFeedButton(d, mid);
   if (d === "screen") return H.onScreen();
+  if (d === "scan:busy") return;
   if (d === "card") return H.onCard();
   if (d.startsWith("cardp:")) return H.onCardFor(d.slice(6));
   if (d.startsWith("cal:")) {
@@ -54,21 +58,33 @@ async function routeCallback(cq: any): Promise<void> {
   if (d === "mint") return H.onMint(mid, "single");
   if (d === "cancel") {
     H.cancelPending();
-    await call("editMessageText", { chat_id: chatId, message_id: mid, text: "❌ Dibatalkan.", parse_mode: "HTML" });
+    await call("editMessageText", { chat_id: chatId, message_id: mid, text: "❌ Cancelled.", parse_mode: "HTML" });
     return;
   }
   if (d.startsWith("v4f:")) return H.onV4Collect(d.split(":")[1]!);
   if (d.startsWith("add4:")) return H.onAddAsk(d.slice(5), "v4"); // ➕ tambah liq ke posisi v4 existing
   if (d.startsWith("add3:")) return H.onAddAsk(d.slice(5), "v3");
-  if (d.startsWith("v4c:")) return H.onV4Close("/v4close " + d.split(":")[1]);
+  if (d.startsWith("v4c:")) return H.onV4CloseAsk(d.split(":")[1]!, mid);
+  if (d.startsWith("v4close:confirm:")) return H.onV4Close("/v4close " + d.slice("v4close:confirm:".length));
+  if (d === "v4close:cancel") {
+    await call("editMessageText", { chat_id: chatId, message_id: mid, text: "✅ Close cancelled. The position remains open.", parse_mode: "HTML" });
+    return;
+  }
   if (d.startsWith("v2c:")) return H.onV2Close(d.slice(4));
   if (d.startsWith("close:")) return H.onCloseAsk(d.split(":")[1]!, mid);
   if (d.startsWith("cs:")) return H.onClose(d.split(":")[1]!, mid, true);
   if (d.startsWith("ck:")) return H.onClose(d.split(":")[1]!, mid, false);
   if (d === "closeall") {
-    await call("editMessageText", { chat_id: chatId, message_id: mid, text: "🗑🗑 memproses Close ALL…", parse_mode: "HTML" });
+    return H.onCloseAllAsk(mid);
+  }
+  if (d === "closeall:confirm") {
     return H.onCloseAll();
   }
+  if (d === "closeall:cancel") {
+    await call("editMessageText", { chat_id: chatId, message_id: mid, text: "✅ Close ALL cancelled. Your positions remain open.", parse_mode: "HTML" });
+    return;
+  }
+  log.warn(`Unhandled callback: ${d}`);
 }
 
 async function routeMessage(m: any): Promise<void> {
@@ -83,9 +99,12 @@ async function routeMessage(m: any): Promise<void> {
   // /start (and /help) is the only thing that can LOCK an unclaimed bot to a chat
   if (t === "/start" || t === "/help") lockOwner(chatId);
   if (!isOwner(chatId)) {
-    log.warn(`update ditolak dari chat non-owner ${chatId}`);
+    log.warn(`Update rejected from non-owner chat ${chatId}`);
     return;
   }
+
+  if (await H.onAutoInput(t)) return;
+  if (await H.onSettingsInput(t)) return;
 
   if (t === "/start" || t === "/help") return H.onHelp();
   if (t === "/list") return H.onList();
@@ -106,15 +125,16 @@ async function routeMessage(m: any): Promise<void> {
   if (t === "/pnl") return H.onPnl();
   if (t === "/briefing" || t === "/brief") return H.onBriefing();
   if (t === "/sell") return H.onSell();
-  if (t === "/closeall") return H.onCloseAll();
+  if (t === "/closeall") return H.onCloseAllAsk();
   if (t === "/wallet") return H.onWallet();
+  if (t === "/revoke") return H.onRevoke();
   if (t === "/settings") return H.onSettings();
   if (t.startsWith("/set ")) return H.onSet(t);
   if (CA_RE.test(t)) return H.onCA(t);
   if (H.isAwaitingAdd() && NUM_RE.test(t)) return H.onAddAmount(t); // ➕ add-liq amount
   if (H.isAwaitingAmount() && NUM_RE.test(t)) return H.onAmount(t);
   if (t.startsWith("/")) return; // unknown command
-  await send("Paste alamat kontrak token (0x… 40 hex) buat buka LP.");
+  await send("Paste a token contract address (0x… 40 hex) to open an LP.");
 }
 
 async function handle(u: any): Promise<void> {
@@ -128,25 +148,26 @@ async function registerCommands(): Promise<void> {
   await call("setChatMenuButton", { menu_button: { type: "commands" } });
   await call("setMyCommands", {
     commands: [
-      { command: "list", description: "📋 Posisi LP terbuka (v3+v4) + close" },
-      { command: "ledger", description: "📒 Riwayat posisi ditutup (realized PnL)" },
-      { command: "pnl", description: "💰 PnL seumur hidup" },
-      { command: "briefing", description: "📋 Briefing harian (analisa posisi + saran)" },
-      { command: "feed", description: "📡 Monitor sequencer real-time" },
-      { command: "watch", description: "👁 Pemantau lonjakan volume" },
-      { command: "scan", description: "🔍 Cek lonjakan volume sekarang" },
-      { command: "screen", description: "🧪 Screening GMGN 24h (mcap>500k, vol>1M, no flap)" },
-      { command: "hunt", description: "🎯 Hunter kandidat LP (fee 3-5% + rame + screening)" },
-      { command: "card", description: "📸 Kartu profit shareable (portfolio)" },
-      { command: "calendar", description: "📅 Profit calendar harian (PnL per hari)" },
-      { command: "swap", description: "🔄 Swap token via KyberSwap (rute terbaik)" },
-      { command: "auto", description: "🤖 Auto-LP (radar → buka otomatis)" },
-      { command: "v4", description: "🦄 Cek pool Uniswap v4 sebuah token CA" },
-      { command: "closeall", description: "🗑 Tutup SEMUA posisi" },
-      { command: "sell", description: "💸 Jual token nyangkut → ETH" },
-      { command: "wallet", description: "👛 Saldo hot wallet" },
-      { command: "settings", description: "⚙️ Width, slippage, dll" },
-      { command: "help", description: "❔ Bantuan + menu" },
+      { command: "list", description: "📋 Open LP positions (v3+v4) + close" },
+      { command: "ledger", description: "📒 Closed-position history (realized PnL)" },
+      { command: "pnl", description: "💰 Lifetime PnL" },
+      { command: "briefing", description: "📋 Daily briefing (positions + suggestions)" },
+      { command: "feed", description: "📡 Real-time sequencer monitor" },
+      { command: "watch", description: "👁 Volume-spike monitor" },
+      { command: "scan", description: "🔍 Scan current volume spikes" },
+      { command: "screen", description: "🧪 GMGN 24h screening (mcap>500k, vol>1M, no flap)" },
+      { command: "hunt", description: "🎯 LP candidate hunter (3-5% fee + activity + screening)" },
+      { command: "card", description: "📸 Shareable profit card (portfolio)" },
+      { command: "calendar", description: "📅 Daily profit calendar (PnL by day)" },
+      { command: "swap", description: "🔄 Swap tokens via KyberSwap (best route)" },
+      { command: "auto", description: "🤖 Auto-LP (radar → open automatically)" },
+      { command: "v4", description: "🦄 Check a token's Uniswap v4 pools" },
+      { command: "closeall", description: "🗑 Close ALL positions" },
+      { command: "sell", description: "💸 Sell stranded tokens → ETH" },
+      { command: "wallet", description: "👛 Hot-wallet balances" },
+      { command: "revoke", description: "🔒 Zero known token approvals" },
+      { command: "settings", description: "⚙️ Width, slippage, and more" },
+      { command: "help", description: "❔ Help and menu" },
     ],
   });
 }
@@ -160,7 +181,7 @@ export function stop(): void {
 
 export async function run(): Promise<void> {
   await registerCommands();
-  log.info(`Robinhood LP Bot v2 jalan — chain ${cfg.chainId}, wallet ${wallet().address}`);
+  log.info(`Robinhood LP Bot v2 running — chain ${cfg.chainId}, wallet ${wallet().address}`);
   startWatch();
   void startFeed(); // no-op unless cfg.feed.enabled
   startScan({
@@ -191,5 +212,5 @@ export async function run(): Promise<void> {
       await new Promise((s) => setTimeout(s, 2000));
     }
   }
-  log.info("loop berhenti.");
+  log.info("Polling loop stopped.");
 }

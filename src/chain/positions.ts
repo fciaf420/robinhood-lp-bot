@@ -9,7 +9,7 @@
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
 import { cfg, C } from "../config.js";
-import { wallet, provider, overrides } from "./client.js";
+import { wallet, readProvider, overrides } from "./client.js";
 import { NPM_ABI, FACTORY_ABI, POOL_ABI, ERC20_ABI } from "./abis.js";
 import { tokenMeta } from "./tokens.js";
 import { getPoolState, computeRange, mcapAtTick, widthInTicks, USDG, type PoolState } from "./pools.js";
@@ -96,7 +96,7 @@ export async function openPosition(
   const w = wallet();
   const st = await getPoolState(poolAddr);
   if (!st.wethIsToken0 && st.token1.toLowerCase() !== C.weth.toLowerCase()) {
-    throw new Error("pool ini bukan pair WETH");
+    throw new Error("This pool is not a WETH pair");
   }
   const amount = ethers.parseEther(amountEthStr);
   const { addr: tokenReal, meta: tokMeta } = await tokenSide(st);
@@ -135,7 +135,7 @@ async function openSingleSide(
 ): Promise<OpenResult> {
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
-  const pc = new ethers.Contract(poolAddr, POOL_ABI, provider);
+  const pc = new ethers.Contract(poolAddr, POOL_ABI, readProvider);
 
   let lastErr: unknown = null;
   // Buffer widens each retry: a volatile price can cross a single-sided range before the
@@ -159,7 +159,7 @@ async function openSingleSide(
     };
     try {
       const sim = await npm.mint!.staticCall(params);
-      if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil");
+      if (sim.liquidity === 0n) throw new Error("liquidity is 0 — deposit is too small");
       const tx = await npm.mint!(params, await overrides());
       const rc = await tx.wait();
       const tokenId = tokenIdFromReceipt(rc);
@@ -186,7 +186,7 @@ async function openSingleSide(
       if (attempt < 2) await sleep(1500);
     }
   }
-  throw new Error(`mint gagal 3×: ${errShort(lastErr)}`);
+  throw new Error(`Mint failed 3×: ${errShort(lastErr)}`);
 }
 
 async function openInRange(
@@ -200,7 +200,7 @@ async function openInRange(
 ): Promise<OpenResult> {
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
-  const pc = new ethers.Contract(poolAddr, POOL_ABI, provider);
+  const pc = new ethers.Contract(poolAddr, POOL_ABI, readProvider);
   const tickNow = Number((await pc.slot0!()).tick);
   const fresh = { ...st, tick: tickNow };
   const { tickLower, tickUpper, swapFraction } = computeRange(fresh, "inrange");
@@ -227,7 +227,7 @@ async function openInRange(
   let swapHash: string | undefined;
   if (wethToSwap >= ethers.parseEther("0.00002")) {
     const sw = await swapWethToTokenBest(tokenReal, wethToSwap, st.fee);
-    if (sw.amountOut <= 0n) throw new Error("swap WETH → token tidak menghasilkan token (pool kering?)");
+    if (sw.amountOut <= 0n) throw new Error("WETH → token swap returned 0 (is the pool illiquid?)");
     swapHash = sw.tx;
   } else {
     wethToSwap = 0n; // enough token already on hand — LP straight from balance
@@ -235,7 +235,7 @@ async function openInRange(
 
   // actual token balance now (reused inventory + anything just swapped)
   const tokenGot: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
-  if (tokenGot <= 0n) throw new Error("token balance 0 — nggak ada yang bisa di-LP");
+  if (tokenGot <= 0n) throw new Error("Token balance is 0 — nothing can be added to the LP");
 
   if ((await erc.allowance!(w.address, C.positionManager)) < tokenGot) {
     await (await erc.approve!(C.positionManager, ethers.MaxUint256, await overrides())).wait();
@@ -255,7 +255,7 @@ async function openInRange(
     deadline: deadline(),
   };
   const sim = await npm.mint!.staticCall(params);
-  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil");
+  if (sim.liquidity === 0n) throw new Error("liquidity is 0 — deposit is too small");
   const tx = await npm.mint!(params, await overrides());
   const rc = await tx.wait();
   const tokenId = tokenIdFromReceipt(rc);
@@ -285,7 +285,7 @@ async function openInRange(
     entryMcap,
     swappedPct,
     depositEth: ethers.formatEther(costBasis),
-    side: `IN RANGE — langsung makan fee (≈${swappedPct}% modal jadi token)`,
+    side: `IN RANGE — earning fees immediately (≈${swappedPct}% of capital converted to token)`,
     liquidity: sim.liquidity.toString(),
   };
 }
@@ -331,12 +331,12 @@ function currencyUsd(st: PoolState, isSide0: boolean, raw: bigint, px: number): 
  * so passing the actual balances with amountMin=0 (staticCall-guarded) can never over-pull.
  */
 export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): Promise<OpenResult> {
-  if (!kyberEnabled()) throw new Error("KyberSwap belum dikonfigurasi — LP USDG butuh aggregator (set KYBERSWAP_ROUTER_ADDRESS).");
+  if (!kyberEnabled()) throw new Error("KyberSwap is not configured — USDG LP requires the aggregator (set KYBERSWAP_ROUTER_ADDRESS).");
   const w = wallet();
   const st = await getPoolState(pool.pool);
   const c0 = st.token0;
   const c1 = st.token1;
-  if (c0.toLowerCase() !== USDG_L && c1.toLowerCase() !== USDG_L) throw new Error("pool ini bukan pair USDG");
+  if (c0.toLowerCase() !== USDG_L && c1.toLowerCase() !== USDG_L) throw new Error("This pool is not a USDG pair");
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   const total = ethers.parseEther(amountEthStr);
 
@@ -356,7 +356,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
   const wethForC0 = total - wethForC1;
 
   const bal = async (a: string): Promise<bigint> =>
-    new ethers.Contract(a, ERC20_ABI, provider).balanceOf!(w.address).catch(() => 0n);
+    new ethers.Contract(a, ERC20_ABI, readProvider).balanceOf!(w.address).catch(() => 0n);
 
   // 2) buy each side from WETH via Kyber. REUSE USDG already in the wallet — buy only the SHORTFALL
   //    on the USDG side (swapping when you already hold USDG just burns fees). The token side is
@@ -365,7 +365,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
   const acquire = async (addr: string, wethAmt: bigint): Promise<void> => {
     if (wethAmt < ethers.parseEther("0.00002")) return;
     const k = await kyberSwap(C.weth, ethers.getAddress(addr), wethAmt);
-    if (!k || k.amountOut <= 0n) throw new Error(`gagal beli ${addr.toLowerCase() === USDG_L ? "USDG" : "token"} via Kyber`);
+    if (!k || k.amountOut <= 0n) throw new Error(`Failed to buy ${addr.toLowerCase() === USDG_L ? "USDG" : "token"} via Kyber`);
     swapHash = k.tx;
   };
   const px = await ethUsd().catch(() => 0);
@@ -380,7 +380,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
   await acquire(usdgAddr, buyUsdgWei); // 0 if we already hold enough USDG
 
   const [bal0, bal1] = await Promise.all([bal(c0), bal(c1)]);
-  if (bal0 <= 0n || bal1 <= 0n) throw new Error("salah satu sisi balance 0 setelah swap (pool kering?)");
+  if (bal0 <= 0n || bal1 <= 0n) throw new Error("One side has a zero balance after the swap (is the pool illiquid?)");
 
   // 3) approve both sides to the NPM
   for (const [a, need] of [[c0, bal0], [c1, bal1]] as const) {
@@ -404,7 +404,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
     deadline: deadline(),
   };
   const sim = await npm.mint!.staticCall(params);
-  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil");
+  if (sim.liquidity === 0n) throw new Error("liquidity is 0 — deposit is too small");
   const tx = await npm.mint!(params, await overrides());
   const rc = await tx.wait();
   const tokenId = tokenIdFromReceipt(rc);
@@ -434,7 +434,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
     entryMcap: 0,
     swappedPct: 100,
     depositEth: amountEthStr,
-    side: `IN RANGE ${tokSym}/USDG — fee ${(st.fee / 10000).toFixed(2)}% jalan langsung`,
+    side: `IN RANGE ${tokSym}/USDG — ${(st.fee / 10000).toFixed(2)}% fees start immediately`,
     liquidity: sim.liquidity.toString(),
   };
 }
@@ -445,14 +445,14 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
  * tick; USDG=token1 → range BELOW. Funds the USDG entirely from the ETH budget via Kyber.
  */
 export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string): Promise<OpenResult> {
-  if (!kyberEnabled()) throw new Error("KyberSwap belum dikonfigurasi — LP USDG butuh aggregator.");
+  if (!kyberEnabled()) throw new Error("KyberSwap is not configured — USDG LP requires the aggregator.");
   const w = wallet();
   const st = await getPoolState(pool.pool);
   const c0 = st.token0;
   const c1 = st.token1;
   const usdgIs0 = c0.toLowerCase() === USDG_L;
   const usdgIs1 = c1.toLowerCase() === USDG_L;
-  if (!usdgIs0 && !usdgIs1) throw new Error("pool ini bukan pair USDG");
+  if (!usdgIs0 && !usdgIs1) throw new Error("This pool is not a USDG pair");
   const usdgAddr = usdgIs0 ? c0 : c1;
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   const total = ethers.parseEther(amountEthStr);
@@ -460,7 +460,7 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string)
   // REUSE USDG already in the wallet — buy only the SHORTFALL to reach `total` worth (swapping when
   // you already hold enough USDG just burns fees), then cap to the target so a big pre-held balance
   // doesn't oversize the position. Only wrap the WETH actually needed for the buy.
-  const usdgC = new ethers.Contract(usdgAddr, ERC20_ABI, provider);
+  const usdgC = new ethers.Contract(usdgAddr, ERC20_ABI, readProvider);
   const px = await ethUsd().catch(() => 0);
   const targetUsdgRaw = px > 0 ? BigInt(Math.floor(Number(ethers.formatEther(total)) * px * 1e6)) : 0n;
   const held0: bigint = await usdgC.balanceOf!(w.address).catch(() => 0n);
@@ -481,7 +481,7 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string)
       wrapHash = wtx.hash;
     }
     const k = await kyberSwap(C.weth, ethers.getAddress(usdgAddr), buyWethWei);
-    if (!k || k.amountOut <= 0n) throw new Error("gagal beli USDG via Kyber");
+    if (!k || k.amountOut <= 0n) throw new Error("Failed to buy USDG via Kyber");
     swapHash = k.tx;
   }
   const heldNow: bigint = await usdgC.balanceOf!(w.address).catch(() => 0n);
@@ -489,10 +489,10 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string)
   // just bought (heldNow - held0), NEVER the whole held balance (that dumped pre-held USDG before).
   const bought = heldNow > held0 ? heldNow - held0 : 0n;
   const usdgBal = targetUsdgRaw > 0n ? (heldNow > targetUsdgRaw ? targetUsdgRaw : heldNow) : bought;
-  if (usdgBal <= 0n) throw new Error("USDG balance 0 (gak ada USDG di wallet & gagal beli)");
+  if (usdgBal <= 0n) throw new Error("USDG balance is 0 (no USDG in the wallet and purchase failed)");
 
   // fresh tick + single-side range on the all-USDG side (buffer so a moving price doesn't cross it)
-  const pc = new ethers.Contract(pool.pool, POOL_ABI, provider);
+  const pc = new ethers.Contract(pool.pool, POOL_ABI, readProvider);
   const tickNow = Number((await pc.slot0!()).tick);
   const sp = st.spacing;
   const width = widthInTicks(sp);
@@ -526,7 +526,7 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string)
     deadline: deadline(),
   };
   const sim = await npm.mint!.staticCall(params);
-  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil buat range ini");
+  if (sim.liquidity === 0n) throw new Error("liquidity is 0 — deposit is too small for this range");
   const tx = await npm.mint!(params, await overrides());
   const rc = await tx.wait();
   const tokenId = tokenIdFromReceipt(rc);
@@ -549,7 +549,7 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string)
     entryMcap: 0,
     swappedPct: 0,
     depositEth: amountEthStr,
-    side: `SINGLE-SIDE USDG — parkir USDG, beli ${tokSym} cuma kalo masuk range (rug-safe)`,
+    side: `SINGLE-SIDE USDG — park USDG, buy ${tokSym} only when it enters range (rug-safe)`,
     liquidity: sim.liquidity.toString(),
   };
 }
@@ -611,9 +611,9 @@ export async function mintTimestamp(tokenId: string): Promise<number | null> {
 export async function listPositions(): Promise<PositionRow[]> {
   const w = wallet();
   const wethL = C.weth.toLowerCase();
-  const npm = new ethers.Contract(C.positionManager, NPM_ABI, provider);
-  const npmW = new ethers.Contract(C.positionManager, NPM_ABI, w);
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
+  const npm = new ethers.Contract(C.positionManager, NPM_ABI, readProvider);
+  const npmW = new ethers.Contract(C.positionManager, NPM_ABI, readProvider);
+  const factory = new ethers.Contract(C.factory, FACTORY_ABI, readProvider);
   const n = Number(await npm.balanceOf!(w.address).catch(() => 0n));
   const px = await ethUsd().catch(() => 0);
   const { mapLimit } = await import("./blockscout.js");
@@ -719,7 +719,7 @@ export async function listPositions(): Promise<PositionRow[]> {
         mode: dep?.mode ?? "single",
       };
     } catch (e) {
-      log.warn(`skip posisi index ${i}: ${errShort(e)}`); // no longer a silent skip
+      log.warn(`skipping position index ${i}: ${errShort(e)}`); // no longer a silent skip
       return null;
     }
     })
@@ -958,7 +958,7 @@ export async function closePosition(
       tokenRug: swapToken && tokenStuck > 0 ? tokenStuck : 0,
     });
   } catch (e) {
-    log.warn(`ledger append gagal (close tetap sukses): ${errShort(e)}`);
+    log.warn(`ledger append failed (close still succeeded): ${errShort(e)}`);
   }
 
   log.info(`close #${tokenId} ${tokSym} pnl=${pnlEthReal?.toFixed(6) ?? "?"}Ξ`);
@@ -993,7 +993,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean 
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   const p = await npm.positions!(tokenId);
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
+  const factory = new ethers.Contract(C.factory, FACTORY_ABI, readProvider);
   const pool: string = await factory.getPool!(p.token0, p.token1, p.fee);
   const st = await getPoolState(pool);
   const [m0, m1] = await Promise.all([tokenMeta(p.token0), tokenMeta(p.token1)]);
@@ -1108,7 +1108,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean 
       tokenRug: swapToken && tokenStuck > 0 ? tokenStuck : 0,
     });
   } catch (e) {
-    log.warn(`ledger append gagal (USDG close tetap sukses): ${errShort(e)}`);
+    log.warn(`ledger append failed (USDG close still succeeded): ${errShort(e)}`);
   }
 
   log.info(`close v3 USDG #${tokenId} ${tokSym}/USDG pnl=${pnlEth?.toFixed(6) ?? "?"}Ξ`);

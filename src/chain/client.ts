@@ -34,7 +34,7 @@ class SequencerRoutingProvider extends ethers.JsonRpcProvider {
           // ethers accepts an error-shaped result object here at runtime
           return (resp.error ? { id: p.id, error: resp.error } : { id: p.id, result: resp.result! }) as JsonRpcResult;
         } catch (e) {
-          log.warn(`sequencer submit gagal (${(e as Error).message}) → fallback RPC utama`);
+          log.warn(`sequencer submit failed (${(e as Error).message}) → falling back to primary RPC`);
           return (await super._send([p]))[0]!;
         }
       }),
@@ -65,24 +65,62 @@ provider.pollingInterval = Number(process.env.RH_POLL_MS) || 350;
 
 if (env.fastSubmit) log.info(`fast-submit ON → ${env.sequencerUrl}${env.sequencerIp ? ` @${env.sequencerIp}` : ""} · poll ${provider.pollingInterval}ms`);
 
+/**
+ * Reads use the private RPC first and fail over to Robinhood's public RPC. The wallet and every
+ * transaction remain attached to `provider`, so adding the public endpoint cannot broadcast a
+ * transaction through an unintended node. FallbackProvider starts the public request only when
+ * the primary is slow enough to miss its stall window, keeping normal traffic on Alchemy.
+ */
+export const usingPublicRpcFallback = !!env.publicRpcUrl && env.publicRpcUrl !== env.rpcUrl;
+export const publicProvider = usingPublicRpcFallback
+  ? new ethers.JsonRpcProvider(rpcReq(env.publicRpcUrl), cfg.chainId)
+  : null;
+export const readProvider: ethers.AbstractProvider = publicProvider
+  ? new ethers.FallbackProvider(
+      [
+        { provider, priority: 1, stallTimeout: Number(process.env.RH_RPC_STALL_MS) || 1500, weight: 1 },
+        { provider: publicProvider, priority: 2, stallTimeout: Number(process.env.RH_PUBLIC_RPC_STALL_MS) || 2500, weight: 1 },
+      ],
+      cfg.chainId,
+      { quorum: 1 },
+    )
+  : provider;
+if (usingPublicRpcFallback) log.info("RPC read fallback ON — private primary + Robinhood public secondary");
+
 export const usingOwnWatchRpc = !!env.watchRpcUrl;
 export const watchProvider = env.watchRpcUrl
-  ? new ethers.JsonRpcProvider(rpcReq(env.watchRpcUrl), cfg.chainId)
-  : provider;
+  ? new ethers.FallbackProvider(
+      [
+        { provider: new ethers.JsonRpcProvider(rpcReq(env.watchRpcUrl), cfg.chainId), priority: 1, stallTimeout: 1500, weight: 1 },
+        { provider, priority: 2, stallTimeout: 1500, weight: 1 },
+        ...(publicProvider ? [{ provider: publicProvider, priority: 3, stallTimeout: 2500, weight: 1 }] : []),
+      ],
+      cfg.chainId,
+      { quorum: 1 },
+    )
+  : readProvider;
 
 // Dedicated provider for v4 discovery getLogs (see rpcInitLogs). Full-range getLogs is the heaviest,
 // burstiest read the bot makes (hunt scans many tokens every 3m); giving it its OWN RPC keeps a burst
 // from slowing the main provider that mint/close depend on. Falls back to `provider` when unset.
 export const usingOwnLogsRpc = !!env.logsRpcUrl;
 export const logsProvider: ethers.JsonRpcProvider = env.logsRpcUrl
-  ? new ethers.JsonRpcProvider(rpcReq(env.logsRpcUrl), cfg.chainId)
-  : provider;
+  ? new ethers.FallbackProvider(
+      [
+        { provider: new ethers.JsonRpcProvider(rpcReq(env.logsRpcUrl), cfg.chainId), priority: 1, stallTimeout: 1500, weight: 1 },
+        { provider, priority: 2, stallTimeout: 1500, weight: 1 },
+        ...(publicProvider ? [{ provider: publicProvider, priority: 3, stallTimeout: 2500, weight: 1 }] : []),
+      ],
+      cfg.chainId,
+      { quorum: 1 },
+    ) as unknown as ethers.JsonRpcProvider
+  : readProvider as ethers.JsonRpcProvider;
 if (usingOwnWatchRpc || usingOwnLogsRpc) log.info(`RPC split — watch:${usingOwnWatchRpc ? "own" : "main"} · logs:${usingOwnLogsRpc ? "own" : "main"}`);
 
 let _wallet: ethers.Wallet | null = null;
 export function wallet(): ethers.Wallet {
   if (!_wallet) {
-    if (!env.walletKey) throw new Error("RH_WALLET_KEY belum diset di .env");
+    if (!env.walletKey) throw new Error("RH_WALLET_KEY is not set in .env");
     _wallet = new ethers.Wallet(env.walletKey, provider);
   }
   return _wallet;

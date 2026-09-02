@@ -66,15 +66,15 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   };
 
   // 1. source allowed
-  if (!a.sources.includes(candidate.source)) return skip(`source ${candidate.source} tidak diizinkan`);
+  if (!a.sources.includes(candidate.source)) return skip(`source ${candidate.source} is not allowed`);
 
   // 1b. OOR cooldown (#2) — skip a token that's been OOR-closed too many times (never fills)
-  if (inOorCooldown(candidate.token)) return skip(`OOR cooldown ${oorCooldownLeftMin(candidate.token)}m (kebuka-tutup terus)`);
+  if (inOorCooldown(candidate.token)) return skip(`OOR cooldown ${oorCooldownLeftMin(candidate.token)}m (repeated open/close)`);
 
   // 2. LLM verdict gate — action is a THRESHOLD (ape > watch > skip), not an exact match, so
   //    requireAction="watch" accepts watch-or-better (an "ape" also passes).
   if (a.requireLlm) {
-    if (!verdict?.llm) return skip("tidak ada verdict LLM");
+    if (!verdict?.llm) return skip("no LLM verdict");
     const rank = (x: string): number => (x === "ape" ? 2 : x === "watch" ? 1 : 0);
     if (rank(verdict.llm.action) < rank(a.requireAction)) return skip(`action ${verdict.llm.action} < ${a.requireAction}`);
     if (verdict.llm.score < a.minScore) return skip(`skor ${verdict.llm.score} < ${a.minScore}`);
@@ -82,7 +82,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
 
   // 3. GMGN hard filters (defense beyond the LLM)
   const g = verdict?.gmgn ?? null;
-  if (a.requireGmgn && !g) return skip("GMGN wajib tapi tidak tersedia");
+  if (a.requireGmgn && !g) return skip("GMGN is required but unavailable");
   if (g) {
     if (g.isHoneypot === "yes" || (g.isHoneypot as unknown) === true) return skip("GMGN honeypot");
     const tax = Math.max((g.buyTax ?? 0) * 100, (g.sellTax ?? 0) * 100);
@@ -91,7 +91,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
 
   // 4. liquidity floor
   const liq = g?.liquidityUsd ?? candidate.liq ?? 0;
-  if (liq < a.minLiqUsd) return skip(`likuiditas $${liq.toFixed(0)} < $${a.minLiqUsd}`);
+  if (liq < a.minLiqUsd) return skip(`liquidity $${liq.toFixed(0)} < $${a.minLiqUsd}`);
 
   // 5. caps: concurrent, per-hour, daily
   const now = Date.now();
@@ -109,25 +109,25 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   const tok = candidate.token.toLowerCase();
   const held = [...v3rows, ...v4rows].some((r) => ((r as { tokenAddr?: string }).tokenAddr ?? "").toLowerCase() === tok);
   const justOpened = st.opens.some((o) => o.token.toLowerCase() === tok && now - o.ts < 15 * 60_000);
-  if (held || justOpened) return skip(`sudah ada posisi ${candidate.symbol} — 1 token = 1 posisi`);
-  if (openPositions >= a.maxOpen) return skip(`posisi terbuka ${openPositions} ≥ maxOpen ${a.maxOpen}`);
+  if (held || justOpened) return skip(`a ${candidate.symbol} position already exists — 1 token = 1 position`);
+  if (openPositions >= a.maxOpen) return skip(`${openPositions} open positions ≥ maxOpen ${a.maxOpen}`);
   const lastHour = st.opens.filter((o) => now - o.ts < 3600_000).length;
-  if (lastHour >= a.maxPerHour) return skip(`${lastHour} open/jam ≥ maxPerHour ${a.maxPerHour}`);
+  if (lastHour >= a.maxPerHour) return skip(`${lastHour} opens/h ≥ maxPerHour ${a.maxPerHour}`);
   const spentToday = st.opens.reduce((s, o) => s + o.sizeEth, 0);
-  if (spentToday + a.sizeEth > a.dailyCapEth) return skip(`cap harian: ${spentToday.toFixed(4)}+${a.sizeEth} > ${a.dailyCapEth}Ξ`);
+  if (spentToday + a.sizeEth > a.dailyCapEth) return skip(`daily cap: ${spentToday.toFixed(4)}+${a.sizeEth} > ${a.dailyCapEth}Ξ`);
 
   // 6. wallet has funds
   const b = await balances().catch(() => null);
   if (b) {
     const usable = Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
-    if (usable < a.sizeEth) return skip(`saldo ${usable.toFixed(5)} < size ${a.sizeEth}`);
+    if (usable < a.sizeEth) return skip(`available balance ${usable.toFixed(5)} < size ${a.sizeEth}`);
     if (Number(b.eth) < GAS_RESERVE) return skip(`ETH native < gas reserve`);
   }
 
   // Serialize the tx sequence on the shared wallet: take the wallet lock BEFORE qualify + the multi-tx
   // open, release in finally. Blocks the nonce collision (two opens 2s apart shared a nonce → "nonce
   // has already been used" / revert, token already bought = stuck). Also mutually excludes auto-close.
-  if (!acquireWallet()) return skip("wallet lagi kirim tx lain (serialize anti nonce-collision)");
+  if (!acquireWallet()) return skip("wallet is sending another transaction (serialized to prevent nonce collisions)");
   try {
     // 7. prefer a FARMABLE 3-5% pool
     const { qualifyCandidate } = await import("../chain/candidate.js");
@@ -155,7 +155,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     } else {
       const pools = await findPools(candidate.token).catch(() => []);
       const pool = pickLpPool(pools);
-      if (!pool) return skip(`tidak ada pool 3-5% (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
+      if (!pool) return skip(`no 3-5% pool (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
       log.info(`AUTO-OPEN ${candidate.symbol} ${a.sizeEth}Ξ ${modeLabel} v3 fee ${pool.fee}`);
       result = await openPosition(candidate.token, pool.pool, String(a.sizeEth), { mode: inRange ? "inrange" : "single" });
     }
@@ -163,7 +163,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     save(st);
     return { opened: true, reason: "opened", token: candidate.token, symbol: candidate.symbol, sizeEth: a.sizeEth, result };
   } catch (e) {
-    return skip(`open gagal: ${(e as Error).message.slice(0, 100)}`);
+    return skip(`open failed: ${(e as Error).message.slice(0, 100)}`);
   } finally {
     releaseWallet();
   }

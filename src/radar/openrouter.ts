@@ -5,6 +5,7 @@
  */
 import { env } from "../config.js";
 import { logger } from "../util/log.js";
+import { clearRateLimit, isRateLimited, noteRateLimit } from "./rateLimit.js";
 
 const log = logger("llm");
 
@@ -14,8 +15,11 @@ export interface LlmVerdict {
   summary: string;
 }
 
-export async function llmScore(system: string, user: string): Promise<LlmVerdict | null> {
+export async function llmScore(system: string, user: string, opts: { timeoutMs?: number; retries?: number } = {}): Promise<LlmVerdict | null> {
   if (!env.openrouterKey) return null;
+  // A free-tier 429 applies to the model/account, not just this request. Avoid
+  // sending the next candidate into the same throttle window.
+  if (isRateLimited()) return null;
   const body = JSON.stringify({
     model: env.openrouterModel,
     messages: [
@@ -28,30 +32,36 @@ export async function llmScore(system: string, user: string): Promise<LlmVerdict
     max_tokens: 1200,
   });
   // Free models throttle upstream (HTTP 429 with Retry-After) — retry once, briefly.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const retries = opts.retries ?? 1;
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(env.openrouterUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.openrouterKey}`, "Content-Type": "application/json", "X-Title": "Robinhood LP Bot" },
         body,
-        signal: AbortSignal.timeout(40_000),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 40_000),
       });
-      if (res.status === 429 && attempt === 0) {
-        const wait = Math.min(8000, (Number(res.headers.get("retry-after")) || 5) * 1000);
-        log.warn(`openrouter 429 (free throttle) — retry in ${wait}ms`);
-        await new Promise((r) => setTimeout(r, wait));
-        continue;
+      if (res.status === 429) {
+        const wait = noteRateLimit(res.headers.get("retry-after"));
+        if (attempt < retries) {
+          log.warn(`openrouter 429 (free throttle) — retry in ${wait}ms`);
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+        log.warn(`openrouter 429 (free throttle) — cooling down for ${wait}ms`);
+        return null;
       }
       if (!res.ok) {
         log.warn(`openrouter HTTP ${res.status}`);
         return null;
       }
+      clearRateLimit();
       const j: any = await res.json();
       const msg = j?.choices?.[0]?.message ?? {};
       // reasoning models sometimes leave content null and put the answer in `reasoning`
       return parseVerdict(msg.content || msg.reasoning || "");
     } catch (e) {
-      log.warn(`openrouter gagal: ${(e as Error).message}`);
+      log.warn(`OpenRouter failed: ${(e as Error).message}`);
       return null;
     }
   }

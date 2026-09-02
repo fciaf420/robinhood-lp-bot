@@ -38,7 +38,7 @@ export async function kyberRoute(tokenIn: string, tokenOut: string, amountIn: bi
     const r = await fetch(u, { headers: HEADERS, signal: AbortSignal.timeout(20_000) });
     const j: any = await r.json().catch(() => null);
     if (!r.ok || j?.code !== 0 || !j?.data?.routeSummary) {
-      log.warn(`routes gagal: ${j?.message ?? r.status}`);
+      log.warn(`routes failed: ${j?.message ?? r.status}`);
       return null;
     }
     return j.data as RouteData;
@@ -59,7 +59,7 @@ async function kyberBuild(routeSummary: any, sender: string, recipient: string, 
     });
     const j: any = await r.json().catch(() => null);
     if (!r.ok || j?.code !== 0 || !j?.data?.data) {
-      log.warn(`build gagal: ${j?.message ?? r.status}`);
+      log.warn(`route build failed: ${j?.message ?? r.status}`);
       return null;
     }
     return j.data;
@@ -86,7 +86,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
 
   // route + build hit the KyberSwap aggregator over HTTP and TRANSIENTLY return "route not found"
   // (indexing lag / momentary thin routing) even for a pair that routes fine seconds later — that was
-  // hard-failing LP opens with "gagal beli USDG via Kyber". Retry a few times (fast when it's a quick
+  // hard-failing LP opens with "failed to buy USDG via Kyber". Retry a few times (fast when it's a quick
   // route-not-found response) before giving up so a flaky quote doesn't kill the open.
   let route: RouteData | null = null;
   let built: any = null;
@@ -95,7 +95,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
     if (route) {
       built = await kyberBuild(route.routeSummary, w.address, w.address, slippageBps);
       if (built) {
-        if (attempt > 0) log.info(`kyber route ok setelah retry #${attempt}`);
+        if (attempt > 0) log.info(`Kyber route succeeded after retry #${attempt}`);
         break;
       }
     }

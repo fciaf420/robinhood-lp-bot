@@ -96,8 +96,8 @@ export class FeedMonitor {
     this.persistSeen();
   }
 
-  status(): { seen: number; positions: number } & typeof this.stats {
-    return { seen: this.seen.size, positions: this.positions.size, ...this.stats };
+  status(): { seen: number; positions: number; positionTokens: number } & typeof this.stats {
+    return { seen: this.seen.size, positions: this.positions.size, positionTokens: this.posTokens.size, ...this.stats };
   }
 
   // ── feed consumer (hot path — keep it cheap, defer RPC) ──
@@ -151,7 +151,7 @@ export class FeedMonitor {
       const meta = await tokenMeta(ev.token).catch(() => null);
       const safe = await safetyCheck(ev.token, cfg.watch.maxTaxPct).catch(() => null);
       if (!safe || !safe.ok) {
-        log.info(`new token ${meta?.symbol ?? k.slice(0, 8)} ditolak: ${safe?.reason ?? "cek gagal"}`);
+        log.info(`new token ${meta?.symbol ?? k.slice(0, 8)} rejected: ${safe?.reason ?? "safety check failed"}`);
         return;
       }
       let poolExists = false;
@@ -173,7 +173,7 @@ export class FeedMonitor {
         poolExists,
       });
     } catch (e) {
-      log.warn(`vet new token gagal: ${(e as Error).message}`);
+      log.warn(`new-token vetting failed: ${(e as Error).message}`);
     }
   }
 
@@ -217,7 +217,7 @@ export class FeedMonitor {
         ...(closeError ? { closeError } : {}),
       });
     } catch (e) {
-      log.debug(`range check ${k.slice(0, 8)} gagal: ${(e as Error).message}`);
+      log.debug(`range check ${k.slice(0, 8)} failed: ${(e as Error).message}`);
     } finally {
       this.inflight.delete("range:" + k);
     }
@@ -244,7 +244,7 @@ export class FeedMonitor {
       }
       this.posTokens = toks;
     } catch (e) {
-      log.warn(`refresh positions gagal: ${(e as Error).message}`);
+      log.warn(`position refresh failed: ${(e as Error).message}`);
     }
   }
 
@@ -257,7 +257,7 @@ export class FeedMonitor {
   }
 
   private async warmSeed(): Promise<void> {
-    log.info("warm-seed seen-set dari Blockscout…");
+    log.info("Warm-seeding seen set from Blockscout…");
     let next: Record<string, string> | null = null;
     for (let page = 0; page < 8 && this.seen.size < 800; page++) {
       const q = next ? "?" + new URLSearchParams(next).toString() : "?type=ERC-20";

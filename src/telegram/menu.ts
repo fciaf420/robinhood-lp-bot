@@ -6,18 +6,19 @@
 
 export const MENU_KEYBOARD = {
   keyboard: [
-    ["📋 Posisi", "📒 Ledger", "💰 PnL"],
-    ["🧪 Screen", "🔍 Scan", "📸 Kartu"],
+    ["📋 Positions", "📒 Ledger", "💰 PnL"],
+    ["🧪 Screen", "🔍 Scan", "📸 Card"],
     ["🔄 Swap", "📡 Feed", "👁 Watch"],
-    ["🤖 Auto", "👛 Wallet", "⚙️ Setting"],
+    ["🤖 Auto", "👛 Wallet", "⚙️ Settings"],
     ["🗑 Close All", "💸 Sell", "❔ Help"],
+    ["🔒 Revoke"],
   ],
   resize_keyboard: true,
   is_persistent: true,
 };
 
 const MENU_MAP: Record<string, string> = {
-  "📋 Posisi": "/list",
+  "📋 Positions": "/list",
   "📒 Ledger": "/ledger",
   "💰 PnL": "/pnl",
   "📡 Feed": "/feed",
@@ -25,13 +26,15 @@ const MENU_MAP: Record<string, string> = {
   "🤖 Auto": "/auto",
   "🧪 Screen": "/screen",
   "🔍 Scan": "/scan",
-  "📸 Kartu": "/card",
+  "📸 Card": "/card",
   "🔄 Swap": "/swap",
   "👛 Wallet": "/wallet",
+  "⚙️ Settings": "/settings",
   "⚙️ Setting": "/settings",
   "🗑 Close All": "/closeall",
   "💸 Sell": "/sell",
   "❔ Help": "/help",
+  "🔒 Revoke": "/revoke",
 };
 
 /** Menu label → command, or the text unchanged. */

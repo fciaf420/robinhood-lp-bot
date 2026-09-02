@@ -101,7 +101,7 @@ export class FeedListener {
       }
     });
     ws.on("unexpected-response", (_req, res) => {
-      log.error(`handshake ditolak: HTTP ${res.statusCode} (DNS hijack? set RH_FEED_IP)`);
+      log.error(`handshake rejected: HTTP ${res.statusCode} (DNS hijack? set RH_FEED_IP)`);
       ws.terminate();
     });
     ws.on("error", (e) => log.warn(`ws error: ${e.message}`));

@@ -8,11 +8,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ROOT, writeJson } from "./util/files.js";
+import { ROOT, dataPath, readJson, writeJson } from "./util/files.js";
 import { logger } from "./util/log.js";
+import { mergeRuntimeConfig } from "./configPersistence.js";
 
 const log = logger("config");
 const CONFIG_FILE = path.join(ROOT, "config.json");
+const RUNTIME_CONFIG_FILE = dataPath("config.runtime.json");
 
 const ContractsSchema = z.object({
   factory: z.string(), // v3 factory
@@ -44,6 +46,9 @@ const LpSchema = z.object({
   rangeBufferSpacings: z.number().int().default(2),
   nativeTargetEth: z.number().min(0).default(0.015),
   autoSwapOnClose: z.boolean().default(true),
+  // Pair-level v2 zaps cannot enforce amountOutMinimum. Keep them disabled until
+  // a router-backed v2 path is available; legacy positions can still be burned.
+  v2Enabled: z.boolean().default(false),
   minPoolTvlUsd: z.number().min(0).default(2000), // hide pools below this total liquidity ($) in the LP picker
 });
 
@@ -180,16 +185,18 @@ export type AutoLpConfig = z.infer<typeof AutoLpSchema>;
 export type ScanConfig = z.infer<typeof ScanSchema>;
 
 function load(): Config {
-  let raw: unknown;
+  let baseline: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
+    baseline = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
   } catch (e) {
-    throw new Error(`config.json tidak terbaca: ${(e as Error).message}`);
+    throw new Error(`config.json could not be read: ${(e as Error).message}`);
   }
+  const runtime = readJson<Record<string, unknown> | null>(RUNTIME_CONFIG_FILE, null);
+  const raw = mergeRuntimeConfig((baseline ?? {}) as Record<string, any>, runtime);
   const parsed = ConfigSchema.safeParse(raw);
   if (!parsed.success) {
     log.error("config.json invalid", parsed.error.flatten().fieldErrors);
-    throw new Error("config.json gagal validasi — cek field di atas.");
+    throw new Error("config.json validation failed — check the fields above.");
   }
   return parsed.data;
 }
@@ -203,30 +210,18 @@ export const C = cfg.contracts;
  * of an unrelated key isn't clobbered by our in-memory snapshot.
  */
 export function persist(): void {
-  let disk: Record<string, unknown> = {};
-  try {
-    disk = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
-  } catch {
-    /* first run */
-  }
-  const merged = {
-    ...disk,
-    ...cfg,
-    lp: { ...((disk.lp as object) ?? {}), ...cfg.lp },
-    watch: { ...((disk.watch as object) ?? {}), ...cfg.watch },
-    feed: { ...((disk.feed as object) ?? {}), ...cfg.feed },
-    radar: { ...((disk.radar as object) ?? {}), ...cfg.radar },
-    autoLp: { ...((disk.autoLp as object) ?? {}), ...cfg.autoLp },
-    scan: { ...((disk.scan as object) ?? {}), ...cfg.scan },
-    contracts: { ...((disk.contracts as object) ?? {}), ...cfg.contracts },
-  };
-  writeJson(CONFIG_FILE, merged);
+  // Keep the committed config.json immutable. On Railway, /data is the attached
+  // persistent volume; locally it remains a normal data directory.
+  writeJson(RUNTIME_CONFIG_FILE, cfg);
 }
 
 // ── Secrets & identity (env only) ──
 const DEFAULT_SEQUENCER = "https://sequencer.mainnet.chain.robinhood.com/";
 export const env = {
   rpcUrl: process.env.RH_RPC_URL?.trim() || cfg.rpcUrl,
+  // Public Robinhood RPC used only as a read fallback when the private RPC is slow or unavailable.
+  // Transactions always stay on RH_RPC_URL / the sequencer path.
+  publicRpcUrl: process.env.RH_PUBLIC_RPC_URL?.trim() || cfg.rpcUrl,
   watchRpcUrl: process.env.RH_WATCH_RPC_URL?.trim() || "",
   // dedicated RPC for the heavy v4 discovery getLogs (fromBlock=0 full-range) so a hunt-scan burst
   // can't rate-limit / slow the main RPC that LP ops (mint/close) need. Falls back to `provider`.
@@ -234,7 +229,7 @@ export const env = {
   walletKey: (process.env.RH_WALLET_KEY || "").trim(),
   tgToken: (process.env.RH_TG_TOKEN || "").trim(),
   /** OWNER chat id — the auth boundary. Only this chat may command the bot. */
-  ownerChat: (process.env.RH_TG_CHAT || cfg.telegramChatId || "").trim(),
+  ownerChat: (process.env.RH_TG_CHAT || "").trim(),
   // fast-submit: broadcast raw txs straight to the sequencer (skip Alchemy relay hop)
   fastSubmit: /^(1|true|yes|on)$/i.test(process.env.RH_FAST_SUBMIT?.trim() || ""),
   sequencerUrl: process.env.RH_SEQUENCER_URL?.trim() || DEFAULT_SEQUENCER,
@@ -243,14 +238,14 @@ export const env = {
   // for a custom gateway, e.g. agentcash). + GMGN enrichment.
   openrouterKey: (process.env.RH_OPENROUTER_KEY || "").trim(),
   openrouterUrl: process.env.RH_OPENROUTER_URL?.trim() || "https://openrouter.ai/api/v1/chat/completions",
-  openrouterModel: process.env.RH_OPENROUTER_MODEL?.trim() || "nvidia/nemotron-3-super-120b-a12b:free",
+  openrouterModel: process.env.RH_OPENROUTER_MODEL?.trim() || "nvidia/nemotron-3-ultra-550b-a55b:free",
   // Daily-briefing LLM (a smarter model for the once-a-day analysis). Falls back to the same gateway
   // + key the screener already uses (RH_OPENROUTER_*, both SECRET / private-gateway URL → .env only)
   // so neither the key nor the gateway host is ever committed; only the MODEL differs
   // (cc/claude-sonnet-5). Override per-var via RH_BRIEF_* to point the briefing at a different gateway.
   briefUrl: process.env.RH_BRIEF_URL?.trim() || process.env.RH_OPENROUTER_URL?.trim() || "https://openrouter.ai/api/v1/chat/completions",
   briefKey: (process.env.RH_BRIEF_KEY || process.env.RH_OPENROUTER_KEY || "").trim(),
-  briefModel: process.env.RH_BRIEF_MODEL?.trim() || "cc/claude-sonnet-5",
+  briefModel: process.env.RH_BRIEF_MODEL?.trim() || "nvidia/nemotron-3-ultra-550b-a55b:free",
   gmgnKey: (process.env.RH_GMGN_KEY || "").trim(),
   // KyberSwap aggregator — best-route swaps (auto multi-hop across all pools/fee-tiers/hooks).
   // Used to acquire the token side before an in-range LP (far better execution than swapping on
@@ -262,15 +257,12 @@ export const env = {
 
 /** Fail fast at startup if a required secret is missing or malformed. */
 export function assertSecrets(): void {
-  if (!env.tgToken) throw new Error("RH_TG_TOKEN belum diset di .env");
-  if (!env.walletKey) throw new Error("RH_WALLET_KEY belum diset di .env");
+  if (!env.tgToken) throw new Error("RH_TG_TOKEN is not set in .env");
+  if (!env.walletKey) throw new Error("RH_WALLET_KEY is not set in .env");
   if (!/^0x[0-9a-fA-F]{64}$/.test(env.walletKey)) {
-    throw new Error("RH_WALLET_KEY format salah — harus 0x + 64 hex.");
+    throw new Error("RH_WALLET_KEY must be 0x followed by 64 hexadecimal characters.");
   }
   if (!env.ownerChat) {
-    log.warn(
-      "RH_TG_CHAT belum diset — bot akan mengunci ke chat PERTAMA yang kirim /start, " +
-        "lalu menolak yang lain. Set RH_TG_CHAT di .env untuk mengunci permanen.",
-    );
+    throw new Error("RH_TG_CHAT is not set — refusing to start without an owner chat id.");
   }
 }
