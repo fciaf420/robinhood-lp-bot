@@ -9,11 +9,13 @@
  *   • WETH transfers: any contract counterparty is excluded (those are pools/router).
  */
 import { ethers } from "ethers";
-import { C } from "../config.js";
+import { C, env } from "../config.js";
 import { wallet, provider } from "./client.js";
 import { quoteTokenToWeth } from "./swaps.js";
 import { ethUsd } from "./price.js";
 import { listPositions } from "./positions.js";
+import { listV4Positions } from "./v4/list.js";
+import { alchemyTokenBalances, alchemyTokenMetadata, alchemyTransfers, type AlchemyTransfer } from "./alchemy.js";
 import { bsFetch, mapLimit } from "./blockscout.js";
 
 const INTERNAL = new Set(
@@ -48,6 +50,8 @@ export interface LifetimePnl {
   valueNowEth: number;
   pnlEth: number;
   pnlUsd: number;
+  /** Which source supplied wallet history/holdings. Useful when the explorer index is unavailable. */
+  historySource: "blockscout" | "alchemy" | "unavailable";
 }
 
 // Cache: /pnl scans thousands of txs on a reused wallet — don't re-run on every tap.
@@ -61,16 +65,37 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   const wethL = C.weth.toLowerCase();
   const px = await ethUsd().catch(() => 0);
 
-  const [txl, tt] = await Promise.all([
+  let [txl, tt] = await Promise.all([
     bsFetch<{ result?: any[] }>(`/api?module=account&action=txlist&address=${w.address}&startblock=0&endblock=99999999&sort=asc`),
     bsFetch<{ result?: any[] }>(`/api?module=account&action=tokentx&address=${w.address}&contractaddress=${C.weth}&startblock=0&endblock=99999999&sort=asc`),
   ]);
 
+  let historySource: LifetimePnl["historySource"] = txl || tt ? "blockscout" : "unavailable";
+  let nativeTransfers: AlchemyTransfer[] | null = null;
+  let wethTransfers: AlchemyTransfer[] | null = null;
+  if (!txl && !tt) {
+    // Blockscout's full-history endpoints are occasionally unavailable or rate-limited. Alchemy's
+    // Data API is the same chain's indexed history and keeps /pnl from displaying false zero flows.
+    const [incomingNative, outgoingNative, incomingWeth, outgoingWeth] = await Promise.all([
+      alchemyTransfers(env.rpcUrl, "external", { toAddress: w.address }),
+      alchemyTransfers(env.rpcUrl, "external", { fromAddress: w.address }),
+      alchemyTransfers(env.rpcUrl, "erc20", { toAddress: w.address, contractAddresses: [C.weth] }),
+      alchemyTransfers(env.rpcUrl, "erc20", { fromAddress: w.address, contractAddresses: [C.weth] }),
+    ]);
+    if (incomingNative && outgoingNative && incomingWeth && outgoingWeth) {
+      nativeTransfers = [...incomingNative, ...outgoingNative];
+      wethTransfers = [...incomingWeth, ...outgoingWeth];
+      historySource = "alchemy";
+    }
+  }
+
   let capIn = 0;
   let capOut = 0;
+  const transferEth = (t: any): number => historySource === "alchemy" ? Number(t.value) : Number(t.value) / 1e18;
   // native transfers: bridge/CEX (contract) funding counts as capital
-  for (const t of txl?.result ?? []) {
-    const v = Number(t.value) / 1e18;
+  for (const t of txl?.result ?? nativeTransfers ?? []) {
+    if (!t.to || !t.from) continue;
+    const v = transferEth(t);
     if (v <= 0) continue;
     const incoming = t.to.toLowerCase() === W;
     const other = (incoming ? t.from : t.to).toLowerCase();
@@ -81,7 +106,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   // WETH transfers: only EOA counterparties (pools/router are LP machinery).
   // Warm the isContract cache for all unique counterparties in PARALLEL first, so the
   // loop below hits cache instead of doing sequential getCode round-trips.
-  const wethRows = (tt?.result ?? []).filter((t) => Number(t.value) > 0);
+  const wethRows = (tt?.result ?? wethTransfers ?? []).filter((t) => Number(t.value) > 0);
   const uniqOthers = [
     ...new Set(
       wethRows
@@ -91,7 +116,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   ];
   await Promise.all(uniqOthers.map((a) => isContract(a)));
   for (const t of wethRows) {
-    const v = Number(t.value) / 1e18;
+    const v = transferEth(t);
     const incoming = t.to.toLowerCase() === W;
     const other = (incoming ? t.from : t.to).toLowerCase();
     if (INTERNAL.has(other)) continue;
@@ -102,7 +127,22 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   const netCapEth = capIn - capOut;
 
   // current value: native + WETH + every token valued via real sell quote + open LP
-  const tk = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${w.address}/tokens`);
+  let tk = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${w.address}/tokens`);
+  if (!tk?.items?.length) {
+    const balances = await alchemyTokenBalances(env.rpcUrl, w.address);
+    if (balances) {
+      const nonzero = balances.filter((b) => b.tokenBalance && !/^0x0+$/.test(b.tokenBalance));
+      const metas = await mapLimit(nonzero, 8, async (b) => [b.contractAddress, await alchemyTokenMetadata(env.rpcUrl, b.contractAddress)] as const);
+      const metaByAddress = new Map(metas.filter(([, m]) => !!m) as Array<[string, { decimals: number; symbol: string; name: string }]>);
+      tk = {
+        items: nonzero.map((b) => {
+          const m = metaByAddress.get(b.contractAddress);
+          return { token: { address_hash: b.contractAddress, decimals: m?.decimals ?? 18, symbol: m?.symbol ?? "?" }, value: BigInt(b.tokenBalance).toString() };
+        }),
+      };
+      if (historySource === "unavailable") historySource = "alchemy";
+    }
+  }
   let wethHeld = 0;
   let tokensEth = 0;
   let graveyardCount = 0;
@@ -115,13 +155,14 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   const valued = await mapLimit(tk?.items ?? [], 8, async (it: any) => {
     const t = it.token;
     const dec = Number(t.decimals || 18);
-    const bal = Number(it.value) / 10 ** dec;
+    const rawValue = String(it.value);
+    const bal = Number(rawValue) / 10 ** dec;
     if (t.address_hash?.toLowerCase() === wethL) return { weth: bal, sellEth: 0, sym: "WETH", isWeth: true };
     if (bal <= 0) return null;
     let sellEth = 0;
     try {
       const q = await Promise.race([
-        quoteTokenToWeth(t.address_hash, BigInt(it.value)),
+        quoteTokenToWeth(t.address_hash, BigInt(rawValue)),
         new Promise<{ weth: number }>((_, rej) => setTimeout(() => rej(new Error("quote timeout")), 5000)),
       ]);
       sellEth = q.weth;
@@ -150,11 +191,14 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   const nativeEth = Number(ethers.formatEther(await provider.getBalance(w.address)));
 
   let openLpEth = 0;
-  try {
-    for (const r of await listPositions()) openLpEth += (r.valEth || 0) + (r.feeEth || 0);
-  } catch {
-    /* leave 0 */
-  }
+  // v3 valEth already includes unclaimed fees. v4 valueUsd also includes fees, so do not add them
+  // twice. Fetch the two position families independently so one flaky indexer cannot erase both.
+  const [v3Rows, v4Rows] = await Promise.all([
+    listPositions().catch(() => [] as Awaited<ReturnType<typeof listPositions>>),
+    listV4Positions(0).catch(() => [] as Awaited<ReturnType<typeof listV4Positions>>),
+  ]);
+  openLpEth = v3Rows.reduce((sum, r) => sum + (r.valEth || 0), 0);
+  if (px > 0) openLpEth += v4Rows.reduce((sum, r) => sum + ((r.valueUsd || 0) / px), 0);
   const valueNowEth = nativeEth + wethHeld + tokensEth + openLpEth;
   const pnlEth = valueNowEth - netCapEth;
 
@@ -172,6 +216,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
     valueNowEth,
     pnlEth,
     pnlUsd: pnlEth * px,
+    historySource,
   };
   cache = { v: result, at: Date.now() };
   return result;

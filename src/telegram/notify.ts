@@ -1,5 +1,5 @@
 /** Spike notification — CA + DexScreener link + a one-tap LP button. */
-import { send } from "./tg.js";
+import { send, sendPhoto } from "./tg.js";
 import { esc, pre, padR, tokenEmoji } from "./format.js";
 import { fmtMcap } from "../util/format.js";
 import { explorerTxLink } from "./tg.js";
@@ -10,6 +10,7 @@ import type { NewTokenAlert, OutOfRangeAlert } from "../feed/monitor.js";
 import type { ScreenResult } from "../radar/screen.js";
 import type { QualifiedPool } from "../chain/candidate.js";
 import type { AutoCloseInfo, RebalanceInfo, CompoundInfo } from "../radar/automanage.js";
+import { readLedger } from "../chain/ledger.js";
 
 /** Render an LLM/GMGN radar verdict as message lines (empty if no verdict). */
 function radarLines(v: Verdict | null): string[] {
@@ -175,6 +176,29 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
       `<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
     ].join("\n"),
   );
+  // Auto-closes use the same per-position card as manual closes. Read the just-written ledger entry
+  // so the card carries the actual deposit, returned value, fees, and realized PnL.
+  const e = readLedger().find((x) => x.tokenId === i.tokenId);
+  if (e) {
+    try {
+      const { renderCard, closeCardData } = await import("./card.js");
+      const png = await renderCard(await closeCardData({
+        name: e.pair ?? `${e.sym}/WETH`,
+        version: (e.version ?? i.version) as "v2" | "v3" | "v4",
+        quote: e.quote,
+        depEth: e.depEth ?? null,
+        outEth: e.outEth ?? 0,
+        pnlEth: e.pnlEth ?? i.pnlEth,
+        pnlPct: e.pnlPct ?? i.pnlPct,
+        feeEth: e.feeEth,
+        heldMs: e.heldMs,
+        ethUsd: e.ethUsdAtClose ?? undefined,
+      }));
+      await sendPhoto(png, `🎴 <b>${esc(e.pair ?? `${e.sym}/WETH`)}</b> — auto-close PnL card`);
+    } catch {
+      /* card is a nice-to-have — never let notification failure affect position management */
+    }
+  }
 }
 
 /** #1 An OOR position was closed AND re-opened recentered on the current price (rebalance). */

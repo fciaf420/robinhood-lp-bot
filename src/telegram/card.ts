@@ -3,9 +3,10 @@
  * Rendered with @napi-rs/canvas (prebuilt, no system deps) using the host's sans-serif font.
  * Two flavours: a whole-portfolio card (/card) and a per-close card (auto-sent on close).
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D, type Image } from "@napi-rs/canvas";
-import { readLedger, ledgerSummary } from "../chain/ledger.js";
+import { readLedger, ledgerSummary, winRateText } from "../chain/ledger.js";
 import { listPositions } from "../chain/positions.js";
 import { ethUsd } from "../chain/price.js";
 import { logger } from "../util/log.js";
@@ -45,8 +46,15 @@ const MONOB = "CardMonoB";
 
 /** Optional custom background image (pic2). Set RH_CARD_BG or drop assets/card-bg.{jpg,png}. */
 function bgImagePath(): string | null {
-  const cands = [process.env.RH_CARD_BG, "assets/card-bg.jpg", "assets/card-bg.png", "assets/card-bg.jpeg"].filter(Boolean) as string[];
-  return cands.find((p) => existsSync(p)) ?? null;
+  const configured = (process.env.RH_CARD_BG || "").split(",").map((p) => p.trim()).filter(Boolean);
+  const generated = existsSync("assets")
+    ? readdirSync("assets")
+        .filter((p) => /^card-bg-.*\.(?:jpg|jpeg|png)$/i.test(p))
+        .map((p) => join("assets", p))
+    : [];
+  const cands = [...configured, ...generated, "assets/card-bg.jpg", "assets/card-bg.png", "assets/card-bg.jpeg"];
+  const existing = [...new Set(cands)].filter((p) => existsSync(p));
+  return existing.length ? existing[Math.floor(Math.random() * existing.length)]! : null;
 }
 export async function loadBg(): Promise<Image | null> {
   const p = bgImagePath();
@@ -306,7 +314,7 @@ export async function portfolioCardData(): Promise<CardData> {
       { label: "Realized", value: dol(sum.pnlEth), color: sum.pnlEth >= 0 ? GREEN : RED },
       { label: "Unrealized", value: dol(unreal), color: unreal >= 0 ? GREEN : RED },
       { label: "Biggest Win", value: biggest && biggest.pnlEth != null ? dol(biggest.pnlEth) : "—", color: GREEN },
-      { label: "Win Rate", value: `${sum.winRate.toFixed(0)}% (${sum.wins}/${sum.losses})` },
+      { label: "Win Rate", value: winRateText(sum.wins, sum.count) },
     ],
     date: today(),
   };

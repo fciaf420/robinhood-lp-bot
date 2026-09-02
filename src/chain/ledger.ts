@@ -44,6 +44,14 @@ export interface LedgerSummary {
   unsoldEth: number;
 }
 
+/** Human-readable wins/closed count used by both /ledger and profit cards. */
+export function winRateText(wins: number, closed: number): string {
+  const total = Math.max(0, Math.trunc(closed));
+  const safeWins = Math.max(0, Math.min(total, Math.trunc(wins)));
+  const rate = total ? (safeWins / total) * 100 : 0;
+  return `${rate.toFixed(0)}% (${safeWins}/${total})`;
+}
+
 export function ledgerSummary(): LedgerSummary {
   const e = readLedger().filter((x) => x.pnlEth != null);
   const wins = e.filter((x) => (x.pnlEth ?? 0) > 0).length;

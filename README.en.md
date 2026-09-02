@@ -63,7 +63,7 @@ Every time a position closes, the bot sends a share-ready PNG to Telegram. There
 
 ![portfolio card](docs/cards/portfolio.png)
 
-> Swap the background: send a photo to the bot (set instantly as the card bg) or drop `assets/card-bg.jpg`. Default brand is `0xRapzz` — change it with `RH_CARD_BRAND`, the tagline with `RH_CARD_TAG`. The monospace font (DejaVu Sans Mono) is bundled on the VPS.
+> Swap the background: send a photo to the bot (set instantly as the card bg), set `RH_CARD_BG` to one path or a comma-separated list, or drop `assets/card-bg.jpg`. Files named `assets/card-bg-*` are discovered and randomly rotated per card; this repo includes three Mining Helium-inspired variants. Default brand is `0xRapzz` — change it with `RH_CARD_BRAND`, the tagline with `RH_CARD_TAG`. The monospace font (DejaVu Sans Mono) is bundled on the VPS.
 
 ---
 
@@ -450,7 +450,7 @@ src/
 |---|---|
 | `config.json` | Settings (zod-validated at start) |
 | `.env` | **The keys. Secret.** (gitignored) |
-| `assets/card-bg.jpg` | Profit-card background (optional) |
+| `assets/card-bg*.{jpg,png}` | Profit-card backgrounds (optional; `card-bg-*` files rotate randomly) |
 | `data/` | Runtime state — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `config.runtime.json`, `bot.lock`. **Don't delete** — your PnL history and settings live here. On Railway, mount a persistent volume at `/app/data`. (gitignored) |
 
 Writes are atomic (temp + rename), so a crash mid-write won't corrupt the ledger.

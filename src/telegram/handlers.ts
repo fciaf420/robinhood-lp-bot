@@ -1,12 +1,12 @@
 /** Command + callback handlers. Each renders through tg.send/edit (owner chat only). */
-import { cfg, env, persist } from "../config.js";
+import { cfg, env, C, persist } from "../config.js";
 import { tokenMeta } from "../chain/tokens.js";
 import { findPools, findUsdgPools, USDG } from "../chain/pools.js";
 import { dexPairs, type DexPair } from "../chain/dexscreener.js";
 import { discoverV4Pools, type V4Pool } from "../chain/v4/discover.js";
 import { type V2Pool } from "../chain/v2/pair.js";
 import { previewRange, openPosition, openV3UsdgInRange, openV3UsdgSingleSide, listPositions, closePosition } from "../chain/positions.js";
-import { readLedger, ledgerSummary, backfillLedger } from "../chain/ledger.js";
+import { readLedger, ledgerSummary, backfillLedger, winRateText } from "../chain/ledger.js";
 import { lifetimePnl } from "../chain/analytics.js";
 import { balances, sellAllTokens, walletTokens, type WalletToken } from "../chain/holdings.js";
 import { tokenBalanceRaw } from "../chain/swaps.js";
@@ -70,6 +70,32 @@ function v4TvlUsd(p: V4Pool, px: number): number {
   if (c1 === usdgL) return 2 * Number(ethers.formatUnits((L * sp) / Q96, 6)); // USDG = currency1
   if (c0 === usdgL) return 2 * Number(ethers.formatUnits((L * Q96) / sp, 6)); // USDG = currency0
   return 0;
+}
+
+/** Price/MCAP snapshot for the exact v4 pool used by a newly opened position. */
+function v4MarketLine(p: V4Pool, meta: TokenMeta, token: string, tickLower: number, tickUpper: number, ethPx: number): string | null {
+  const c0 = p.poolKey.currency0.toLowerCase();
+  const c1 = p.poolKey.currency1.toLowerCase();
+  const tokenL = token.toLowerCase();
+  const tokenIs0 = c0 === tokenL;
+  const tokenIs1 = c1 === tokenL;
+  if (!tokenIs0 && !tokenIs1) return null;
+  const native = c0 === ZERO_ADDR || c1 === ZERO_ADDR || c0 === C.weth.toLowerCase() || c1 === C.weth.toLowerCase();
+  const quoteDecimals = native ? 18 : 6; // the non-native v4 quote supported by the bot is USDG
+  const quoteUsd = native ? ethPx : 1;
+  if (!(quoteUsd > 0) || !(meta.supplyUi > 0)) return null;
+  const ratioAt = (tick: number): number => Math.pow(1.0001, Math.min(887272, Math.max(-887272, tick)));
+  const quotePerTokenUsdAt = (tick: number): number => {
+    const rawQuotePerToken = tokenIs0
+      ? ratioAt(tick) * 10 ** meta.decimals / 10 ** quoteDecimals
+      : (1 / ratioAt(tick)) * 10 ** meta.decimals / 10 ** quoteDecimals;
+    return rawQuotePerToken * quoteUsd;
+  };
+  const price = quotePerTokenUsdAt(p.tick);
+  const low = quotePerTokenUsdAt(tickLower) * meta.supplyUi;
+  const high = quotePerTokenUsdAt(tickUpper) * meta.supplyUi;
+  const priceText = price >= 1 ? `$${price.toFixed(4)}` : price >= 0.01 ? `$${price.toFixed(6)}` : `$${price.toPrecision(4)}`;
+  return `📊 MCAP range <b>${fmtMcap(Math.min(low, high))} → ${fmtMcap(Math.max(low, high))}</b> · price <b>${priceText}</b>`;
 }
 interface Pending {
   token: string;
@@ -594,6 +620,7 @@ async function onMintV4(mid: number, action: string): Promise<void> {
         : inR
           ? await openV4InRange(pending.token, pending.ethAmt, { fee })
           : await openV4SingleSide(pending.token, pending.ethAmt, { fee });
+    const market = v4MarketLine(v4pool, pending.meta, pending.token, r.tickLower, r.tickUpper, await ethUsd().catch(() => 0));
     const sym = pending.meta.symbol;
     pending = null;
     await send(
@@ -601,6 +628,7 @@ async function onMintV4(mid: number, action: string): Promise<void> {
         `✅ <b>${esc(sym)} #${r.tokenId ?? "?"}</b> [v4] 🦄 ${inR ? "🎯 IN-RANGE (farming)" : "single-side"}`,
         inR && (r as any).swapHash ? `swap ${(r as any).swappedPct}% → ${esc(sym)}: <a href="${explorerTx((r as any).swapHash)}">tx</a>` : "",
         `pool fee <b>${(r.fee / 10000).toFixed(2)}%</b> · range tick ${r.tickLower}..${r.tickUpper}`,
+        market ?? "",
         `deposit ${r.depositEth}Ξ`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
         `Close: <code>/v4close ${r.tokenId}</code>`,
@@ -1194,12 +1222,16 @@ export async function onV4Lp(text: string): Promise<void> {
   try {
     const { openV4SingleSide } = await import("../chain/v4/mint.js");
     const r = await openV4SingleSide(ca, String(eth));
+    const displayMeta = await tokenMeta(ca).catch(() => null);
+    const displayPool = (await discoverV4Pools(ca).catch(() => [])).find((p) => p.fee === r.fee);
+    const market = displayMeta && displayPool ? v4MarketLine(displayPool, displayMeta, ca, r.tickLower, r.tickUpper, await ethUsd().catch(() => 0)) : null;
     await edit(
       mid,
       [
         `✅ <b>v4 LP opened</b> #${r.tokenId ?? "?"} 🦄`,
         `pool fee <b>${(r.fee / 10000).toFixed(2)}%</b> · single-side ETH`,
         `range tick ${r.tickLower}..${r.tickUpper} · deposit ${r.depositEth}Ξ`,
+        market ?? "",
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
         `Close: <code>/v4close ${r.tokenId}</code>`,
       ].join("\n"),
@@ -2161,10 +2193,10 @@ export async function onPnl(): Promise<void> {
   T.push(`LP REALIZED · ${sum.count} closed`);
   T.push("─".repeat(31));
   T.push(row("PnL", sg(sum.pnlEth, 5) + "Ξ", money(sum.pnlUsd)));
-  T.push(row("win rate", `${sum.winRate.toFixed(0)}% (${sum.wins}/${sum.losses})`));
+  T.push(row("win rate", winRateText(sum.wins, sum.count)));
   T.push(row("fee", sum.feeEth.toFixed(5) + "Ξ"));
   T.push("");
-  T.push(`WALLET FLOWS (+arb)`);
+  T.push(`WALLET FLOWS (+arb) · ${r.historySource}`);
   T.push("─".repeat(31));
   T.push(row("in", r.capIn.toFixed(5) + "Ξ", $(r.capIn)));
   T.push(row("out", r.capOut.toFixed(5) + "Ξ", $(r.capOut)));
