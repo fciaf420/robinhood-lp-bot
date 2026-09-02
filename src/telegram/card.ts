@@ -24,6 +24,11 @@ const TAGLINE = process.env.RH_CARD_TAG || "LP · ONCHAIN WATCH";
 // Register fonts explicitly — the VPS has no fontconfig defaults, so canvas draws blank text
 // without this. STRIX aesthetic = monospace everywhere; DejaVu Sans Mono matches it.
 let fontsReady = false;
+// Railway's minimal runtime image may not include DejaVu. An unregistered custom family causes
+// @napi-rs/canvas to draw the shapes but silently omit every text glyph, producing a blank card.
+// Keep a built-in family as the safe default and upgrade to the sharper DejaVu families when present.
+let MONO = "monospace";
+let MONOB = "monospace";
 function ensureFonts(): void {
   if (fontsReady) return;
   const reg: Array<[string, string]> = [
@@ -32,17 +37,25 @@ function ensureFonts(): void {
     ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "CardSans"],
     ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "CardSansB"],
   ];
+  let regularRegistered = false;
+  let boldRegistered = false;
   for (const [path, name] of reg) {
     try {
-      if (existsSync(path)) GlobalFonts.registerFromPath(path, name);
+      if (existsSync(path)) {
+        const registered = GlobalFonts.registerFromPath(path, name);
+        if (registered !== null) {
+          if (name === "CardMono") regularRegistered = true;
+          if (name === "CardMonoB") boldRegistered = true;
+        }
+      }
     } catch {
       /* fall back to default family */
     }
   }
+  if (regularRegistered) MONO = "CardMono";
+  if (boldRegistered) MONOB = "CardMonoB";
   fontsReady = true;
 }
-const MONO = "CardMono";
-const MONOB = "CardMonoB";
 
 /** Optional custom background image (pic2). Set RH_CARD_BG or drop assets/card-bg.{jpg,png}. */
 function bgImagePath(): string | null {
