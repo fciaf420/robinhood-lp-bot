@@ -68,9 +68,28 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
   if (!pm) return [];
   // dedicated logs RPC first, then the main provider (covers a down/throttled logs key)
   const provs = [logsProvider, provider, ...(publicProvider ? [publicProvider] : [])].filter((p, i, a) => a.indexOf(p) === i);
+
+  // New tokens create all of their pools near the chain tip. A full-history eth_getLogs query over
+  // Robinhood's entire chain can time out even with a token-topic filter, which used to make a live
+  // token look pool-less. Start with a recent bounded window so the picker responds quickly; the
+  // full-history path below remains available for older tokens and warm cache misses.
+  const latest = await readProvider.getBlockNumber().catch(() => 0);
+  if (latest > 0) {
+    const from = Math.max(0, latest - 1_000_000);
+    for (const prov of provs) {
+      try {
+        const recent = await prov.getLogs({ address: pm, topics, fromBlock: from, toBlock: latest });
+        if (recent.length) return recent;
+      } catch {
+        /* try the next provider / full-history fallback */
+      }
+    }
+  }
+
   for (const prov of provs) {
     try {
-      return await prov.getLogs({ address: pm, topics, fromBlock: 0, toBlock: "latest" });
+      const all = await prov.getLogs({ address: pm, topics, fromBlock: 0, toBlock: "latest" });
+      if (all.length) return all;
     } catch {
       /* try the next provider */
     }

@@ -186,8 +186,8 @@ export async function onCA(addr: string): Promise<void> {
       to(findUsdgPools(addr).catch(() => [] as PoolInfo[]), 8000, [] as PoolInfo[]),
       // v4 = the focus. RPC getLogs (cache-first, usually <1s); give a COLD full-range scan generous
       // room to finish so pools aren't missed by a premature timeout.
-      to(discoverV4Pools(addr).catch(() => [] as V4Pool[]), 22000, [] as V4Pool[]),
-      to(discoverV4UsdgPools(addr).catch(() => [] as V4Pool[]), 22000, [] as V4Pool[]),
+      to(discoverV4Pools(addr).catch(() => [] as V4Pool[]), 35000, [] as V4Pool[]),
+      to(discoverV4UsdgPools(addr).catch(() => [] as V4Pool[]), 35000, [] as V4Pool[]),
     ]);
     log.info(`Cari pool ${meta.symbol}: v3 ${v3.length + v3usd.length} · v4 ${v4.length + v4usd.length} · dex ${dex.size}${timedOut ? " · ⚠️TIMEOUT" : ""}`);
     // Enrich each pool with DexScreener 24h VOLUME (matched by pool address for v2/v3, by poolId for
