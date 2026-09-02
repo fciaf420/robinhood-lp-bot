@@ -28,7 +28,7 @@ import { settingsPanelKeyboard, type SettingsButton } from "./settingsPanel.js";
 import { feedPanelKeyboard, feedAutoCloseConfirmKeyboard } from "./feedPanel.js";
 import { screenDisplayCount } from "./screenDisplay.js";
 import { closeAllConfirmationKeyboard, totalCloseAllPositions } from "./positionPanel.js";
-import { walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
+import { walletBalanceText, walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 
 const log = logger("handlers");
@@ -2240,7 +2240,7 @@ export async function onWallet(): Promise<void> {
   try {
     const b = await balances();
     await send(
-      `👛 <code>${b.address}</code>\nETH: ${Number(b.eth).toFixed(5)} · WETH: ${Number(b.weth).toFixed(5)}\n\n<i>LP closes unwrap leftover WETH automatically. Use the button below for WETH already in the wallet.</i>`,
+      walletBalanceText(b),
       { reply_markup: { inline_keyboard: walletKeyboard() } },
     );
   } catch (e) {
@@ -2278,7 +2278,7 @@ export async function onUnwrapConfirm(mid: number): Promise<void> {
     }
     await edit(mid, `✅ Unwrapped <b>${r.unwrapped.toFixed(6)} WETH</b> → native ETH\nETH after: <b>${r.nativeAfter.toFixed(6)}</b>\n<a href="${explorerTx(r.tx)}">View unwrap transaction</a>`);
     const b = await balances();
-    await send(`👛 <code>${b.address}</code>\nETH: ${Number(b.eth).toFixed(5)} · WETH: ${Number(b.weth).toFixed(5)}`, { reply_markup: { inline_keyboard: walletKeyboard() } });
+    await send(walletBalanceText(b, false), { reply_markup: { inline_keyboard: walletKeyboard() } });
   } catch (e) {
     await edit(mid, `❌ WETH unwrap failed: ${short(e, 120)}`);
   } finally {

@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { C } from "../config.js";
 import { wallet, provider } from "./client.js";
 import { ERC20_ABI } from "./abis.js";
+import { USDG } from "./pools.js";
 import { quoteTokenToWeth, swapTokenToWeth } from "./swaps.js";
 import { kyberRoute, kyberEnabled, KYBER_NATIVE } from "./kyber.js";
 import { ethUsd } from "./price.js";
@@ -12,6 +13,8 @@ export interface Balances {
   address: string;
   eth: string;
   weth: string;
+  usdg: string;
+  totalUsd: number | null;
 }
 
 /** One sellable ERC-20 holding, valued by its actual Kyber sell-route → ETH. */
@@ -64,12 +67,20 @@ export async function walletTokens(minUsd = 0.1, cap = 25): Promise<WalletToken[
 export async function balances(): Promise<Balances> {
   const w = wallet();
   const eth = await provider.getBalance(w.address);
-  const wc = new ethers.Contract(C.weth, ERC20_ABI, provider);
-  const weth: bigint = await wc.balanceOf!(w.address).catch(() => 0n);
+  const [weth, usdg] = await Promise.all([
+    new ethers.Contract(C.weth, ERC20_ABI, provider).balanceOf!(w.address).catch(() => 0n) as Promise<bigint>,
+    new ethers.Contract(USDG, ERC20_ABI, provider).balanceOf!(w.address).catch(() => 0n) as Promise<bigint>,
+  ]);
+  const px = await ethUsd().catch(() => 0);
+  const ethUi = Number(ethers.formatEther(eth));
+  const wethUi = Number(ethers.formatEther(weth));
+  const usdgUi = Number(ethers.formatUnits(usdg, 6));
   return {
     address: w.address,
     eth: ethers.formatEther(eth),
     weth: ethers.formatEther(weth),
+    usdg: ethers.formatUnits(usdg, 6),
+    totalUsd: px > 0 ? (ethUi + wethUi) * px + usdgUi : null,
   };
 }
 
