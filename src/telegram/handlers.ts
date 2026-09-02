@@ -1397,7 +1397,7 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
   if (data === "auto:sources") {
     const sources = ["watch-spike", "hunt", "feed-new"] as const;
     const rows: AutoPanelButton[] = sources.map((source) => ({ text: `${a.sources.includes(source) ? "✅" : "⬜"} ${autoSourceLabel(source)}`, callback_data: `auto:source:${source}` }));
-    const page = autoSubmenu("Candidate sources", ["Choose which scanners may trigger automatic LP entries."], rows);
+    const page = autoSubmenu("Candidate sources", ["Choose which scanners may trigger automatic LP entries.", "Turning one on also starts its scanner. Use /watch off, /hunt off, or /feed off to stop a scanner."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
@@ -1504,7 +1504,32 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
   }
   if (data.startsWith("auto:source:")) {
     const source = data.slice("auto:source:".length) as "watch-spike" | "hunt" | "feed-new";
-    a.sources = a.sources.includes(source) ? a.sources.filter((x) => x !== source) : [...a.sources, source];
+    const enabling = !a.sources.includes(source);
+    a.sources = enabling ? [...a.sources, source] : a.sources.filter((x) => x !== source);
+
+    if (enabling) {
+      // Auto-LP source selection controls eligibility; starting the scanner is
+      // required for that source to produce candidates in the first place.
+      // Scanner shutdown remains explicit via /watch off, /hunt off, or /feed off.
+      if (source === "watch-spike") {
+        cfg.watch.enabled = true;
+        startWatch();
+      } else if (source === "hunt") {
+        cfg.scan.enabled = true;
+        const { startScan } = await import("../radar/scanLoop.js");
+        startScan();
+      } else {
+        cfg.feed.enabled = true;
+        cfg.feed.newToken = true;
+        await startFeed();
+      }
+
+      // Watch and new-token candidates need the radar verdict when the
+      // Auto-LP gate requires an LLM. Hunter already supplies its screen
+      // verdict, but enabling radar here keeps the source menu predictable.
+      if (a.requireLlm) cfg.radar.enabled = true;
+    }
+
     persist();
     return onAutoButton("auto:sources", mid);
   }
