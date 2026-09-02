@@ -317,19 +317,24 @@ export async function portfolioCardData(): Promise<CardData> {
   const sum = ledgerSummary();
   const px = await ethUsd().catch(() => 0);
   const entries = readLedger().filter((e) => e.pnlEth != null);
-  const biggest = entries.reduce<(typeof entries)[number] | null>((b, e) => ((e.pnlEth ?? -Infinity) > (b?.pnlEth ?? -Infinity) ? e : b), null);
+  const usdFor = (e: (typeof entries)[number]): number => e.pnlUsd ?? ((e.pnlEth ?? 0) * px);
+  const realizedUsd = entries.reduce((total, e) => total + usdFor(e), 0);
+  const biggestUsd = entries.reduce<number | null>((best, e) => {
+    const value = usdFor(e);
+    return best == null || value > best ? value : best;
+  }, null);
   const unreal = await unrealizedEth(px).catch(() => 0);
-  const dol = (eth: number) => `${eth >= 0 ? "+" : "-"}$${Math.abs(eth * px).toFixed(2)}`;
+  const signedUsd = (usd: number) => `${usd >= 0 ? "+" : "-"}$${Math.abs(usd).toFixed(2)}`;
   return {
     title: "ALL-TIME",
-    // USD-led (ETH shown small inline behind it)
-    headline: px ? dol(sum.pnlEth) : `${signed(sum.pnlEth, 4)} ETH`,
+    // Realized USD uses each close's recorded ETH/USD value, matching /ledger and /pnl.
+    headline: px ? signedUsd(realizedUsd) : `${signed(sum.pnlEth, 4)} ETH`,
     positive: sum.pnlEth >= 0,
     subtitle: px ? `(${signed(sum.pnlEth, 4)} ETH)` : undefined,
     stats: [
-      { label: "Realized", value: dol(sum.pnlEth), color: sum.pnlEth >= 0 ? GREEN : RED },
-      { label: "Unrealized", value: dol(unreal), color: unreal >= 0 ? GREEN : RED },
-      { label: "Biggest Win", value: biggest && biggest.pnlEth != null ? dol(biggest.pnlEth) : "—", color: GREEN },
+      { label: "Realized", value: signedUsd(realizedUsd), color: realizedUsd >= 0 ? GREEN : RED },
+      { label: "Unrealized", value: signedUsd(unreal * px), color: unreal >= 0 ? GREEN : RED },
+      { label: "Biggest Win", value: biggestUsd != null ? signedUsd(biggestUsd) : "—", color: GREEN },
       { label: "Win Rate", value: winRateText(sum.wins, sum.count) },
     ],
     date: today(),
