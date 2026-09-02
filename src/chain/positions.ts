@@ -18,7 +18,7 @@ import {
   swapWethToTokenBest,
   swapTokenToWeth,
   tokenBalanceRaw,
-  ensureNativeEth,
+  unwrapAllWeth,
 } from "./swaps.js";
 import { kyberSwap, kyberEnabled, KYBER_NATIVE } from "./kyber.js";
 import { ethUsd } from "./price.js";
@@ -933,7 +933,7 @@ export async function closePosition(
 
   let topUp = null;
   try {
-    topUp = await ensureNativeEth(cfg.lp.nativeTargetEth);
+    topUp = await unwrapAllWeth();
   } catch {
     /* non-blocking */
   }
@@ -1083,7 +1083,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean 
   deleteDeposit(String(tokenId));
   let topUp = null;
   try {
-    topUp = await ensureNativeEth(cfg.lp.nativeTargetEth);
+    topUp = await unwrapAllWeth();
   } catch {
     /* non-blocking */
   }

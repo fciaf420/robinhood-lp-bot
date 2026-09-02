@@ -12,6 +12,7 @@ import { pairContract, getAmountOut } from "./pair.js";
 import { loadV2Deposit, dropV2Deposit } from "./mint.js";
 import { ethUsd } from "../price.js";
 import { appendLedger } from "../ledger.js";
+import { unwrapAllWeth } from "../swaps.js";
 import { logger } from "../../util/log.js";
 
 const log = logger("v2close");
@@ -93,6 +94,14 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
     const ut = await weth.withdraw!(wethOut, gas);
     await ut.wait();
     unwrapHash = ut.hash;
+  }
+
+  // Also clear any WETH that was already in the wallet before this close.
+  try {
+    const remaining = await unwrapAllWeth();
+    if (remaining) unwrapHash = remaining.tx;
+  } catch (e) {
+    log.warn(`v2 close WETH unwrap skipped: ${(e as Error).message.slice(0, 100)}`);
   }
 
   const dep = loadV2Deposit(pairAddr);

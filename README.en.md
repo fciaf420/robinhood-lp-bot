@@ -228,7 +228,7 @@ Tap close → choose:
 - **🔄 Swap token → ETH** — everything back to ETH
 - **🪙 Keep token** — LP principal back to ETH, you hold the token
 
-The bot handles: withdraw liquidity → claim fees → burn the NFT → (swap) → **top gas back up to 0.015 ETH** → send a **profit card**.
+The bot handles: withdraw liquidity → claim fees → burn the NFT → (swap) → **unwrap all wallet WETH to native ETH** → send a **profit card**. The Wallet panel also has a confirmed **Unwrap all WETH → ETH** button for manual cleanup.
 
 For honeypot tokens that can't be withdrawn (transfer reverts), the bot **force-closes**: forfeits the stuck token side and **salvages the ETH**.
 

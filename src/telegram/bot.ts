@@ -37,6 +37,9 @@ async function routeCallback(cq: any): Promise<void> {
   if (d.startsWith("settings:")) return H.onSettingsButton(d, mid);
   if (d.startsWith("auto:")) return H.onAutoButton(d, mid);
   if (d.startsWith("feed:")) return H.onFeedButton(d, mid);
+  if (d === "unwrap:ask") return H.onUnwrapAsk(mid);
+  if (d === "unwrap:confirm") return H.onUnwrapConfirm(mid);
+  if (d === "unwrap:cancel") return H.onUnwrapCancel(mid);
   if (d === "screen") return H.onScreen();
   if (d === "scan:busy") return;
   if (d === "card") return H.onCard();

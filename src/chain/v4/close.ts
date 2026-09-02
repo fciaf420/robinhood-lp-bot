@@ -15,9 +15,11 @@ import { loadV4Deposit, approveViaPermit2 } from "./mint.js";
 import { listV4Positions } from "./list.js";
 import { ethUsd } from "../price.js";
 import { kyberSwap, KYBER_NATIVE } from "../kyber.js";
+import { unwrapAllWeth } from "../swaps.js";
 import { appendLedger } from "../ledger.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
+import type { TopUp } from "../../types.js";
 
 const { Ether, Token, CurrencyAmount, Percent } = sdkCore as any;
 const { Pool, Position, V4PositionManager } = v4sdk as any;
@@ -87,6 +89,7 @@ export interface V4CloseResult {
   forfeited: string | null; // symbol of a honeypot token forfeited to salvage the ETH side
   sweepHash?: string | null; // Kyber tx if proceeds were auto-swapped → native ETH
   sweptEth?: number; // ETH gained from sweeping token/USDG proceeds back to native
+  unwrap?: TopUp | null; // full wallet WETH → native ETH after close
 }
 
 export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "manual"): Promise<V4CloseResult> {
@@ -278,6 +281,15 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
     }
   }
 
+  // Keep the wallet's settlement currency consistent across every LP version. This also
+  // unwraps WETH that was already sitting in the wallet before this close.
+  let unwrap: TopUp | null = null;
+  try {
+    unwrap = await unwrapAllWeth();
+  } catch (e) {
+    log.warn(`close v4 #${tokenId}: WETH unwrap skipped: ${(e as Error).message.slice(0, 100)}`);
+  }
+
   log.info(`close v4 #${tokenId} ${m0.symbol}/${m1.symbol}`);
   return {
     txHash,
@@ -295,6 +307,7 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
     forfeited,
     sweepHash,
     sweptEth,
+    unwrap,
   };
 }
 

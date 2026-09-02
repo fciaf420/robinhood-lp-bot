@@ -9,7 +9,8 @@ import { previewRange, openPosition, openV3UsdgInRange, openV3UsdgSingleSide, li
 import { readLedger, ledgerSummary, backfillLedger, winRateText } from "../chain/ledger.js";
 import { lifetimePnl } from "../chain/analytics.js";
 import { balances, sellAllTokens, walletTokens, type WalletToken } from "../chain/holdings.js";
-import { tokenBalanceRaw } from "../chain/swaps.js";
+import { tokenBalanceRaw, unwrapAllWeth } from "../chain/swaps.js";
+import { acquireWallet, releaseWallet } from "../chain/txlock.js";
 import { revokeKnownApprovals } from "../chain/approvals.js";
 import { ethUsd } from "../chain/price.js";
 import { topVolumeNow, wcfg, usingOwnWatchRpc } from "../watch/scanner.js";
@@ -27,6 +28,7 @@ import { settingsPanelKeyboard, type SettingsButton } from "./settingsPanel.js";
 import { feedPanelKeyboard, feedAutoCloseConfirmKeyboard } from "./feedPanel.js";
 import { screenDisplayCount } from "./screenDisplay.js";
 import { closeAllConfirmationKeyboard, totalCloseAllPositions } from "./positionPanel.js";
+import { walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 
 const log = logger("handlers");
@@ -1274,6 +1276,7 @@ export async function onV4Close(text: string): Promise<void> {
         r.sweptEth && r.sweptEth > 0
           ? `💱 proceeds → <b>+${r.sweptEth.toFixed(6)}Ξ</b> (auto-swapped to ETH)${r.sweepHash ? ` · <a href="${explorerTx(r.sweepHash)}">tx</a>` : ""}`
           : "",
+        r.unwrap ? `🔓 Unwrapped ${r.unwrap.unwrapped.toFixed(5)} WETH → native ETH · <a href="${explorerTx(r.unwrap.tx)}">tx</a>` : "",
         r.forfeited ? `⚠️ <b>${esc(r.forfeited)}</b> could not be withdrawn (honeypot/rug) — abandoned while saving the ETH.` : "",
         `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
       ]
@@ -1324,7 +1327,7 @@ export async function onV2Close(pair: string): Promise<void> {
         `✅ <b>v2 ${esc(r.sym)}/WETH closed</b>`,
         `Returned: <b>${r.recvEth.toFixed(6)} ETH</b>${r.soldToken ? " (token sold back)" : r.recvToken > 0 ? ` + ${r.recvToken.toPrecision(6)} ${esc(r.sym)}` : ""}`,
         r.pnlEth != null ? `PnL: ${r.pnlEth >= 0 ? "🟩 +" : "🟥 "}${r.pnlEth.toFixed(6)}Ξ` : "",
-        `burn: <a href="${explorerTx(r.txHash)}">tx</a>${r.swapHash ? ` · sell: <a href="${explorerTx(r.swapHash)}">tx</a>` : ""}`,
+        `burn: <a href="${explorerTx(r.txHash)}">tx</a>${r.swapHash ? ` · sell: <a href="${explorerTx(r.swapHash)}">tx</a>` : ""}${r.unwrapHash ? ` · unwrap: <a href="${explorerTx(r.unwrapHash)}">tx</a>` : ""}`,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -1725,7 +1728,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
               : `🪙 ${r.tokenStuck.toFixed(2)} ${r.tokenSym} kept (worth ~$${px ? ((r.valEth - r.recvWeth) * px).toFixed(2) : "?"})`
             : "",
         `Total returned: <b>${r.valEth.toFixed(6)}Ξ / $${px ? (r.valEth * px).toFixed(2) : "?"}</b>${r.depEth != null ? ` (deposit ${r.depEth.toFixed(6)}Ξ)` : ""}${pnl}`,
-        r.topUp ? `⛽ Top up gas: unwrap ${r.topUp.unwrapped.toFixed(5)} WETH → native ETH (${r.topUp.nativeAfter.toFixed(4)}Ξ)` : "",
+        r.topUp ? `🔓 Unwrapped ${r.topUp.unwrapped.toFixed(5)} WETH → native ETH (${r.topUp.nativeAfter.toFixed(4)}Ξ) · <a href="${explorerTx(r.topUp.tx)}">tx</a>` : "",
         r.collectHash ? `tx: <a href="${explorerTx(r.collectHash)}">collect</a>${r.swapHash ? ` · <a href="${explorerTx(r.swapHash)}">swap</a>` : ""}` : "",
       ]
         .filter(Boolean)
@@ -2236,10 +2239,55 @@ export async function onSell(): Promise<void> {
 export async function onWallet(): Promise<void> {
   try {
     const b = await balances();
-    await sendMenu(`👛 <code>${b.address}</code>\nETH: ${Number(b.eth).toFixed(5)} · WETH: ${Number(b.weth).toFixed(5)}`);
+    await send(
+      `👛 <code>${b.address}</code>\nETH: ${Number(b.eth).toFixed(5)} · WETH: ${Number(b.weth).toFixed(5)}\n\n<i>LP closes unwrap leftover WETH automatically. Use the button below for WETH already in the wallet.</i>`,
+      { reply_markup: { inline_keyboard: walletKeyboard() } },
+    );
   } catch (e) {
     await send(`❌ ${short(e, 80)}`);
   }
+}
+
+export async function onUnwrapAsk(mid: number): Promise<void> {
+  try {
+    const b = await balances();
+    const weth = Number(b.weth);
+    if (!(weth > 0)) {
+      await edit(mid, `✅ No WETH is currently held by the bot wallet.`);
+      return;
+    }
+    await edit(mid, `⚠️ <b>Unwrap all wallet WETH?</b>\n\nThis will convert <b>${weth.toFixed(6)} WETH</b> to native ETH and submit a real on-chain transaction.`, {
+      reply_markup: { inline_keyboard: unwrapConfirmationKeyboard() },
+    });
+  } catch (e) {
+    await edit(mid, `❌ Could not read wallet balance: ${short(e, 90)}`);
+  }
+}
+
+export async function onUnwrapConfirm(mid: number): Promise<void> {
+  if (!acquireWallet()) {
+    await edit(mid, "⏳ Another wallet transaction is in progress. Try again when it finishes.");
+    return;
+  }
+  try {
+    await edit(mid, "⏳ Unwrapping all WETH → native ETH…");
+    const r = await unwrapAllWeth();
+    if (!r) {
+      await edit(mid, "✅ No WETH was available to unwrap.");
+      return;
+    }
+    await edit(mid, `✅ Unwrapped <b>${r.unwrapped.toFixed(6)} WETH</b> → native ETH\nETH after: <b>${r.nativeAfter.toFixed(6)}</b>\n<a href="${explorerTx(r.tx)}">View unwrap transaction</a>`);
+    const b = await balances();
+    await send(`👛 <code>${b.address}</code>\nETH: ${Number(b.eth).toFixed(5)} · WETH: ${Number(b.weth).toFixed(5)}`, { reply_markup: { inline_keyboard: walletKeyboard() } });
+  } catch (e) {
+    await edit(mid, `❌ WETH unwrap failed: ${short(e, 120)}`);
+  } finally {
+    releaseWallet();
+  }
+}
+
+export async function onUnwrapCancel(mid: number): Promise<void> {
+  await edit(mid, "✅ Unwrap cancelled. Your WETH remains in the wallet.");
 }
 
 function settingsText(): string {

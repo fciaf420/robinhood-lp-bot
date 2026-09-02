@@ -226,3 +226,32 @@ export async function ensureNativeEth(targetEth?: number): Promise<TopUp | null>
     nativeAfter: f(nativeWei + amtWei),
   };
 }
+
+/**
+ * Unwrap every WETH currently held by the bot wallet into native ETH.
+ * LP closes call this after collecting/selling proceeds so the wallet does not silently
+ * accumulate WETH. A small native balance is required to pay the withdrawal transaction.
+ */
+export async function unwrapAllWeth(): Promise<TopUp | null> {
+  const w = wallet();
+  const nativeWei = await provider.getBalance(w.address);
+  const wc = new ethers.Contract(C.weth, WETH_ABI, w);
+  const wbalWei: bigint = await wc.balanceOf!(w.address);
+  if (wbalWei <= 0n) return null;
+  if (nativeWei < 10_000_000_000_000n) {
+    throw new Error("not enough native ETH to pay the WETH unwrap gas");
+  }
+  if (wbalWei < 10_000_000_000_000n) return null;
+
+  const tx = await wc.withdraw!(wbalWei, await overrides());
+  await tx.wait();
+  const nativeAfter = await provider.getBalance(w.address);
+  const f = (v: bigint) => Number(ethers.formatEther(v));
+  log.info(`unwrap all WETH: ${f(wbalWei)} WETH → native ETH`);
+  return {
+    unwrapped: f(wbalWei),
+    tx: tx.hash,
+    nativeBefore: f(nativeWei),
+    nativeAfter: f(nativeAfter),
+  };
+}
