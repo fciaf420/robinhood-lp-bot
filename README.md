@@ -18,7 +18,6 @@ The optimized fork keeps v2 position discovery/withdrawal for legacy positions, 
 
 Paste a CA → pick a v3/v4 pool → type an ETH amount → position opened. Right now.
 
-[![Bahasa Indonesia](https://img.shields.io/badge/Bahasa_Indonesia-2b3137?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzIDIiPjxyZWN0IHdpZHRoPSIzIiBoZWlnaHQ9IjIiIGZpbGw9IiNmZmYiLz48cmVjdCB3aWR0aD0iMyIgaGVpZ2h0PSIxIiBmaWxsPSIjY2UxMTI2Ii8%2BPC9zdmc%2B&logoColor=white)](README.md) [![English](https://img.shields.io/badge/English-012169?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2MCAzMCI%2BPGNsaXBQYXRoIGlkPSJ0Ij48cGF0aCBkPSJNMzAsMTVoMzB2MTV6djE1aC0zMHpoLTMwdi0xNXp2LTE1aDMweiIvPjwvY2xpcFBhdGg%2BPHBhdGggZD0iTTAsMHYzMGg2MHYtMzB6IiBmaWxsPSIjMDEyMTY5Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIGNsaXAtcGF0aD0idXJsKCN0KSIgc3Ryb2tlPSIjYzgxMDJlIiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMTAiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNjODEwMmUiIHN0cm9rZS13aWR0aD0iNiIvPjwvc3ZnPg==)](README.en.md)
 
 </div>
 
@@ -138,6 +137,7 @@ Now open `.env` and fill in:
 | `RH_WALLET_KEY` | Your EVM wallet private key. **Use a fresh/burner wallet**, not your main |
 | `RH_TG_TOKEN` | Chat [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → copy the token |
 | `RH_TG_CHAT` | **Owner chat id — THE SECURITY GATE.** Chat [@userinfobot](https://t.me/userinfobot) for your id. Only this chat can command the bot |
+| `RH_PUBLIC_RPC_URL` | (recommended) public Robinhood RPC used as a read fallback when the private RPC is slow or unavailable |
 | `RH_WATCH_RPC_URL` | (optional) a second Alchemy app for the scanner. Leaving it blank is fine |
 | `RH_OPENROUTER_KEY` | (optional) [openrouter.ai/keys](https://openrouter.ai/keys) — enables the LLM radar |
 | `KYBERSWAP_*` | (optional) KyberSwap aggregator — USDG pairs require it (see `.env.example`) |
@@ -220,7 +220,7 @@ PnL    +0.013813Ξ     +$25.47
 - `3h 20m · $2.10/hr` → still productive, leave it
 - `2d 5h · $0.04/hr` → dead, capital stuck for nothing → close it, rotate to another pool
 
-The TOTAL (v3+v4+v2 combined) always sits at the very bottom. The 🔄 **Refresh** button fetches fresh data; a plain `/list` is served from a 20-second cache (so it's instant). Each token has a **Close** / **💰 Claim** button. v4 Close and Close ALL require an explicit confirmation step.
+The TOTAL (v3+v4+v2 combined) always sits at the very bottom. The 🔄 **Refresh** button fetches fresh data; a plain `/list` is served from a 20-second cache (so it's instant). Each position shows live PnL when its deposit basis is recorded, and each token has a **Close** / **💰 Claim** button. v4 Close and Close ALL require an explicit confirmation step.
 
 ### Close a position
 
@@ -278,6 +278,8 @@ Opt-in (off by default): `/feed on`. Listens to the **Nitro sequencer feed** (`w
 
 Toggles: `/set newtoken 1` · `/set posmon 1` · `/set autoclose 0` · `/set minseed 0.02`
 
+The Feed panel also provides one-tap buttons for starting/stopping the feed, new-token alerts, position monitoring, radar scoring, and out-of-range auto-close.
+
 ### Fast-submit — broadcast straight to the sequencer
 
 Set `RH_FAST_SUBMIT=1`. Transactions go directly to the Robinhood sequencer (**AWS us-east-2 / Ohio**), skipping the relay hop. Reads still go through the main RPC; if the sequencer errors, it auto-falls back (no tx is lost). **Biggest impact on a US VPS.** Local + DNS hijack → set `RH_SEQUENCER_IP=3.136.74.196`.
@@ -319,6 +321,8 @@ The top layer: the bot **finds, opens, and closes positions on its own** — you
 | On rug | safe (0 token) | holds the token → loss |
 
 `/set alpmode single` or `/set alpmode inrange` — live, no restart.
+
+**Candidate sources** are selectable from `/auto` → **Candidate sources**. Turning on Watch spikes, Hunter candidates, or New tokens also starts the required scanner and, when needed, radar scoring. Turning a source off removes it from Auto-LP eligibility; use `/watch off`, `/hunt off`, or `/feed off` when you also want to stop that scanner.
 
 **3. Auto-close** — the manage loop checks every 90s: **TP** (PnL ≥ `alptp`%) · **SL** (PnL ≤ −`alpsl`%) · **OOR** (out of range > `alpgrace` min). PnL is measured **LP-vs-HODL** (fees + IL, consistent with what you realize at close), not the gross budget. Every close **sweeps proceeds → ETH** (token + USDG sold back), wallet clean + gas refilled.
 
