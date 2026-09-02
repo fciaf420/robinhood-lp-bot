@@ -99,6 +99,16 @@ function v4MarketLine(p: V4Pool, meta: TokenMeta, token: string, tickLower: numb
   const priceText = price >= 1 ? `$${price.toFixed(4)}` : price >= 0.01 ? `$${price.toFixed(6)}` : `$${price.toPrecision(4)}`;
   return `📊 MCAP range <b>${fmtMcap(Math.min(low, high))} → ${fmtMcap(Math.max(low, high))}</b> · price <b>${priceText}</b>`;
 }
+
+/**
+ * Telegram cannot embed an interactive chart in a message. Use the selected pair/pool as the
+ * DexScreener target so the decision screen opens the same market the mint will use, not merely
+ * an unrelated token page. DexScreener indexes Robinhood v4 pool IDs as pair addresses.
+ */
+function chartButton(p: UPool, token: string): { text: string; url: string } {
+  const target = p.v3?.pool ?? p.v4?.poolId ?? p.v2?.pair ?? token;
+  return { text: "📈 Open live chart", url: `https://dexscreener.com/robinhood/${target}` };
+}
 interface Pending {
   token: string;
   meta: TokenMeta;
@@ -427,6 +437,7 @@ export async function onAmount(text: string): Promise<void> {
         reply_markup: {
           inline_keyboard: [
             [{ text: `🎯 LP v2 (zap ${eth}Ξ)`, callback_data: "mint:v2" }],
+            [chartButton(pending.chosen, pending.token)],
             [{ text: "❌ Cancel", callback_data: "cancel" }],
           ],
         },
@@ -454,6 +465,7 @@ export async function onAmount(text: string): Promise<void> {
             inline_keyboard: [
               [{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v4r" }],
               [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v4us" }],
+              [chartButton(pending.chosen, pending.token)],
               [{ text: "❌ Cancel", callback_data: "cancel" }],
             ],
           },
@@ -475,6 +487,7 @@ export async function onAmount(text: string): Promise<void> {
           inline_keyboard: [
             [{ text: `🎯 In-range farming ${feePct}%`, callback_data: "mint:v4r" }],
             [{ text: `🛡 Single-side ETH ${feePct}%`, callback_data: "mint:v4" }],
+            [chartButton(pending.chosen, pending.token)],
             [{ text: "❌ Cancel", callback_data: "cancel" }],
           ],
         },
@@ -500,6 +513,7 @@ export async function onAmount(text: string): Promise<void> {
           inline_keyboard: [
             [{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v3u" }],
             [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v3us" }],
+            [chartButton(pending.chosen, pending.token)],
             [{ text: "❌ Cancel", callback_data: "cancel" }],
           ],
         },
@@ -535,6 +549,7 @@ export async function onAmount(text: string): Promise<void> {
         inline_keyboard: [
           [{ text: `🎯 In-range (swap ~${pI?.swapPct ?? "?"}%)`, callback_data: "mint:inrange" }],
           [{ text: "🛡 Single-side ETH", callback_data: "mint:single" }],
+          [chartButton(pending.chosen, pending.token)],
           [{ text: "❌ Cancel", callback_data: "cancel" }],
         ],
       },
