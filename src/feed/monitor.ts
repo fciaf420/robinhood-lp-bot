@@ -200,7 +200,7 @@ export class FeedMonitor {
       let closeError: string | undefined;
       if (cfg.feed.autoCloseOutOfRange) {
         try {
-          await closePosition(pos.tokenId);
+          await closePosition(pos.tokenId, { reason: "OOR" });
           autoClosed = true;
         } catch (e) {
           closeError = (e as Error).message.slice(0, 100);

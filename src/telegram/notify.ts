@@ -193,6 +193,7 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
         feeEth: e.feeEth,
         heldMs: e.heldMs,
         ethUsd: e.ethUsdAtClose ?? undefined,
+        reason: e.reason,
       }));
       await sendPhoto(png, `🎴 <b>${esc(e.pair ?? `${e.sym}/WETH`)}</b> — auto-close PnL card`);
     } catch {

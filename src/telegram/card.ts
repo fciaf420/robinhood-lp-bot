@@ -102,6 +102,7 @@ export interface CardData {
   stats: CardStat[]; // up to 4, laid out in the corners
   date: string;
   hold?: string; // "00:20:19" — shown under the title if present
+  reason?: string; // why the position was closed
 }
 
 function roundRect(g: SKRSContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -231,7 +232,7 @@ export async function renderCard(d: CardData): Promise<Buffer> {
   g.textAlign = "left";
   g.fillStyle = MUTED;
   g.font = `20px ${MONO}`;
-  g.fillText(d.hold ? `HOLD ${d.hold}` : d.date.toUpperCase(), MX, 272);
+  g.fillText([d.hold ? `HOLD ${d.hold}` : d.date.toUpperCase(), d.reason ? `CLOSE ${d.reason}` : ""].filter(Boolean).join(" · "), MX, 272);
 
   // ── big PnL headline; the ($ / %) sub sits SMALL & inline, right after the ETH value ──
   let hSize = 84;
@@ -352,6 +353,7 @@ export interface ClosePnl {
   feeEth?: number;
   heldMs?: number | null;
   ethUsd?: number; // ETH/USD at close (for stable pairs); falls back to live rate
+  reason?: string;
 }
 
 /** hh:mm:ss from a duration in ms (STRIX "HOLD 00:20:19"). */
@@ -387,6 +389,7 @@ export async function closeCardData(p: ClosePnl): Promise<CardData> {
     stats,
     date: today(),
     hold: p.heldMs != null ? fmtHold(p.heldMs) : undefined,
+    reason: p.reason,
   };
 }
 

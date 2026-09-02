@@ -14,11 +14,13 @@ import { ethUsd } from "../price.js";
 import { appendLedger } from "../ledger.js";
 import { unwrapAllWeth } from "../swaps.js";
 import { logger } from "../../util/log.js";
+import type { CloseReason } from "../../types.js";
 
 const log = logger("v2close");
 const WETH_L = C.weth.toLowerCase();
 
 export interface V2CloseResult {
+  reason: CloseReason;
   txHash: string;
   swapHash?: string;
   unwrapHash?: string;
@@ -30,7 +32,7 @@ export interface V2CloseResult {
   pnlEth: number | null;
 }
 
-export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boolean } = {}): Promise<V2CloseResult> {
+export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boolean; reason?: CloseReason } = {}): Promise<V2CloseResult> {
   const w = wallet();
   const gas = await overrides();
   const c = pairContract(pairAddr, w);
@@ -132,6 +134,7 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
       tokenRug: 0,
       unsoldEth: 0,
       source: "bot",
+      reason: opts.reason ?? "manual",
     });
   } catch (e) {
     log.warn(`failed to write v2 ledger ${pairAddr.slice(0, 10)}: ${(e as Error).message.slice(0, 80)}`);
@@ -140,6 +143,7 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
   dropV2Deposit(pairAddr);
   log.info(`close v2 ${meta.symbol} pair ${pairAddr.slice(0, 10)} → ${recvEth.toFixed(6)}Ξ`);
   return {
+    reason: opts.reason ?? "manual",
     txHash: burnTx.hash,
     swapHash,
     unwrapHash,

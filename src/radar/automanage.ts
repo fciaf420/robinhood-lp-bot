@@ -13,10 +13,11 @@ import { acquireWallet, releaseWallet } from "../chain/txlock.js";
 import { recordOor, inOorCooldown } from "./oorcool.js";
 import { dexPairs } from "../chain/dexscreener.js";
 import { logger } from "../util/log.js";
+import type { CloseReason as PositionCloseReason } from "../types.js";
 
 const log = logger("automanage");
 
-export type CloseReason = "TP" | "SL" | "OOR" | "VFADE" | "FVLOW";
+export type CloseReason = Exclude<PositionCloseReason, "manual">;
 
 // fee-velocity exit: rolling {uncollected fee $, ts} snapshot per position, so we can measure the
 // RECENT fee-earning rate ($/h) over a window rather than a lagging cumulative average — catches a
@@ -260,7 +261,7 @@ async function doClose(it: Item, reason: CloseReason): Promise<void> {
     let txHash: string | undefined;
     let swapHash: string | null | undefined;
     if (it.version === "v3") {
-      const r = await closePosition(it.tokenId);
+      const r = await closePosition(it.tokenId, { reason });
       // The collect transaction is the primary close proof for v3; include the swap separately when
       // proceeds were routed back to native ETH.
       txHash = r.collectHash || r.decreaseHash || r.burnHash || undefined;

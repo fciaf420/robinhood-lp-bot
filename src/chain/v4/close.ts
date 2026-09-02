@@ -19,7 +19,7 @@ import { unwrapAllWeth } from "../swaps.js";
 import { appendLedger } from "../ledger.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
-import type { TopUp } from "../../types.js";
+import type { TopUp, CloseReason } from "../../types.js";
 
 const { Ether, Token, CurrencyAmount, Percent } = sdkCore as any;
 const { Pool, Position, V4PositionManager } = v4sdk as any;
@@ -74,6 +74,7 @@ async function simulateAndSend(calldata: string, value: string, label: string): 
 }
 
 export interface V4CloseResult {
+  reason: CloseReason;
   txHash: string;
   fee: number;
   recv0: number;
@@ -92,7 +93,7 @@ export interface V4CloseResult {
   unwrap?: TopUp | null; // full wallet WETH → native ETH after close
 }
 
-export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "manual"): Promise<V4CloseResult> {
+export async function closeV4Position(tokenId: string, reason: CloseReason = "manual"): Promise<V4CloseResult> {
   const w = wallet();
   // Read the pool key + currencies directly (no SDK Pool). The SDK's removeCallParameters
   // throws "Invariant failed: PRICE_BOUNDS" on extreme-price pools (WOLVES/USDG) when it
@@ -292,6 +293,7 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
 
   log.info(`close v4 #${tokenId} ${m0.symbol}/${m1.symbol}`);
   return {
+    reason,
     txHash,
     fee,
     recv0: Math.max(0, bal0After - bal0Before),

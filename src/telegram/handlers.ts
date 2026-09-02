@@ -1266,11 +1266,12 @@ export async function onV4Close(text: string): Promise<void> {
   const mid = m?.result?.message_id;
   try {
     const { closeV4Position } = await import("../chain/v4/close.js");
-    const r = await closeV4Position(tokenId);
+    const r = await closeV4Position(tokenId, "manual");
     await edit(
       mid,
       [
         `✅ <b>v4 #${tokenId} closed</b> · pool fee ${(r.fee / 10000).toFixed(2)}%`,
+        `Reason: <b>${r.reason}</b>`,
         `Returned: ${r.recv0 > 0 ? `${r.recv0.toFixed(6)} ${r.sym0}` : ""}${r.recv0 > 0 && r.recv1 > 0 ? " + " : ""}${r.recv1 > 0 ? `${r.recv1.toFixed(6)} ${r.sym1}` : ""}`,
         r.feeEth > 0 ? `🧲 fee earned: <b>${r.feeEth.toFixed(6)}Ξ</b>` : "",
         r.sweptEth && r.sweptEth > 0
@@ -1284,7 +1285,7 @@ export async function onV4Close(text: string): Promise<void> {
         .join("\n"),
     );
     const v4quote = /usdg|usd/i.test(r.pair) && !/\beth\b|weth/i.test(r.pair) ? ("usd" as const) : ("eth" as const);
-    await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct });
+    await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, reason: r.reason });
   } catch (e) {
     await edit(mid, `❌ v4 close failed: ${short(e, 160)}`);
   }
@@ -1320,11 +1321,12 @@ export async function onV2Close(pair: string): Promise<void> {
   const mid = m?.result?.message_id;
   try {
     const { closeV2Position } = await import("../chain/v2/close.js");
-    const r = await closeV2Position(pair, { autoSwap: cfg.lp.v2Enabled && cfg.lp.autoSwapOnClose });
+    const r = await closeV2Position(pair, { autoSwap: cfg.lp.v2Enabled && cfg.lp.autoSwapOnClose, reason: "manual" });
     await edit(
       mid,
       [
         `✅ <b>v2 ${esc(r.sym)}/WETH closed</b>`,
+        `Reason: <b>${r.reason}</b>`,
         `Returned: <b>${r.recvEth.toFixed(6)} ETH</b>${r.soldToken ? " (token sold back)" : r.recvToken > 0 ? ` + ${r.recvToken.toPrecision(6)} ${esc(r.sym)}` : ""}`,
         r.pnlEth != null ? `PnL: ${r.pnlEth >= 0 ? "🟩 +" : "🟥 "}${r.pnlEth.toFixed(6)}Ξ` : "",
         `burn: <a href="${explorerTx(r.txHash)}">tx</a>${r.swapHash ? ` · sell: <a href="${explorerTx(r.swapHash)}">tx</a>` : ""}${r.unwrapHash ? ` · unwrap: <a href="${explorerTx(r.unwrapHash)}">tx</a>` : ""}`,
@@ -1332,7 +1334,7 @@ export async function onV2Close(pair: string): Promise<void> {
         .filter(Boolean)
         .join("\n"),
     );
-    await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth });
+    await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth, reason: r.reason });
   } catch (e) {
     await edit(mid, `❌ v2 close failed: ${short(e, 160)}`);
   }
@@ -1709,7 +1711,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
   invalidateListCache();
   await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? "(swap token→ETH)" : "(keep token)"}`);
   try {
-    const r = await closePosition(tokenId, { swapToken });
+    const r = await closePosition(tokenId, { swapToken, reason: "manual" });
     const px = await ethUsd().catch(() => 0);
     const pnl =
       r.pnlEth != null
@@ -1718,6 +1720,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
     await send(
       [
         `✅ <b>Closed #${tokenId}</b>${px ? ` · ETH $${px.toFixed(0)}` : ""}`,
+        `Reason: <b>${r.reason}</b>`,
         r.heldMs != null ? `⏱ held for <b>${fmtAge(r.heldMs)}</b>` : "",
         `Withdrawn: ${r.recvWeth.toFixed(6)} ${r.wethSym}${r.recvToken > 0 ? ` + ${r.recvToken.toFixed(2)} ${r.tokenSym}` : ""}`,
         r.swappedWeth > 0
@@ -1735,7 +1738,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
         .join("\n"),
     );
     const isUsdgClose = r.wethSym === "USDG";
-    await sendCloseCard({ name: isUsdgClose ? `${r.tokenSym}/USDG` : `${r.tokenSym}/WETH`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs });
+    await sendCloseCard({ name: isUsdgClose ? `${r.tokenSym}/USDG` : `${r.tokenSym}/WETH`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs, reason: r.reason });
   } catch (e) {
     await send(`❌ Close failed: ${short(e, 120)}`);
   }
@@ -1798,11 +1801,11 @@ export async function onCloseAll(): Promise<void> {
   let totPnl = 0, ok = 0, fail = 0;
   for (const row of rows) {
     try {
-      const r = await closePosition(row.tokenId);
+      const r = await closePosition(row.tokenId, { reason: "manual" });
       if (r.pnlEth != null) totPnl += r.pnlEth;
       ok++;
       await send(
-        `✅ #${row.tokenId} ${row.tokenSym} closed · PnL ${r.pnlEth != null ? `${r.pnlEth >= 0 ? "+" : ""}${r.pnlEth.toFixed(6)}Ξ${px ? ` (${r.pnlEth >= 0 ? "+" : ""}$${(r.pnlEth * px).toFixed(2)})` : ""}` : "—"}`,
+        `✅ #${row.tokenId} ${row.tokenSym} closed · reason ${r.reason} · PnL ${r.pnlEth != null ? `${r.pnlEth >= 0 ? "+" : ""}${r.pnlEth.toFixed(6)}Ξ${px ? ` (${r.pnlEth >= 0 ? "+" : ""}$${(r.pnlEth * px).toFixed(2)})` : ""}` : "—"}`,
       );
     } catch (e) {
       fail++;
@@ -1812,10 +1815,10 @@ export async function onCloseAll(): Promise<void> {
   for (const row of v4rows) {
     try {
       const { closeV4Position } = await import("../chain/v4/close.js");
-      const r = await closeV4Position(row.tokenId);
+      const r = await closeV4Position(row.tokenId, "manual");
       if (r.pnlEth != null) totPnl += r.pnlEth;
       ok++;
-      await send(`✅ v4 #${row.tokenId} ${row.pair} closed · PnL ${r.pnlEth != null ? `${r.pnlEth >= 0 ? "+" : ""}${r.pnlEth.toFixed(6)}Ξ${px ? ` (${r.pnlEth >= 0 ? "+" : ""}$${(r.pnlEth * px).toFixed(2)})` : ""}` : "—"}`);
+      await send(`✅ v4 #${row.tokenId} ${row.pair} closed · reason ${r.reason} · PnL ${r.pnlEth != null ? `${r.pnlEth >= 0 ? "+" : ""}${r.pnlEth.toFixed(6)}Ξ${px ? ` (${r.pnlEth >= 0 ? "+" : ""}$${(r.pnlEth * px).toFixed(2)})` : ""}` : "—"}`);
     } catch (e) {
       fail++;
       await send(`❌ v4 #${row.tokenId} failed: ${short(e, 70)}`);
@@ -2135,6 +2138,7 @@ export async function onCardFor(tokenId: string): Promise<void> {
         feeEth: e.feeEth,
         heldMs: e.heldMs,
         ethUsd: e.ethUsdAtClose ?? undefined,
+        reason: e.reason,
       }),
     );
     await sendPhoto(png, `🎴 <b>${esc(e.pair ?? `${e.sym}/WETH`)}</b> — share it 🚀`);
@@ -2155,6 +2159,7 @@ async function sendCloseCard(p: {
   pnlPct?: number | null;
   feeEth?: number;
   heldMs?: number | null;
+  reason?: string;
 }): Promise<void> {
   try {
     const { renderCard, closeCardData } = await import("./card.js");

@@ -1,6 +1,7 @@
 /** Shared domain types. Kept framework-free so both chain/ and telegram/ can import them. */
 
 export type MintMode = "single" | "inrange";
+export type CloseReason = "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "manual";
 
 /** A pool discovered for a token (WETH-paired by default; USDG-paired when quote==="usd"). */
 export interface PoolInfo {
@@ -82,6 +83,7 @@ export interface PositionRow {
 
 /** Result of closing a position. */
 export interface CloseResult {
+  reason: CloseReason;
   heldMs: number | null;
   decreaseHash: string | null;
   collectHash: string;
@@ -130,7 +132,7 @@ export interface LedgerEntry {
   tokenRug: number;
   unsoldEth?: number;
   source?: "onchain" | "bot";
-  reason?: "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "manual"; // why the position was closed (for the daily briefing)
+  reason?: CloseReason; // why the position was closed (for the daily briefing)
 }
 
 /** A token that passed every watch filter + safety check. */

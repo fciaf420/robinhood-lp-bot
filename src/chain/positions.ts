@@ -26,7 +26,7 @@ import { appendLedger } from "./ledger.js";
 import { bsFetch } from "./blockscout.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import { logger } from "../util/log.js";
-import type { MintMode, OpenResult, PositionRow, CloseResult, RangePreview, PoolInfo, TokenMeta } from "../types.js";
+import type { MintMode, OpenResult, PositionRow, CloseResult, RangePreview, PoolInfo, TokenMeta, CloseReason } from "../types.js";
 
 const { CurrencyAmount } = sdkCore as any;
 const log = logger("position");
@@ -825,7 +825,7 @@ async function usdgPositionRow(
  */
 export async function closePosition(
   tokenId: string,
-  opts: { swapToken?: boolean } = {},
+  opts: { swapToken?: boolean; reason?: CloseReason } = {},
 ): Promise<CloseResult> {
   const swapToken = opts.swapToken !== false && cfg.lp.autoSwapOnClose !== false;
   const w = wallet();
@@ -961,6 +961,7 @@ export async function closePosition(
       entryMcap: dep?.entryMcap ?? null,
       tokenKept: !swapToken && tokenStuck > 0 ? tokenStuck : 0,
       tokenRug: swapToken && tokenStuck > 0 ? tokenStuck : 0,
+      reason: opts.reason ?? "manual",
     });
   } catch (e) {
     log.warn(`ledger append failed (close still succeeded): ${errShort(e)}`);
@@ -968,6 +969,7 @@ export async function closePosition(
 
   log.info(`close #${tokenId} ${tokSym} pnl=${pnlEthReal?.toFixed(6) ?? "?"}Ξ`);
   return {
+    reason: opts.reason ?? "manual",
     heldMs,
     decreaseHash,
     collectHash: ctx.hash,
@@ -993,7 +995,7 @@ export async function closePosition(
  * realize + top up gas. PnL is LP-vs-HODL (deposited amounts valued at the CLOSE price), so a
  * token that only dropped in price isn't counted as an LP loss — matches the v4 USDG path.
  */
-async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean } = {}): Promise<CloseResult> {
+async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean; reason?: CloseReason } = {}): Promise<CloseResult> {
   const swapToken = opts.swapToken !== false && cfg.lp.autoSwapOnClose !== false;
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
@@ -1111,6 +1113,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean 
       entryMcap: dep?.entryMcap ?? null,
       tokenKept: !swapToken && tokenStuck > 0 ? tokenStuck : 0,
       tokenRug: swapToken && tokenStuck > 0 ? tokenStuck : 0,
+      reason: opts.reason ?? "manual",
     });
   } catch (e) {
     log.warn(`ledger append failed (USDG close still succeeded): ${errShort(e)}`);
@@ -1118,6 +1121,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean 
 
   log.info(`close v3 USDG #${tokenId} ${tokSym}/USDG pnl=${pnlEth?.toFixed(6) ?? "?"}Ξ`);
   return {
+    reason: opts.reason ?? "manual",
     heldMs,
     decreaseHash,
     collectHash: ctx.hash,
