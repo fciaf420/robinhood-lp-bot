@@ -120,4 +120,8 @@ export function answerCallback(id: string, opts: Extra = {}): Promise<any> {
   return call("answerCallbackQuery", { callback_query_id: id, ...opts });
 }
 
-export const explorerTx = (hash: string): string => cfg.explorer + "/tx/" + hash;
+export const explorerTx = (hash: string): string => cfg.explorer.replace(/\/+$/, "") + "/tx/" + hash;
+
+/** Telegram HTML link for a transaction users can inspect on Robinhood Blockscout. */
+export const explorerTxLink = (hash: string, label = "View on-chain"): string =>
+  `<a href="${explorerTx(hash)}">${label}</a>`;

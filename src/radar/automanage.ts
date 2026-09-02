@@ -30,6 +30,8 @@ export interface AutoCloseInfo {
   reason: CloseReason;
   pnlPct: number | null;
   pnlEth: number | null;
+  txHash?: string;
+  swapHash?: string | null;
 }
 export interface RebalanceInfo {
   oldTokenId: string;
@@ -255,15 +257,23 @@ async function doClose(it: Item, reason: CloseReason): Promise<void> {
   const a = cfg.autoLp;
   try {
     log.info(`AUTO-CLOSE ${it.version} #${it.tokenId} ${it.sym} — ${reason} (pnl ${it.pnlPct?.toFixed(1) ?? "?"}%)`);
+    let txHash: string | undefined;
+    let swapHash: string | null | undefined;
     if (it.version === "v3") {
-      await closePosition(it.tokenId);
+      const r = await closePosition(it.tokenId);
+      // The collect transaction is the primary close proof for v3; include the swap separately when
+      // proceeds were routed back to native ETH.
+      txHash = r.collectHash || r.decreaseHash || r.burnHash || undefined;
+      swapHash = r.swapHash;
     } else {
       const { closeV4Position } = await import("../chain/v4/close.js");
-      await closeV4Position(it.tokenId, reason);
+      const r = await closeV4Position(it.tokenId, reason);
+      txHash = r.txHash;
+      swapHash = r.sweepHash;
     }
     stats.closed++;
     if (reason === "OOR") recordOor(it.tokenAddr); // #2: streak toward blacklisting a token that never fills
-    hooks?.onAutoClose({ tokenId: it.tokenId, sym: it.sym, version: it.version, reason, pnlPct: it.pnlPct, pnlEth: it.pnlEth });
+    hooks?.onAutoClose({ tokenId: it.tokenId, sym: it.sym, version: it.version, reason, pnlPct: it.pnlPct, pnlEth: it.pnlEth, txHash, swapHash });
     // keep it in `closing` a while so a stale /list (before Blockscout updates) can't re-fire it
     setTimeout(() => closing.delete(it.tokenId), 300_000);
 

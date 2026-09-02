@@ -2,7 +2,7 @@
 import { send } from "./tg.js";
 import { esc, pre, padR, tokenEmoji } from "./format.js";
 import { fmtMcap } from "../util/format.js";
-import { explorerTx } from "./tg.js";
+import { explorerTxLink } from "./tg.js";
 import type { Verdict } from "../radar/radar.js";
 import type { AutoLpResult } from "../radar/autolp.js";
 import type { SpikeHit } from "../types.js";
@@ -152,7 +152,7 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
       `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange" ? "🎯" : "🛡"}`,
       `Automatically opened ${r.sizeEth}Ξ single-side (${esc(res.side ?? "quote asset parked")})`,
       `${res.entryMcap ? `entry MCAP ${fmtMcap(res.entryMcap)} · ` : ""}range tick ${res.tickLower}..${res.tickUpper}`,
-      res.swapHash ? `swap: <a href="${explorerTx(res.swapHash)}">tx</a> · mint: <a href="${explorerTx(res.txHash)}">tx</a>` : `mint: <a href="${explorerTx(res.txHash)}">tx</a>`,
+      res.swapHash ? `swap: ${explorerTxLink(res.swapHash)} · mint: ${explorerTxLink(res.txHash)}` : `mint: ${explorerTxLink(res.txHash)}`,
       `<i>Check /list · close manually at any time</i>`,
     ].join("\n"),
   );
@@ -171,6 +171,7 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
     [
       `${emo} <b>AUTO-CLOSE · ${label}</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b> #${i.tokenId} [${i.version}]`,
       `PnL: <b>${pnl}</b>`,
+      i.txHash ? `close: ${explorerTxLink(i.txHash)}${i.swapHash ? ` · swap: ${explorerTxLink(i.swapHash)}` : ""}` : "",
       `<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
     ].join("\n"),
   );
