@@ -609,7 +609,18 @@ async function onMintV4(mid: number, action: string): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ v4 mint failed: ${short(e, 160)}`);
+    log.error(`v4 mint failed (${action}): ${short(e, 240)}`);
+    // Clear the in-memory prompt so a failed attempt cannot be accidentally submitted later.
+    // The user can verify chain state first, then restart from a fresh pool card.
+    cancelPending();
+    await edit(mid, `❌ <b>v4 LP was not opened</b>\n\n${esc(short(e, 180))}\n\n<i>No success was confirmed. Check positions before trying again.</i>`, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📋 Check positions", callback_data: "refresh" }],
+          [{ text: "❌ Dismiss", callback_data: "cancel" }],
+        ],
+      },
+    });
   }
 }
 

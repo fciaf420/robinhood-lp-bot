@@ -12,7 +12,7 @@ import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
 import v4sdk from "@uniswap/v4-sdk";
 import { C, cfg } from "../../config.js";
-import { wallet, provider, overrides, waitTx } from "../client.js";
+import { wallet, provider, overrides, waitTx, requireCalldata } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { discoverV4Pools, pickV4Pool, USDG, type V4Pool } from "./discover.js";
 import { swapEthToTokenV4, quoteV4 } from "./swap.js";
@@ -126,12 +126,14 @@ export async function openV4SingleSide(
   });
   if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small for this range");
 
-  const { calldata, value } = V4PositionManager.addCallParameters(position, {
+  const callParams = V4PositionManager.addCallParameters(position, {
     recipient: w.address,
     slippageTolerance: new Percent(Math.round((cfg.lp.slippagePct || 5)), 100),
     deadline: Math.floor(Date.now() / 1000 + 600).toString(),
     useNative: Ether.onChain(cfg.chainId),
   });
+  const calldata = requireCalldata(callParams.calldata, "v4 mint");
+  const { value } = callParams;
 
   // SIMULATE before spending gas
   try {
@@ -338,12 +340,14 @@ export async function openV4InRange(
   }
   if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small");
 
-  const { calldata, value } = V4PositionManager.addCallParameters(position, {
+  const callParams = V4PositionManager.addCallParameters(position, {
     recipient: w.address,
     slippageTolerance: slip,
     deadline: Math.floor(Date.now() / 1000 + 600).toString(),
     useNative: Ether.onChain(cfg.chainId),
   });
+  const calldata = requireCalldata(callParams.calldata, "v4 in-range mint");
+  const { value } = callParams;
 
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
@@ -522,12 +526,14 @@ export async function openV4UsdgInRange(
   if (position.liquidity.toString() === "0") throw new Error("liquidity is 0 — deposit is too small");
 
   // INCREASE mode → target the existing NFT (SDK emits INCREASE_LIQUIDITY). Open mode → mint to recipient.
-  const { calldata, value } = V4PositionManager.addCallParameters(position, {
+  const callParams = V4PositionManager.addCallParameters(position, {
     ...(opts?.increaseTokenId ? { tokenId: opts.increaseTokenId } : { recipient: w.address }),
     slippageTolerance: slip,
     deadline: Math.floor(Date.now() / 1000 + 600).toString(),
     // NO useNative — both sides are ERC20 (token + USDG), settled via Permit2
   });
+  const calldata = requireCalldata(callParams.calldata, `v4 USDG ${opts?.increaseTokenId ? "increase" : "mint"}`);
+  const { value } = callParams;
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {
@@ -683,11 +689,13 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): 
 
   // 3) approve USDG via Permit2 + mint (both settle as ERC20, no useNative)
   await approveViaPermit2(usdgAddr);
-  const { calldata, value } = V4PositionManager.addCallParameters(position, {
+  const callParams = V4PositionManager.addCallParameters(position, {
     recipient: w.address,
     slippageTolerance: new Percent(1, 100),
     deadline: Math.floor(Date.now() / 1000 + 600).toString(),
   });
+  const calldata = requireCalldata(callParams.calldata, "single-side USDG mint");
+  const { value } = callParams;
   try {
     await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
   } catch (e) {

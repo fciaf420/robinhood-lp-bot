@@ -12,7 +12,7 @@
  */
 import { ethers } from "ethers";
 import { env, cfg } from "../config.js";
-import { wallet, provider, overrides, waitTx } from "./client.js";
+import { wallet, provider, overrides, waitTx, requireCalldata } from "./client.js";
 import { logger } from "../util/log.js";
 
 const log = logger("kyber");
@@ -114,6 +114,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   if (BigInt(built.amountIn) !== amountIn || BigInt(built.amountOut) < minOut) {
     throw new Error(`kyber build deviates (in ${built.amountIn}, out ${built.amountOut} < ${minOut})`);
   }
+  const calldata = requireCalldata(built.data, "Kyber route");
 
   // ERC20 input → exact-amount approve to the router (native in carries value, no approve)
   if (!nativeIn) {
@@ -128,14 +129,14 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   const outErc = nativeOut ? null : new ethers.Contract(tokenOut, ["function balanceOf(address) view returns (uint256)"], provider);
   const outBal = async (): Promise<bigint> => (nativeOut ? provider.getBalance(w.address) : outErc!.balanceOf!(w.address).catch(() => 0n));
   const before = await outBal();
-  await provider.call({ to: env.kyberRouter, data: built.data, value, from: w.address }); // simulate (unbounded gas)
+  await provider.call({ to: env.kyberRouter, data: calldata, value, from: w.address }); // simulate (unbounded gas)
   // GAS: give the swap an explicit gasLimit = estimate × 2. The Kyber router runs the underlying pool
   // swap via a low-level call and eth_estimateGas structurally UNDER-estimates that pattern (esp. v4 /
   // hooked pools) — a bare estimate ran the inner call out of gas and the router reverted "Call failed"
   // with gasUsed == gasLimit (233382). The 2× buffer absorbs the under-estimate + any state drift before
   // inclusion; only gasUsed is actually paid, so over-provisioning the limit costs nothing.
-  const est = await provider.estimateGas({ to: env.kyberRouter, data: built.data, value, from: w.address }).catch(() => 300_000n);
-  const tx = await w.sendTransaction({ to: env.kyberRouter, data: built.data, value, gasLimit: est * 2n, ...(await overrides()) });
+  const est = await provider.estimateGas({ to: env.kyberRouter, data: calldata, value, from: w.address }).catch(() => 300_000n);
+  const tx = await w.sendTransaction({ to: env.kyberRouter, data: calldata, value, gasLimit: est * 2n, ...(await overrides()) });
   await waitTx(tx, "kyber-swap");
   const after = await outBal();
   return { tx: tx.hash, amountOut: after > before ? after - before : 0n };

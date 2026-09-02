@@ -26,6 +26,18 @@ export function isNonceConflict(error: unknown): boolean {
   );
 }
 
+/** A contract transaction must contain at least a valid function selector. */
+export function hasUsableCalldata(data: unknown): data is string {
+  return typeof data === "string" && /^0x[0-9a-f]+$/i.test(data) && data.length >= 10;
+}
+
+export function requireCalldata(data: unknown, label: string): string {
+  if (!hasUsableCalldata(data)) {
+    throw new Error(`${label} returned empty transaction data — nothing was submitted; retry shortly`);
+  }
+  return data;
+}
+
 /**
  * A JsonRpcProvider that reads from Alchemy but diverts `eth_sendRawTransaction` to the
  * sequencer (fastest fire). On transport failure it falls back to Alchemy so a tx is
