@@ -22,7 +22,7 @@ import { ethers } from "ethers";
 import { esc, pre, padR, padL, sg, money, tokenEmoji } from "./format.js";
 import { fmtMcap, fmtAge } from "../util/format.js";
 import { logger } from "../util/log.js";
-import { autoPanelKeyboard, autoBackButton, type AutoPanelButton } from "./autoPanel.js";
+import { autoPanelKeyboard, autoBackButton, exitRuleKeyboard, type AutoPanelButton } from "./autoPanel.js";
 import { settingsPanelKeyboard, type SettingsButton } from "./settingsPanel.js";
 import { feedPanelKeyboard, feedAutoCloseConfirmKeyboard } from "./feedPanel.js";
 import { screenDisplayCount } from "./screenDisplay.js";
@@ -82,7 +82,7 @@ interface Pending {
   balancedEth?: number; // ETH that balances the held token for a dual-side mint
 }
 let pending: Pending | null = null;
-type AutoInput = "sizeEth" | "minScore" | "maxOpen" | "maxPerHour" | "dailyCapEth" | "compoundMinUsd";
+type AutoInput = "sizeEth" | "minScore" | "maxOpen" | "maxPerHour" | "dailyCapEth" | "compoundMinUsd" | "tpPct" | "slPct";
 let pendingAutoInput: AutoInput | null = null;
 type SettingsInput = "widthPct" | "slippagePct" | "minFeePpm" | "nativeTargetEth";
 let pendingSettingsInput: SettingsInput | null = null;
@@ -1403,8 +1403,8 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
   }
   if (data === "auto:exit:tp" || data === "auto:exit:sl") {
     const isTp = data.endsWith("tp");
-    const vals = isTp ? [0, 50, 100, 200] : [0, 25, 50];
-    const rows: AutoPanelButton[] = vals.map((v) => ({ text: v ? `${isTp ? "+" : "-"}${v}%` : "Off", callback_data: `auto:${isTp ? "tp" : "sl"}:${v}` }));
+    const kind = isTp ? "tp" : "sl";
+    const rows = exitRuleKeyboard(kind, isTp ? a.tpPct : a.slPct).flat();
     const page = autoSubmenu(isTp ? "Take-profit" : "Stop-loss", [isTp ? "Close when the position reaches this profit." : "Close when the position reaches this loss."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
@@ -1499,6 +1499,11 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
   }
   if (data.startsWith("auto:tp:") || data.startsWith("auto:sl:")) {
     const [_, kind, value] = data.split(":");
+    if (value === "custom") {
+      pendingAutoInput = kind === "tp" ? "tpPct" : "slPct";
+      await edit(mid, `Reply with a custom ${kind === "tp" ? "take-profit" : "stop-loss"} percentage (for example: <code>${kind === "tp" ? "75" : "20"}</code>). Use <code>0</code> to turn it off.`, { reply_markup: { inline_keyboard: [autoBackButton()] } });
+      return;
+    }
     a[kind === "tp" ? "tpPct" : "slPct"] = Number(value);
     persist();
     return onAutoButton("auto:exits", mid);
