@@ -7,7 +7,7 @@
  */
 import { ethers } from "ethers";
 import { C } from "../../config.js";
-import { provider, readProvider, logsProvider, publicProvider } from "../client.js";
+import { provider, readProvider, logsProvider, publicProviders } from "../client.js";
 import { mapLimit } from "../blockscout.js";
 import { tokenMeta } from "../tokens.js";
 import { STATEVIEW_ABI } from "./abis.js";
@@ -67,7 +67,7 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
   const pm = C.v4PoolManager;
   if (!pm) return [];
   // dedicated logs RPC first, then the main provider (covers a down/throttled logs key)
-  const provs = [logsProvider, provider, ...(publicProvider ? [publicProvider] : [])].filter((p, i, a) => a.indexOf(p) === i);
+  const provs = [logsProvider, provider, ...publicProviders].filter((p, i, a) => a.indexOf(p) === i);
 
   // New tokens create all of their pools near the chain tip. A full-history eth_getLogs query over
   // Robinhood's entire chain can time out even with a token-topic filter, which used to make a live

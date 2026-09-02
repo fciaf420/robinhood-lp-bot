@@ -96,21 +96,27 @@ if (env.fastSubmit) log.info(`fast-submit ON → ${env.sequencerUrl}${env.sequen
  * transaction through an unintended node. FallbackProvider starts the public request only when
  * the primary is slow enough to miss its stall window, keeping normal traffic on Alchemy.
  */
-export const usingPublicRpcFallback = !!env.publicRpcUrl && env.publicRpcUrl !== env.rpcUrl;
-export const publicProvider = usingPublicRpcFallback
-  ? new ethers.JsonRpcProvider(rpcReq(env.publicRpcUrl), cfg.chainId)
-  : null;
-export const readProvider: ethers.AbstractProvider = publicProvider
+const publicFallbackUrls = env.publicRpcUrls.filter((url) => url && url !== env.rpcUrl);
+export const usingPublicRpcFallback = publicFallbackUrls.length > 0;
+export const publicProviders = publicFallbackUrls.map((url) => new ethers.JsonRpcProvider(rpcReq(url), cfg.chainId));
+// Compatibility alias for callers that only need one public provider.
+export const publicProvider = publicProviders[0] ?? null;
+export const readProvider: ethers.AbstractProvider = usingPublicRpcFallback
   ? new ethers.FallbackProvider(
       [
         { provider, priority: 1, stallTimeout: Number(process.env.RH_RPC_STALL_MS) || 1500, weight: 1 },
-        { provider: publicProvider, priority: 2, stallTimeout: Number(process.env.RH_PUBLIC_RPC_STALL_MS) || 2500, weight: 1 },
+        ...publicProviders.map((p, i) => ({
+          provider: p,
+          priority: i + 2,
+          stallTimeout: Number(process.env.RH_PUBLIC_RPC_STALL_MS) || 2500,
+          weight: 1,
+        })),
       ],
       cfg.chainId,
       { quorum: 1 },
     )
   : provider;
-if (usingPublicRpcFallback) log.info("RPC read fallback ON — private primary + Robinhood public secondary");
+if (usingPublicRpcFallback) log.info(`RPC read fallback ON — private primary + ${publicProviders.length} public secondary endpoint(s)`);
 
 export const usingOwnWatchRpc = !!env.watchRpcUrl;
 export const watchProvider = env.watchRpcUrl
@@ -118,7 +124,7 @@ export const watchProvider = env.watchRpcUrl
       [
         { provider: new ethers.JsonRpcProvider(rpcReq(env.watchRpcUrl), cfg.chainId), priority: 1, stallTimeout: 1500, weight: 1 },
         { provider, priority: 2, stallTimeout: 1500, weight: 1 },
-        ...(publicProvider ? [{ provider: publicProvider, priority: 3, stallTimeout: 2500, weight: 1 }] : []),
+        ...publicProviders.map((p, i) => ({ provider: p, priority: i + 3, stallTimeout: 2500, weight: 1 })),
       ],
       cfg.chainId,
       { quorum: 1 },
@@ -134,7 +140,7 @@ export const logsProvider: ethers.JsonRpcProvider = env.logsRpcUrl
       [
         { provider: new ethers.JsonRpcProvider(rpcReq(env.logsRpcUrl), cfg.chainId), priority: 1, stallTimeout: 1500, weight: 1 },
         { provider, priority: 2, stallTimeout: 1500, weight: 1 },
-        ...(publicProvider ? [{ provider: publicProvider, priority: 3, stallTimeout: 2500, weight: 1 }] : []),
+        ...publicProviders.map((p, i) => ({ provider: p, priority: i + 3, stallTimeout: 2500, weight: 1 })),
       ],
       cfg.chainId,
       { quorum: 1 },

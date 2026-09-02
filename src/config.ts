@@ -222,6 +222,11 @@ export const env = {
   // Public Robinhood RPC used only as a read fallback when the private RPC is slow or unavailable.
   // Transactions always stay on RH_RPC_URL / the sequencer path.
   publicRpcUrl: process.env.RH_PUBLIC_RPC_URL?.trim() || cfg.rpcUrl,
+  // Additional comma-separated same-chain read fallbacks. Transactions never use these.
+  publicRpcUrls: Array.from(new Set([
+    process.env.RH_PUBLIC_RPC_URL?.trim() || cfg.rpcUrl,
+    ...(process.env.RH_PUBLIC_RPC_URLS || "").split(",").map((u) => u.trim()).filter(Boolean),
+  ])),
   watchRpcUrl: process.env.RH_WATCH_RPC_URL?.trim() || "",
   // dedicated RPC for the heavy v4 discovery getLogs (fromBlock=0 full-range) so a hunt-scan burst
   // can't rate-limit / slow the main RPC that LP ops (mint/close) need. Falls back to `provider`.
