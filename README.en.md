@@ -63,7 +63,7 @@ Every time a position closes, the bot sends a share-ready PNG to Telegram. There
 
 ![portfolio card](docs/cards/portfolio.png)
 
-> Swap the background: send a photo to the bot (set instantly as the card bg), set `RH_CARD_BG` to one path or a comma-separated list, or drop `assets/card-bg.jpg`. Files named `assets/card-bg-*` are discovered and randomly rotated per card; this repo includes three Mining Helium-inspired variants. Default brand is `0xRapzz` — change it with `RH_CARD_BRAND`, the tagline with `RH_CARD_TAG`. The monospace font (DejaVu Sans Mono) is bundled on the VPS.
+> Swap the background: send a photo to the bot (set instantly as the card bg), set `RH_CARD_BG` to one path or a comma-separated list, or drop `assets/card-bg.jpg`. Files named `assets/card-bg-*` are discovered and randomly rotated per card; this repo includes three Mining Helium-inspired variants. Default brand is `0xRapzz` — change it with `RH_CARD_BRAND`, the tagline with `RH_CARD_TAG`. JetBrains Mono is bundled in `assets/`, so cards keep their text on minimal Railway images.
 
 ---
 
@@ -394,7 +394,7 @@ pm2 startup        # follow the printed instructions → auto-start after reboot
 
 Check: `pm2 logs robinhood-lp`
 
-> Profit cards need fonts: `sudo apt install -y fonts-dejavu-core fonts-dejavu-extra` (canvas renders blank text without them).
+> Profit cards bundle their font in `assets/JetBrainsMono-*.ttf`; no system font package is required.
 
 > ⚠️ **Don't run it in two places at once.** Two processes polling the same Telegram token will collide (`409 Conflict`). v2 has a **single-instance lock** (`data/bot.lock`). If you share a wallet with another bot → **don't run them together** (nonce collision).
 

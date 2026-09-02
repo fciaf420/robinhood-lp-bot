@@ -31,7 +31,10 @@ let MONO = "monospace";
 let MONOB = "monospace";
 function ensureFonts(): void {
   if (fontsReady) return;
+  const bundled = process.env.RH_CARD_FONT_DIR?.trim() || join(process.cwd(), "assets");
   const reg: Array<[string, string]> = [
+    [join(bundled, "JetBrainsMono-Regular.ttf"), "CardMono"],
+    [join(bundled, "JetBrainsMono-Bold.ttf"), "CardMonoB"],
     ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "CardMono"],
     ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "CardMonoB"],
     ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "CardSans"],
