@@ -20,7 +20,7 @@ import { autoLpStatus } from "../radar/autolp.js";
 import { send, sendMenu, edit, explorerTx, sendPhoto, downloadTgFile } from "./tg.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { ethers } from "ethers";
-import { esc, pre, padR, padL, sg, money, tokenEmoji } from "./format.js";
+import { esc, pre, padR, padL, sg, money, tokenEmoji, rangeBins } from "./format.js";
 import { fmtMcap, fmtAge } from "../util/format.js";
 import { logger } from "../util/log.js";
 import { autoPanelKeyboard, autoBackButton, exitRuleKeyboard, type AutoPanelButton } from "./autoPanel.js";
@@ -750,6 +750,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
     T.push(`   ${padR("age", 7)} ${padL(fmtAge(r.ageMs) + (r.ageSource === "onchain" ? " ⛓" : ""), 11)}  ${rate}`);
     T.push(`   ${padR("MCAP", 7)} ${padL(fmtMcap(r.mcapNow), 11)}  ${r.entryMcap ? "entry " + fmtMcap(r.entryMcap) : "—"}`);
     if (r.rangeMcapHigh > 0) T.push(`   ${padR("range", 7)} ${fmtMcap(r.rangeMcapLow)} → ${fmtMcap(r.rangeMcapHigh)}`);
+    T.push(`   ${padR("bins", 7)} ${rangeBins(r.tick, r.tickLower, r.tickUpper)}`);
     if (r.pnlEth != null) {
       T.push(`   ${padR("PnL", 7)} ${padL(sg(r.pnlEth, 6) + "Ξ", 11)}  ${padL((r.pnlEth >= 0 ? "+" : "-") + "$" + Math.abs(r.pnlEth * px).toFixed(2), 9)}  ${sg(r.pnlPct ?? 0, 1)}%`);
     } else {
@@ -788,6 +789,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
       if (i) T4.push("");
       T4.push(`${tokenEmoji(r.sym)} ${r.pair}  ·  fee ${(r.fee / 10000).toFixed(2)}%  ·  #${r.tokenId}`);
       T4.push(`   ${r.inRange ? "🟢 IN RANGE" : "🔴 OUT OF RANGE"}${r.ethPaired ? "" : " · non-ETH pair"}`);
+      T4.push(`   ${padR("bins", 7)} ${rangeBins(r.tick, r.tickLower, r.tickUpper)}`);
       T4.push(`   ${padR("value", 7)} $${r.valueUsd.toFixed(2)}`);
       T4.push(`   ${padR("deposit", 7)} ${r.amount0} ${r.sym0} + ${r.amount1} ${r.sym1}`);
       T4.push(`   ${padR("fee", 7)} $${r.feeUsd.toFixed(2)} earned`);

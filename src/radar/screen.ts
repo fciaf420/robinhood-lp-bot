@@ -16,6 +16,8 @@ import { mapLimit } from "../chain/blockscout.js";
 import { logger } from "../util/log.js";
 
 const log = logger("screen");
+const LLM_CACHE_MS = 6 * 60 * 60_000;
+const llmCache = new Map<string, { at: number; verdict: LlmVerdict }>();
 
 export interface ScreenOpts {
   minMarketCap?: number; // default 500_000
@@ -24,7 +26,7 @@ export interface ScreenOpts {
   interval?: string; // default "24h"
   excludeFlap?: boolean; // default true
   llm?: boolean; // run LLM thesis on the top survivors
-  llmTop?: number; // how many to send to the LLM (default 10)
+  llmTop?: number; // how many to send to the LLM (default 3)
   limit?: number; // final list size (default 15)
 }
 
@@ -181,11 +183,20 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
 
   // LLM thesis on the top survivors (best-effort, bounded concurrency)
   if (opts.llm) {
-    const top = trimmed.slice(0, opts.llmTop ?? 10);
-    await mapLimit(top, 3, async (r) => {
+    const top = trimmed.slice(0, opts.llmTop ?? 3);
+    await mapLimit(top, 1, async (r) => {
+      const cacheKey = r.token.address.toLowerCase();
+      const cached = llmCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < LLM_CACHE_MS) {
+        r.thesis = cached.verdict.summary;
+        r.verdict = cached.verdict.action;
+        r.score = Math.round(r.score * 0.7 + cached.verdict.score * 0.3);
+        return;
+      }
       // Keep Telegram scans responsive: the free model is optional enrichment, not a prerequisite.
       const v: LlmVerdict | null = await llmScore(SYSTEM, llmPrompt(r.token, r.kind, r.community), { timeoutMs: 12_000, retries: 0 }).catch(() => null);
       if (v) {
+        llmCache.set(cacheKey, { at: Date.now(), verdict: v });
         r.thesis = v.summary;
         r.verdict = v.action;
         // blend LLM conviction into the rank (30% weight)

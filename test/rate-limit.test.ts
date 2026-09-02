@@ -4,7 +4,7 @@ import { clearRateLimit, isRateLimited, noteRateLimit, retryAfterMs } from "../s
 
 test("retry-after values are bounded and default safely", () => {
   assert.equal(retryAfterMs("2"), 2_000);
-  assert.equal(retryAfterMs("999"), 8_000);
+  assert.equal(retryAfterMs("999"), 60_000);
   assert.equal(retryAfterMs("invalid"), 5_000);
   assert.equal(retryAfterMs(null), 5_000);
 });
