@@ -19,6 +19,7 @@ import { send } from "./tg.js";
 import { esc } from "./format.js";
 import { logger } from "../util/log.js";
 import type { LedgerEntry } from "../types.js";
+import { llmComplete } from "../radar/openrouter.js";
 
 const log = logger("briefing");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -199,8 +200,8 @@ function llmDataBlock(d: BriefData): string {
 }
 
 async function briefLlm(dataBlock: string): Promise<string | null> {
-  if (!env.briefKey) {
-    log.info("brief LLM skipped — RH_BRIEF_KEY is empty (using deterministic fallback)");
+  if (!env.briefKey && !env.deepseekKey) {
+    log.info("brief LLM skipped — no briefing or DeepSeek key is set (using deterministic fallback)");
     return null;
   }
   const system =
@@ -214,50 +215,17 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
     "**🔧 FIX** — ONE highest-impact config change for tomorrow (name the knob and a concrete number).\n" +
     "You may **bold** important token names/numbers. Do NOT use Markdown headings (#) or HTML tags. " +
     "Use real numbers and token names from the data. Maximum ~180 words, insight only, do not repeat raw data.";
-  const body = JSON.stringify({
-    model: env.briefModel,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: dataBlock },
-    ],
-    stream: false,
+  // OpenRouter remains the primary briefing gateway; llmComplete immediately tries the paid
+  // DeepSeek fallback after a transient provider failure instead of waiting through another long
+  // free-model timeout. The rule-based analysis still remains the final fallback.
+  const result = await llmComplete(system, dataBlock, {
+    timeoutMs: 70_000,
+    retries: 1,
+    maxTokens: 4000,
     temperature: 0.4,
-    // cc/claude-sonnet-5 spends completion tokens on THINKING before it writes any content; a big
-    // analytical prompt can burn a small budget entirely on thinking (→ finish=max_tokens, empty
-    // content). Give generous headroom so thinking + the ~180-word answer both fit. It's a once-a-day
-    // call — the extra tokens are free in practice.
-    max_tokens: 4000,
+    openrouter: { key: env.briefKey, url: env.briefUrl, model: env.briefModel },
   });
-  // Retry once: the gateway occasionally returns HTTP 200 with an EMPTY content body (cold model /
-  // transient). A second attempt almost always fills it; only then do we fall back to the rule-based text.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch(env.briefUrl, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${env.briefKey}`, "Content-Type": "application/json" },
-        body,
-        signal: AbortSignal.timeout(70_000),
-      });
-      if (!res.ok) {
-        log.warn(`brief LLM HTTP ${res.status} (attempt ${attempt + 1})`);
-        if (attempt === 0) continue;
-        return null;
-      }
-      const j: any = await res.json();
-      const ch = j?.choices?.[0] ?? {};
-      const msg = ch.message ?? {};
-      const text = String(msg.content || msg.reasoning || msg.reasoning_content || ch.text || "").trim();
-      if (text) return text;
-      log.warn(`brief LLM returned empty content — finish=${ch.finish_reason} usage=${JSON.stringify(j?.usage)} (attempt ${attempt + 1})`);
-      if (attempt === 0) continue;
-      return null;
-    } catch (e) {
-      log.warn(`brief LLM failed: ${(e as Error).message.slice(0, 100)} (attempt ${attempt + 1})`);
-      if (attempt === 0) continue;
-      return null;
-    }
-  }
-  return null;
+  return result?.content ?? null;
 }
 
 // Deterministic analysis — rule-based, always available so a briefing never comes out empty.

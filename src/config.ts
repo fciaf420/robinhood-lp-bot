@@ -239,11 +239,14 @@ export const env = {
   fastSubmit: /^(1|true|yes|on)$/i.test(process.env.RH_FAST_SUBMIT?.trim() || ""),
   sequencerUrl: process.env.RH_SEQUENCER_URL?.trim() || DEFAULT_SEQUENCER,
   sequencerIp: process.env.RH_SEQUENCER_IP?.trim() || "",
-  // LLM radar — any OpenAI-compatible endpoint (OpenRouter default; override RH_OPENROUTER_URL
-  // for a custom gateway, e.g. agentcash). + GMGN enrichment.
+  // LLM radar — OpenRouter is primary; DeepSeek is an optional paid fallback for transient
+  // OpenRouter failures (429/timeouts/5xx). Both endpoints are OpenAI-compatible.
   openrouterKey: (process.env.RH_OPENROUTER_KEY || "").trim(),
   openrouterUrl: process.env.RH_OPENROUTER_URL?.trim() || "https://openrouter.ai/api/v1/chat/completions",
   openrouterModel: process.env.RH_OPENROUTER_MODEL?.trim() || "nvidia/nemotron-3-ultra-550b-a55b:free",
+  deepseekKey: (process.env.DEEPSEEK_API_KEY || process.env.RH_DEEPSEEK_KEY || "").trim(),
+  deepseekUrl: (process.env.DEEPSEEK_BASE_URL || process.env.RH_DEEPSEEK_BASE_URL || "https://api.deepseek.com").trim().replace(/\/$/, ""),
+  deepseekModel: process.env.DEEPSEEK_MODEL?.trim() || process.env.RH_DEEPSEEK_MODEL?.trim() || "deepseek-v4-flash",
   // Daily-briefing LLM (a smarter model for the once-a-day analysis). Falls back to the same gateway
   // + key the screener already uses (RH_OPENROUTER_*, both SECRET / private-gateway URL → .env only)
   // so neither the key nor the gateway host is ever committed; only the MODEL differs

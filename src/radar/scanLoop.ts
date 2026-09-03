@@ -73,7 +73,7 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
   const s = cfg.scan;
   // Loose GMGN gates (the 3-10% pools live on smaller tokens) + thesis/LLM screening.
   const { results, scanned } = await screenTokens({
-    llm: !!env.openrouterKey,
+    llm: !!(env.openrouterKey || env.deepseekKey),
     llmTop: 1,
     minMarketCap: s.screenMinMcap,
     minVolume: s.screenMinVol,

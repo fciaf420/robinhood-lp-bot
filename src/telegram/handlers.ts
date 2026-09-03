@@ -1193,7 +1193,7 @@ export async function onLedgerRebuild(mid: number): Promise<void> {
 // ══════════ /screen (GMGN 24h thesis screen) ══════════
 
 export async function onScreen(arg?: string): Promise<void> {
-  const useLlm = arg !== "fast" && !!env.openrouterKey;
+  const useLlm = arg !== "fast" && !!(env.openrouterKey || env.deepseekKey);
   const m = await send(`🧪 <b>Screening GMGN 24h…</b> <i>(mcap&gt;$500k · vol&gt;$1M · no flap${useLlm ? " · +thesis LLM" : ""})</i>`);
   const mid = m?.result?.message_id;
   try {
@@ -1311,8 +1311,8 @@ async function renderFeedPanel(mid?: number): Promise<void> {
     `${padR("auto-close OOR", 16)} ${f.autoCloseOutOfRange ? "⚠️ ON" : "off"}`,
     `${padR("minimum seed", 16)} ${f.newTokenMinWethSeed} WETH`,
     ``,
-    `${padR("radar LLM", 16)} ${r.enabled ? (env.openrouterKey ? "on" : "on (missing key)") : "off"}`,
-    `${padR("radar model", 16)} ${env.openrouterModel}`,
+    `${padR("radar LLM", 16)} ${r.enabled ? (env.openrouterKey || env.deepseekKey ? "on" : "on (missing key)") : "off"}`,
+    `${padR("radar model", 16)} ${env.openrouterKey ? env.openrouterModel : env.deepseekModel}${env.openrouterKey && env.deepseekKey ? ` · fallback ${env.deepseekModel}` : ""}`,
     `${padR("radar GMGN", 16)} ${r.useGmgn ? "on" : "off"}`,
     `${padR("fast submit", 16)} ${env.fastSubmit ? "ON → sequencer" : "off (via RPC)"}`,
     ``,
@@ -2911,7 +2911,7 @@ export async function onSet(text: string): Promise<void> {
   if (RADAR_BOOL_MAP[k]) {
     (cfg.radar[RADAR_BOOL_MAP[k]] as boolean) = Number(v) !== 0;
     persist();
-    const warn = k === "radar" && Number(v) !== 0 && !env.openrouterKey ? " ⚠️ RH_OPENROUTER_KEY is not set" : "";
+    const warn = k === "radar" && Number(v) !== 0 && !env.openrouterKey && !env.deepseekKey ? " ⚠️ No LLM key is set" : "";
     await send(`✓ radar.${k} → ${Number(v) !== 0 ? "on" : "off"}${warn}`);
     return;
   }

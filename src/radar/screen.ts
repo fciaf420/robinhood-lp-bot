@@ -11,12 +11,13 @@
  *     is enabled, generate a one-line thesis.
  */
 import { gmgnTrending, type GmgnTrendToken } from "./gmgn.js";
-import { llmScore, type LlmVerdict } from "./openrouter.js";
+import { DEFAULT_LLM_SCREEN_TIMEOUT_MS, llmScore, type LlmVerdict } from "./openrouter.js";
 import { mapLimit } from "../chain/blockscout.js";
 import { logger } from "../util/log.js";
 
 const log = logger("screen");
 const LLM_CACHE_MS = 6 * 60 * 60_000;
+const LLM_SCREEN_TIMEOUT_MS = Math.max(15_000, Number(process.env.RH_LLM_SCREEN_TIMEOUT_MS) || DEFAULT_LLM_SCREEN_TIMEOUT_MS);
 const llmCache = new Map<string, { at: number; verdict: LlmVerdict }>();
 
 export interface ScreenOpts {
@@ -195,8 +196,9 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
         r.score = Math.round(r.score * 0.7 + cached.verdict.score * 0.3);
         return;
       }
-      // Keep Telegram scans responsive: the free model is optional enrichment, not a prerequisite.
-      const v: LlmVerdict | null = await llmScore(SYSTEM, llmPrompt(r.token, r.kind, r.community), { timeoutMs: 12_000, retries: 0 }).catch(() => null);
+      // Nemotron's free endpoint has >12s median latency; allow a normal response to finish while
+      // still bounding a stuck provider. A real model verdict is required by Auto-LP when enabled.
+      const v: LlmVerdict | null = await llmScore(SYSTEM, llmPrompt(r.token, r.kind, r.community), { timeoutMs: LLM_SCREEN_TIMEOUT_MS, retries: 1 }).catch(() => null);
       if (v) {
         llmCache.set(cacheKey, { at: Date.now(), verdict: v });
         r.thesis = v.summary;

@@ -140,6 +140,7 @@ Now open `.env` and fill in:
 | `RH_PUBLIC_RPC_URL` | (recommended) public Robinhood RPC used as a read fallback when the private RPC is slow or unavailable |
 | `RH_WATCH_RPC_URL` | (optional) a second Alchemy app for the scanner. Leaving it blank is fine |
 | `RH_OPENROUTER_KEY` | (optional) [openrouter.ai/keys](https://openrouter.ai/keys) — enables the LLM radar |
+| `DEEPSEEK_API_KEY` | (optional) paid fallback for the LLM radar after OpenRouter 429/timeouts; uses `deepseek-v4-flash` |
 | `KYBERSWAP_*` | (optional) KyberSwap aggregator — USDG pairs require it (see `.env.example`) |
 
 Generate a fresh wallet quickly:
