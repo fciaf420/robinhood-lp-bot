@@ -483,6 +483,10 @@ function manualRangeLabel(): string {
   return `📐 Range: Custom (${pending.rangeWidthPct}%)`;
 }
 
+function manualRangeActionLabel(): string {
+  return pending?.rangeWidthPct ? `range ${pending.rangeWidthPct}%` : `auto range ${cfg.lp.widthPct}%`;
+}
+
 type InlineButton = { text: string; callback_data?: string; url?: string };
 
 function manualRangeButton(): InlineButton[] {
@@ -490,10 +494,12 @@ function manualRangeButton(): InlineButton[] {
 }
 
 function rangeChoiceKeyboard(): InlineButton[][] {
+  const current = pending?.rangeWidthPct;
+  const mark = (pct: number): string => current === pct ? " ✓" : "";
   return [
-    [{ text: `⚙️ Auto range (${cfg.lp.widthPct}%)`, callback_data: "range:auto" }],
-    MANUAL_RANGE_PRESETS.slice(0, 2).map((pct) => ({ text: `✏️ ${pct}%`, callback_data: `range:preset:${pct}` })),
-    MANUAL_RANGE_PRESETS.slice(2).map((pct) => ({ text: `✏️ ${pct}%`, callback_data: `range:preset:${pct}` })),
+    [{ text: `⚙️ ${current == null ? "Auto range" : "Use auto range"} (${cfg.lp.widthPct}%)${current == null ? " ✓" : ""}`, callback_data: "range:auto" }],
+    MANUAL_RANGE_PRESETS.slice(0, 2).map((pct) => ({ text: `✏️ ${pct}%${mark(pct)}`, callback_data: `range:preset:${pct}` })),
+    MANUAL_RANGE_PRESETS.slice(2).map((pct) => ({ text: `✏️ ${pct}%${mark(pct)}`, callback_data: `range:preset:${pct}` })),
     [{ text: "⌨️ Type a custom %", callback_data: "range:custom" }],
     [{ text: "◀️ Back to LP choices", callback_data: "range:back" }],
   ];
@@ -529,22 +535,22 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
           `${esc(p.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
           manualRangeLabel(),
           ``,
-          `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
+          `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided using <b>${manualRangeActionLabel()}</b>. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
           ``,
-          `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
+          `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b> using <b>${manualRangeActionLabel()}</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
         ].join("\n")
       : [
           `<b>Confirm mint · Uniswap v4</b> 🦄`,
           `${esc(p.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b> · pair native ETH`,
           manualRangeLabel(),
           ``,
-          `🎯 <b>In-range (farming)</b> — buy the token through the best route (Kyber), then mint around the current price. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
+          `🎯 <b>In-range (farming)</b> — buy the token through the best route (Kyber), then mint around the current price using <b>${manualRangeActionLabel()}</b>. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
           ``,
-          `🛡 <b>Single-side ETH</b> — park ETH with the range above the current price. Fees start only when price rises into range. Protected from token rugs.`,
+          `🛡 <b>Single-side ETH</b> — park ETH with the range above the current price using <b>${manualRangeActionLabel()}</b>. Fees start only when price rises into range. Protected from token rugs.`,
         ].join("\n");
     const buttons: InlineButton[][] = isUsd
-      ? [[{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v4us" }]]
-      : [[{ text: `🎯 In-range farming ${feePct}%`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side ETH ${feePct}%`, callback_data: "mint:v4" }]];
+      ? [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v4us" }]]
+      : [[{ text: `🎯 In-range farming · ${manualRangeActionLabel()}`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side ETH · ${manualRangeActionLabel()}`, callback_data: "mint:v4" }]];
     buttons.push(manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]);
     const opts = { reply_markup: { inline_keyboard: buttons } };
     if (mid) await edit(mid, text, opts); else await send(text, opts);
@@ -558,11 +564,11 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
       `${esc(p.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
       manualRangeLabel(),
       ``,
-      `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
+      `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided using <b>${manualRangeActionLabel()}</b>. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
       ``,
-      `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
+      `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b> using <b>${manualRangeActionLabel()}</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
     ].join("\n");
-    const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v3u" }], [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v3us" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+    const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v3u" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v3us" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
     if (mid) await edit(mid, text, opts); else await send(text, opts);
     return;
   }
@@ -586,7 +592,7 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
     `   swap ~<b>${pI?.swapPct ?? "?"}%</b> of the capital into ${esc(p.meta.symbol)} first. Fees start immediately,`,
     `   but you hold the token directly (a rug can immediately lose ~${pI?.swapPct ?? "?"}%).`,
   ].filter(Boolean).join("\n");
-  const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range (swap ~${pI?.swapPct ?? "?"}%)`, callback_data: "mint:inrange" }], [{ text: "🛡 Single-side ETH", callback_data: "mint:single" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+  const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · swap ~${pI?.swapPct ?? "?"}%`, callback_data: "mint:inrange" }], [{ text: `🛡 Single-side ETH · ${manualRangeActionLabel()}`, callback_data: "mint:single" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
   if (mid) await edit(mid, text, opts); else await send(text, opts);
 }
 
