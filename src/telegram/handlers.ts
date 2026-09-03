@@ -160,6 +160,7 @@ interface Pending {
   ethAmt?: string;
   heldTokenUi?: number; // token already in wallet (reused for dual-side)
   balancedEth?: number; // ETH that balances the held token for a dual-side mint
+  tokenFunding?: "fresh" | "held"; // v4 ETH-pair two-sided funding choice
 }
 let pending: Pending | null = null;
 type AutoInput =
@@ -354,6 +355,19 @@ export async function onCA(addr: string): Promise<void> {
   );
 }
 
+export function manualFundingButtons({ heldTokenUi, balancedEth }: { heldTokenUi: number; balancedEth: number }): { text: string; callback_data: string }[][] {
+  const rows: { text: string; callback_data: string }[][] = [
+    [{ text: "🎯 Fresh two-sided (buy token)", callback_data: "fund:fresh" }],
+  ];
+  if (heldTokenUi > 0 && balancedEth > 0) {
+    rows.push([{ text: `♻️ Two-sided with held token (~${balancedEth.toFixed(4)} Ξ)`, callback_data: "fund:held" }]);
+  } else if (heldTokenUi > 0) {
+    rows.push([{ text: "♻️ Two-sided using held token balance", callback_data: "fund:held" }]);
+  }
+  rows.push([{ text: "⌨️ Enter custom ETH amount", callback_data: "amount:custom" }]);
+  return rows;
+}
+
 export async function onPick(idx: number, mid: number): Promise<void> {
   if (!pending) return;
   const p = pending.pools[idx];
@@ -397,8 +411,10 @@ export async function onPick(idx: number, mid: number): Promise<void> {
   const usdgLine = showUsdgBtn
     ? `💵 <b>$${usdgUi.toFixed(2)} USDG</b> is already in the wallet — tap the button for <b>single-side without a swap or amount input</b>.`
     : "";
-  const kbRows: { text: string; callback_data: string }[][] = [];
-  if (balanced > 0) kbRows.push([{ text: `⚖️ Balanced dual-side (~${balanced.toFixed(4)} Ξ)`, callback_data: "ballp" }]);
+  const canChooseFunding = p.version === "v4" && p.v4?.quote !== "usd";
+  const kbRows: { text: string; callback_data: string }[][] = canChooseFunding
+    ? manualFundingButtons({ heldTokenUi: tokUi, balancedEth: balanced })
+    : [];
   if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side using wallet USDG ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
   const extra = kbRows.length ? { reply_markup: { inline_keyboard: kbRows } } : {};
   await edit(
@@ -412,7 +428,9 @@ export async function onPick(idx: number, mid: number): Promise<void> {
       balLine,
       usdgLine,
       ``,
-      `💬 <b>Enter the ETH amount</b> to LP (example: <code>0.005</code>)${kbRows.length ? " — or tap a button below." : ""}`,
+      canChooseFunding
+        ? `💬 <b>Choose how to fund the two-sided position</b> below, or enter a custom ETH amount.`
+        : `💬 <b>Enter the ETH amount</b> to LP (example: <code>0.005</code>)${kbRows.length ? " — or tap a button below." : ""}`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -423,6 +441,7 @@ export async function onPick(idx: number, mid: number): Promise<void> {
 /** One-tap: dual-side v4 mint with the ETH amount that balances the held token. */
 export async function onBalancedLp(mid: number): Promise<void> {
   if (!pending?.chosen?.v4 || !pending.balancedEth) return;
+  pending.tokenFunding = "held";
   const amt = toEthStr(pending.balancedEth);
   const b = await balances().catch(() => null);
   if (!amt || (b && Number(amt) > usableEth(b) + 1e-9)) {
@@ -435,6 +454,30 @@ export async function onBalancedLp(mid: number): Promise<void> {
   pending.ethAmt = amt;
   pending.awaitingAmount = false;
   await onMintV4(mid, "inrange");
+}
+
+export async function onFundingButton(data: string, mid: number): Promise<void> {
+  if (!pending?.chosen?.v4 || pending.chosen.v4.quote === "usd") return;
+  if (data === "fund:fresh") {
+    pending.tokenFunding = "fresh";
+    pending.ethAmt = undefined;
+    pending.awaitingAmount = true;
+    await edit(mid, `🎯 <b>Fresh two-sided entry</b>\n\nThe bot will buy the token through Kyber and will not use the token balance already in the wallet.\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+    return;
+  }
+  if (data === "fund:held") {
+    pending.tokenFunding = "held";
+    if (pending.balancedEth) return onBalancedLp(mid);
+    pending.ethAmt = undefined;
+    pending.awaitingAmount = true;
+    await edit(mid, `♻️ <b>Use held ${esc(pending.meta.symbol)} balance</b>\n\nEnter the ETH amount to pair with the token balance (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+    return;
+  }
+  if (data === "amount:custom") {
+    pending.awaitingAmount = true;
+    pending.ethAmt = undefined;
+    await edit(mid, `⌨️ <b>Custom two-sided amount</b>\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).${pending.heldTokenUi ? `\nHeld ${esc(pending.meta.symbol)} will be reused unless you choose Fresh two-sided first.` : ""}`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+  }
 }
 
 /**
@@ -485,6 +528,12 @@ function manualRangeLabel(): string {
 
 function manualRangeActionLabel(): string {
   return pending?.rangeWidthPct ? `range ${pending.rangeWidthPct}%` : `auto range ${cfg.lp.widthPct}%`;
+}
+
+function manualFundingActionLabel(): string {
+  if (pending?.tokenFunding === "fresh") return "fresh token buy";
+  if (pending?.tokenFunding === "held") return "use held token";
+  return pending?.heldTokenUi ? "reuse held token" : "buy token as needed";
 }
 
 type InlineButton = { text: string; callback_data?: string; url?: string };
@@ -543,6 +592,7 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
           `<b>Confirm mint · Uniswap v4</b> 🦄`,
           `${esc(p.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b> · pair native ETH`,
           manualRangeLabel(),
+          `💱 Funding: <b>${manualFundingActionLabel()}</b>`,
           ``,
           `🎯 <b>In-range (farming)</b> — buy the token through the best route (Kyber), then mint around the current price using <b>${manualRangeActionLabel()}</b>. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
           ``,
@@ -550,7 +600,7 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
         ].join("\n");
     const buttons: InlineButton[][] = isUsd
       ? [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v4us" }]]
-      : [[{ text: `🎯 In-range farming · ${manualRangeActionLabel()}`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side ETH · ${manualRangeActionLabel()}`, callback_data: "mint:v4" }]];
+      : [[{ text: `🎯 In-range · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4" }]];
     buttons.push(manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]);
     const opts = { reply_markup: { inline_keyboard: buttons } };
     if (mid) await edit(mid, text, opts); else await send(text, opts);
@@ -741,7 +791,7 @@ async function onMintV4(mid: number, action: string): Promise<void> {
       : isUsd
         ? await openV4UsdgInRange(v4pool, pending.ethAmt, { widthPct: pending.rangeWidthPct })
         : inR
-          ? await openV4InRange(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct })
+          ? await openV4InRange(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct, useHeldToken: pending.tokenFunding !== "fresh" })
           : await openV4SingleSide(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct });
     const market = v4MarketLine(v4pool, pending.meta, pending.token, r.tickLower, r.tickUpper, await ethUsd().catch(() => 0));
     const sym = pending.meta.symbol;

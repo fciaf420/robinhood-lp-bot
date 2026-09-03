@@ -176,15 +176,17 @@ export async function openV4SingleSide(
  * wallet ("selalu ada sisa"). Sweep it → ETH so nothing accumulates + token exposure drops. Best-effort;
  * skips native ETH / WETH and sub-$0.30 USDG dust (gas > value).
  */
-async function sweepLeftoverToEth(sides: Array<{ addr: string; dec: number }>): Promise<string | undefined> {
+async function sweepLeftoverToEth(sides: Array<{ addr: string; dec: number; maxRaw?: bigint }>): Promise<string | undefined> {
   if (!kyberEnabled()) return undefined;
   const w = wallet();
   let hash: string | undefined;
-  for (const { addr, dec } of sides) {
+  for (const side of sides) {
+    const { addr, dec } = side;
     const a = addr.toLowerCase();
     if (a === NATIVE.toLowerCase() || a === C.weth.toLowerCase()) continue; // already ETH-equivalent
     const erc = new ethers.Contract(addr, ["function balanceOf(address) view returns (uint256)"], provider);
-    const raw: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
+    const balance: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
+    const raw = side.maxRaw != null && balance > side.maxRaw ? side.maxRaw : balance;
     if (raw <= 0n) continue;
     if (a === USDG.toLowerCase() && raw < 300_000n) continue; // skip <$0.30 USDG dust
     try {
@@ -203,7 +205,7 @@ async function sweepLeftoverToEth(sides: Array<{ addr: string; dec: number }>): 
 export async function openV4InRange(
   token: string,
   amountEthStr: string,
-  opts: { fee?: number; widthSpacings?: number; widthPct?: number } = {},
+  opts: { fee?: number; widthSpacings?: number; widthPct?: number; useHeldToken?: boolean } = {},
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const w = wallet();
   const pools = await discoverV4Pools(token);
@@ -243,8 +245,11 @@ export async function openV4InRange(
     w,
   );
 
-  // REUSE token we already hold (e.g. bought on a prior failed attempt) — don't re-buy.
-  const tokenHave: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
+  const reuseHeldToken = opts.useHeldToken !== false;
+  const tokenBefore: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
+  // Default behavior reuses token inventory (e.g. bought on a prior failed attempt). Fresh mode
+  // deliberately ignores that inventory and buys a new token side through Kyber.
+  const tokenHave = reuseHeldToken ? tokenBefore : 0n;
   const haveEthValue = priceTokenInEth(tokenHave);
 
   // token value (in ETH) this range wants; swap ONLY the shortfall (0 if we already hold enough)
@@ -280,12 +285,16 @@ export async function openV4InRange(
       swapHash = sw.tx;
     }
     swappedPct = Math.round((Number(ethToSwap) / Number(total)) * 100);
-  } else {
+  } else if (reuseHeldToken) {
     ethToSwap = 0n; // enough token on hand — LP straight from balance
+  } else {
+    throw new Error("Fresh two-sided entry needs enough ETH to buy the token side");
   }
 
-  // 2) actual token balance now (existing + any swapped)
-  const tokenBal: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
+  // 2) actual token balance now. Fresh mode only uses the token acquired by this open, leaving any
+  // existing wallet inventory untouched.
+  const tokenAfter: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
+  const tokenBal = reuseHeldToken ? tokenAfter : tokenAfter > tokenBefore ? tokenAfter - tokenBefore : 0n;
   if (tokenBal <= 0n) throw new Error("token balance is 0 — nothing can be added to the LP");
 
   // 3) approve token via Permit2 (ERC20 → Permit2, Permit2 → PositionManager)
@@ -371,7 +380,7 @@ export async function openV4InRange(
     saveV4Deposit(tokenId, { depositWei: (depWei > 0n ? depWei : total).toString(), ts: Date.now(), poolId: pool.poolId, fee: pool.fee, tickLower, tickUpper, mode: "inrange" });
   }
   // sweep leftover token → ETH (native side excess is already ETH; v4 doesn't refund the excess side)
-  await sweepLeftoverToEth([{ addr: token, dec: meta.decimals }]).catch(() => undefined);
+  await sweepLeftoverToEth([{ addr: token, dec: meta.decimals, maxRaw: reuseHeldToken ? undefined : tokenBal }]).catch(() => undefined);
   log.info(`open v4 IN-RANGE #${tokenId} ${meta.symbol} fee ${pool.fee / 10000}% swap ${swappedPct}%${ethToSwap === 0n ? " (reuse balance)" : ""}`);
   return {
     tokenId,

@@ -53,6 +53,7 @@ async function routeCallback(cq: any): Promise<void> {
   if (d === "swap") return H.onSwap("/swap"); // 🔙 back to token menu
   if (d.startsWith("swf:")) return H.onSwapFrom(d.slice(4), mid); // pick token to sell
   if (d.startsWith("swp:")) return H.onSwapPct(Number(d.split(":")[1]), mid); // pick % amount
+  if (d.startsWith("fund:") || d === "amount:custom") return H.onFundingButton(d, mid);
   if (d === "lgrb") return H.onLedgerRebuild(mid);
   if (d.startsWith("lg:")) return H.onLedger(Number(d.split(":")[1]), mid);
   if (d.startsWith("pool:")) return H.onPick(Number(d.split(":")[1]), mid);
