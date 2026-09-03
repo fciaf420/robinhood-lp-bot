@@ -30,6 +30,7 @@ import { screenDisplayCount } from "./screenDisplay.js";
 import { closeAllConfirmationKeyboard, totalCloseAllPositions } from "./positionPanel.js";
 import { walletBalanceText, walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
+import { clearPositionExitRule, getPositionExitRule, setPositionExitRule, type PositionRuleKind } from "../radar/positionRules.js";
 
 const log = logger("handlers");
 
@@ -109,6 +110,43 @@ function chartButton(p: UPool, token: string): { text: string; url: string } {
   const target = p.v3?.pool ?? p.v4?.poolId ?? p.v2?.pair ?? token;
   return { text: "📈 Open live chart", url: `https://dexscreener.com/robinhood/${target}` };
 }
+
+function positionRulesButton(tokenId: string, version: "v3" | "v4"): { text: string; callback_data: string } {
+  return { text: "🎯 TP/SL", callback_data: `pr:panel:${version}:${tokenId}` };
+}
+
+function compoundButton(tokenId: string): { text: string; callback_data: string } {
+  return { text: "🔁 Compound fees", callback_data: `cmp:ask:${tokenId}` };
+}
+
+function exitLabel(tokenId: string, kind: PositionRuleKind, global: number): string {
+  const rule = getPositionExitRule(tokenId);
+  const key = kind === "tp" ? "tpPct" : "slPct";
+  if (rule && Object.prototype.hasOwnProperty.call(rule, key)) {
+    const value = rule[key] ?? 0;
+    return value > 0 ? `${kind === "tp" ? "+" : "-"}${value}%` : "off";
+  }
+  return global > 0 ? `global ${kind === "tp" ? "+" : "-"}${global}%` : "global off";
+}
+
+function positionRulesText(tokenId: string, version: "v3" | "v4"): string {
+  return [
+    `🎯 <b>Exit rules · ${version} #${tokenId}</b>`,
+    `<i>These rules apply only to this position.</i>`,
+    `Take profit: <b>${exitLabel(tokenId, "tp", cfg.autoLp.tpPct)}</b>`,
+    `Stop loss: <b>${exitLabel(tokenId, "sl", cfg.autoLp.slPct)}</b>`,
+    `<i>The bot checks these rules even if automatic entries are OFF.</i>`,
+    `<i>“Use global” follows the Auto-LP setting. “Off” disables that trigger for this position.</i>`,
+  ].join("\n");
+}
+
+function positionRulesKeyboard(tokenId: string, version: "v3" | "v4"): object[][] {
+  return [
+    [{ text: "🎯 Set take profit", callback_data: `pr:tp:${version}:${tokenId}` }],
+    [{ text: "🛑 Set stop loss", callback_data: `pr:sl:${version}:${tokenId}` }],
+    [{ text: "◀️ Back to positions", callback_data: "refresh" }],
+  ];
+}
 interface Pending {
   token: string;
   meta: TokenMeta;
@@ -126,6 +164,7 @@ type SettingsInput = "widthPct" | "slippagePct" | "minFeePpm" | "nativeTargetEth
 let pendingSettingsInput: SettingsInput | null = null;
 // "➕ Add" flow — top up an EXISTING position (increase liquidity, not a new NFT)
 let pendingAdd: { tokenId: string; version: "v3" | "v4" } | null = null;
+let pendingPositionRule: { tokenId: string; version: "v3" | "v4"; kind: PositionRuleKind } | null = null;
 
 const GAS_RESERVE = 0.0004; // native ETH kept for gas (~4-5 tx at ~0.0001 each)
 const usableEth = (b: { weth: string; eth: string }): number =>
@@ -586,6 +625,7 @@ export async function onMint(mid: number, action = "single"): Promise<void> {
       ]
         .filter(Boolean)
         .join("\n"),
+      r.tokenId ? { reply_markup: { inline_keyboard: [[positionRulesButton(r.tokenId, "v3")], [{ text: "📋 Check positions", callback_data: "refresh" }]] } } : undefined,
     );
   } catch (e) {
     await send(`❌ Mint failed: ${short(e, 160)}`);
@@ -613,6 +653,7 @@ async function onMintV3Usdg(mid: number, single = false): Promise<void> {
       ]
         .filter(Boolean)
         .join("\n"),
+      r.tokenId ? { reply_markup: { inline_keyboard: [[positionRulesButton(r.tokenId, "v3")], [{ text: "📋 Check positions", callback_data: "refresh" }]] } } : undefined,
     );
   } catch (e) {
     await send(`❌ Mint failed: ${short(e, 160)}`);
@@ -652,6 +693,9 @@ async function onMintV4(mid: number, action: string): Promise<void> {
       ]
         .filter(Boolean)
         .join("\n"),
+      r.tokenId
+        ? { reply_markup: { inline_keyboard: [[positionRulesButton(r.tokenId, "v4"), ...(isUsd ? [compoundButton(r.tokenId)] : [])], [{ text: "📋 Check positions", callback_data: "refresh" }]] } }
+        : undefined,
     );
   } catch (e) {
     log.error(`v4 mint failed (${action}): ${short(e, 240)}`);
@@ -771,6 +815,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
     } else {
       T.push(`   ${padR("PnL", 7)} — (deposit not recorded)`);
     }
+    T.push(`   ${padR("TP/SL", 7)} TP ${exitLabel(r.tokenId, "tp", cfg.autoLp.tpPct)} · SL ${exitLabel(r.tokenId, "sl", cfg.autoLp.slPct)}`);
   });
 
   const dupe: Record<string, number> = {};
@@ -782,7 +827,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
         ? ` ${r.pnlEth >= 0 ? "🟩" : "🟥"} ${r.pnlEth >= 0 ? "+" : "-"}$${Math.abs(r.pnlEth * px).toFixed(2)} · ${sg(r.pnlPct ?? 0, 1)}%`
         : "";
     const id = dupe[r.tokenSym]! > 1 ? ` #${r.tokenId}` : "";
-    btns.push([{ text: `Close ${r.tokenSym}${id}${p}`, callback_data: `close:${r.tokenId}` }]);
+    btns.push([positionRulesButton(r.tokenId, "v3"), { text: `Close ${r.tokenSym}${id}${p}`, callback_data: `close:${r.tokenId}` }]);
   });
   // ── v4 positions block ──
   const T4: string[] = [];
@@ -818,6 +863,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
       } else {
         T4.push(`   ${padR("PnL", 7)} — (deposit not recorded)`);
       }
+      T4.push(`   ${padR("TP/SL", 7)} TP ${exitLabel(r.tokenId, "tp", cfg.autoLp.tpPct)} · SL ${exitLabel(r.tokenId, "sl", cfg.autoLp.slPct)}`);
       T4.push(`   ${padR("age", 7)} ${fmtAge(r.ageMs)}`);
     });
     const dupe4: Record<string, number> = {};
@@ -828,6 +874,8 @@ export async function onList(mid: number | null = null, force = false): Promise<
       // only offer Claim when there's fee worth claiming
       if (r.feeUsd > 0.01) row.push({ text: `💰 Claim`, callback_data: `v4f:${r.tokenId}` });
       row.push({ text: `➕ Add`, callback_data: `add4:${r.tokenId}` });
+      row.push(positionRulesButton(r.tokenId, "v4"));
+      if (!r.ethPaired) row.push(compoundButton(r.tokenId));
       row.push({ text: `Close ${r.sym}${idTag}`, callback_data: `v4c:${r.tokenId}` });
       btns.push(row);
     }
@@ -854,6 +902,110 @@ export async function onList(mid: number | null = null, force = false): Promise<
     (S.length ? pre(S.join("\n")) : "");
   listCache = { head, body, btns, at: Date.now() };
   await out(head + "\n" + body, { reply_markup: { inline_keyboard: btns } });
+}
+
+function positionRuleChoices(kind: PositionRuleKind, tokenId: string, version: "v3" | "v4"): object[][] {
+  const values = kind === "tp" ? [0, 50, 100, 200] : [0, 25, 50];
+  const sign = kind === "tp" ? "+" : "-";
+  const rule = getPositionExitRule(tokenId);
+  const key = kind === "tp" ? "tpPct" : "slPct";
+  const current = rule && Object.prototype.hasOwnProperty.call(rule, key) ? rule[key] ?? 0 : null;
+  const rows: object[][] = [[{ text: `Use global (${exitLabel(tokenId, kind, kind === "tp" ? cfg.autoLp.tpPct : cfg.autoLp.slPct)})`, callback_data: `pr:set:${kind}:${version}:${tokenId}:inherit` }]];
+  rows.push(...values.map((value) => [{ text: value === 0 ? `Off${current === 0 ? " ✓" : ""}` : `${sign}${value}%${current === value ? " ✓" : ""}`, callback_data: `pr:set:${kind}:${version}:${tokenId}:${value}` }]));
+  rows.push([{ text: "Custom percentage", callback_data: `pr:custom:${kind}:${version}:${tokenId}` }]);
+  rows.push([{ text: "◀️ Back to TP/SL", callback_data: `pr:panel:${version}:${tokenId}` }]);
+  return rows;
+}
+
+export async function onPositionRuleButton(data: string, mid: number): Promise<void> {
+  const parts = data.split(":");
+  const action = parts[1];
+  const kind = (action === "tp" || action === "sl" ? action : parts[2]) as PositionRuleKind;
+  const version = (action === "panel" ? parts[2] : parts[3]) as "v3" | "v4";
+  const tokenId = action === "panel" ? parts[3] : action === "tp" || action === "sl" ? parts[3] : parts[4];
+  if (!tokenId || !/^\d+$/.test(tokenId) || !["v3", "v4"].includes(version) || (action !== "panel" && !["tp", "sl"].includes(kind))) return;
+
+  if (action === "panel") {
+    pendingPositionRule = null;
+    await edit(mid, positionRulesText(tokenId, version), { reply_markup: { inline_keyboard: positionRulesKeyboard(tokenId, version) } });
+    return;
+  }
+  if (action === "tp" || action === "sl") {
+    pendingPositionRule = null;
+    await edit(mid, `🎯 <b>${action === "tp" ? "Take-profit" : "Stop-loss"} · ${version} #${tokenId}</b>\n<i>Choose a trigger for this position.</i>`, {
+      reply_markup: { inline_keyboard: positionRuleChoices(action, tokenId, version) },
+    });
+    return;
+  }
+  if (action === "custom") {
+    pendingPositionRule = { tokenId, version, kind };
+    await edit(mid, `Reply with a custom ${kind === "tp" ? "take-profit" : "stop-loss"} percentage for <b>${version} #${tokenId}</b> (example: <code>${kind === "tp" ? "100" : "25"}</code>). Use <code>0</code> to turn it off.`, {
+      reply_markup: { inline_keyboard: [[{ text: "◀️ Cancel", callback_data: `pr:panel:${version}:${tokenId}` }]] },
+    });
+    return;
+  }
+  if (action === "set") {
+    const value = parts[5];
+    if (value === "inherit") clearPositionExitRule(tokenId, kind);
+    else if (value != null && Number.isFinite(Number(value))) setPositionExitRule(tokenId, kind, Number(value));
+    else return;
+    invalidateListCache();
+    pendingPositionRule = null;
+    return onPositionRuleButton(`pr:panel:${version}:${tokenId}`, mid);
+  }
+}
+
+export async function onPositionRuleInput(text: string): Promise<boolean> {
+  if (!pendingPositionRule) return false;
+  if (text.trim().startsWith("/")) {
+    pendingPositionRule = null;
+    return false;
+  }
+  const p = pendingPositionRule;
+  pendingPositionRule = null;
+  const value = Number(text.trim());
+  if (!Number.isFinite(value) || value < 0 || value > 10000) {
+    await send("That percentage is not valid. Use a number from 0 to 10,000, then open the position's TP/SL buttons again.");
+    return true;
+  }
+  setPositionExitRule(p.tokenId, p.kind, value);
+  invalidateListCache();
+  await send(`✅ ${p.kind === "tp" ? "Take-profit" : "Stop-loss"} for ${p.version} #${p.tokenId}: <b>${p.kind === "tp" ? "+" : "-"}${value}%</b>${value === 0 ? " (off)" : ""}`);
+  return true;
+}
+
+export async function onCompoundAsk(tokenId: string, mid: number): Promise<void> {
+  if (!/^\d+$/.test(tokenId)) return;
+  await edit(mid, `🔁 <b>Compound fees into v4 #${tokenId}?</b>\n\nThis claims the currently accrued fees and adds them back into the same position. It does not create a new NFT.`, {
+    reply_markup: { inline_keyboard: [[{ text: "✅ Confirm compound", callback_data: `cmp:confirm:${tokenId}` }, { text: "Cancel", callback_data: "cmp:cancel" }]] },
+  });
+}
+
+export async function onCompoundConfirm(tokenId: string, mid: number): Promise<void> {
+  if (!/^\d+$/.test(tokenId)) return;
+  if (!acquireWallet()) {
+    await edit(mid, "⏳ The wallet is processing another transaction. Try Compound again shortly.");
+    return;
+  }
+  try {
+    await edit(mid, `⏳ Compounding fees into v4 #${tokenId}…`);
+    const { compoundV4Position } = await import("../chain/v4/close.js");
+    const r = await compoundV4Position(tokenId);
+    if (!r.compounded) {
+      await edit(mid, `ℹ️ <b>Nothing compounded for v4 #${tokenId}</b>\n${esc(r.reason ?? "No usable fees are available yet.")}`);
+      return;
+    }
+    invalidateListCache();
+    await edit(mid, [
+      `✅ <b>Fees compounded into v4 #${tokenId}</b>`,
+      `Added: ${r.add0?.toFixed(6) ?? "?"} ${esc(r.sym0 ?? "")} + ${r.add1?.toFixed(6) ?? "?"} ${esc(r.sym1 ?? "")}`,
+      r.txHash ? `tx: <a href="${explorerTx(r.txHash)}">View on-chain</a>` : "",
+    ].filter(Boolean).join("\n"), { reply_markup: { inline_keyboard: [[{ text: "📋 Refresh positions", callback_data: "refresh" }]] } });
+  } catch (e) {
+    await edit(mid, `❌ Compound failed: ${esc(short(e, 160))}`);
+  } finally {
+    releaseWallet();
+  }
 }
 
 // ══════════ /ledger ══════════
@@ -1254,6 +1406,7 @@ export async function onV4Lp(text: string): Promise<void> {
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
         `Close: <code>/v4close ${r.tokenId}</code>`,
       ].join("\n"),
+      r.tokenId ? { reply_markup: { inline_keyboard: [[positionRulesButton(r.tokenId, "v4")], [{ text: "📋 Check positions", callback_data: "refresh" }]] } } : undefined,
     );
   } catch (e) {
     await edit(mid, `❌ v4 mint failed: ${short(e, 160)}`);
@@ -1399,6 +1552,7 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
   // number could unexpectedly be applied to an earlier custom setting.
   pendingAutoInput = null;
   pendingSettingsInput = null;
+  pendingPositionRule = null;
   const a = cfg.autoLp;
   if (data === "auto:refresh") return showAutoPanel(mid);
   if (data === "auto:enable:ask") {
@@ -2343,6 +2497,7 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
   // number could unexpectedly be applied to an earlier custom setting.
   pendingAutoInput = null;
   pendingSettingsInput = null;
+  pendingPositionRule = null;
   if (data === "settings:refresh") return showSettingsPanel(mid);
   if (data === "settings:auto") return onAutoButton("auto:refresh", mid);
   if (data === "settings:lp") {
@@ -2829,6 +2984,7 @@ export const cancelPending = (): void => {
   pending = null;
   pendingAutoInput = null;
   pendingSettingsInput = null;
+  pendingPositionRule = null;
   pendingAdd = null;
   pendingSwap = null;
   swapFrom = null;

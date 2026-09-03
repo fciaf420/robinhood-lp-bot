@@ -1,7 +1,8 @@
 /**
  * Auto-manage open positions: take-profit / stop-loss / out-of-range → auto-close. Covers BOTH v3
  * and v4. Opt-in and OFF by default (tpPct=slPct=0, closeOor=false) — nothing closes until the
- * operator sets a trigger, and the whole loop only runs while /auto is ON.
+ * operator sets a trigger. Global rules require /auto; per-position rules can manage a manual position
+ * without enabling automatic entries.
  *
  * ⚠️ Closes SPEND REAL FUNDS on the shared wallet — every close is guarded by the same staticCall
  * the manual close uses, and a `closing` set prevents double-firing before /list catches up.
@@ -14,6 +15,7 @@ import { recordOor, inOorCooldown } from "./oorcool.js";
 import { dexPairs } from "../chain/dexscreener.js";
 import { logger } from "../util/log.js";
 import type { CloseReason as PositionCloseReason } from "../types.js";
+import { clearPositionExitRule, getPositionExitRule, hasActivePositionExitRules } from "./positionRules.js";
 
 const log = logger("automanage");
 
@@ -66,7 +68,7 @@ const NUDGE_MIN_MS = Number(process.env.RH_NUDGE_MS) || 30_000;
 /** Any manage action armed? (loop is a no-op otherwise, even when /auto is ON.) */
 function armed(): boolean {
   const a = cfg.autoLp;
-  return a.tpPct > 0 || a.slPct > 0 || a.closeOor || a.compound || a.volFadeX > 0 || a.minFeePerHourUsd > 0;
+  return a.tpPct > 0 || a.slPct > 0 || a.closeOor || a.compound || a.volFadeX > 0 || a.minFeePerHourUsd > 0 || hasActivePositionExitRules();
 }
 
 export function startManage(h?: ManageHooks): void {
@@ -90,7 +92,8 @@ export function manageStatus(): { on: boolean } & typeof stats {
 }
 
 async function tick(): Promise<void> {
-  if (!cfg.autoLp.enabled || !armed() || tickRunning) return;
+  // A per-position rule may manage a manually opened position while Auto-LP entry is OFF.
+  if ((!cfg.autoLp.enabled && !hasActivePositionExitRules()) || !armed() || tickRunning) return;
   tickRunning = true;
   lastTickAt = Date.now();
   try {
@@ -107,10 +110,10 @@ async function tick(): Promise<void> {
  * called by the sequencer feed when a swap touches one of our position tokens (sub-second reaction vs
  * up to 90s). Debounced (≤ once / NUDGE_MIN_MS) and skips if a tick is already running, so a burst of
  * feed events can't hammer the RPC. The interval timer stays as the reliable backstop for anything the
- * feed's partial decode misses. No-op unless /auto is ON and a trigger is armed.
+ * feed's partial decode misses. No-op unless /auto is ON or a per-position trigger is armed.
  */
 export function nudge(reason = "feed"): void {
-  if (!cfg.autoLp.enabled || !armed() || tickRunning) return;
+  if ((!cfg.autoLp.enabled && !hasActivePositionExitRules()) || !armed() || tickRunning) return;
   if (Date.now() - lastTickAt < NUDGE_MIN_MS) return;
   stats.nudges++;
   log.info(`manage nudge (${reason}) → checking TP/SL/OOR`);
@@ -193,9 +196,12 @@ async function runManage(): Promise<void> {
       }
     }
 
+    const override = getPositionExitRule(it.tokenId);
+    const tpPct = override && Object.prototype.hasOwnProperty.call(override, "tpPct") ? override.tpPct ?? 0 : a.tpPct;
+    const slPct = override && Object.prototype.hasOwnProperty.call(override, "slPct") ? override.slPct ?? 0 : a.slPct;
     let reason: CloseReason | null = null;
-    if (a.tpPct > 0 && it.pnlPct != null && it.pnlPct >= a.tpPct) reason = "TP";
-    else if (a.slPct > 0 && it.pnlPct != null && it.pnlPct <= -a.slPct) reason = "SL";
+    if (tpPct > 0 && it.pnlPct != null && it.pnlPct >= tpPct) reason = "TP";
+    else if (slPct > 0 && it.pnlPct != null && it.pnlPct <= -slPct) reason = "SL";
     else if (a.closeOor && !it.inRange) {
       // Close after `oorGraceMin` OUT of range. The grace timer is in-memory, so on the FIRST sighting
       // BACKDATE it by the position's on-chain age: a single-side park is OOR from birth (age == time
@@ -273,6 +279,8 @@ async function doClose(it: Item, reason: CloseReason): Promise<void> {
       swapHash = r.sweepHash;
     }
     stats.closed++;
+    clearPositionExitRule(it.tokenId, "tp");
+    clearPositionExitRule(it.tokenId, "sl");
     if (reason === "OOR") recordOor(it.tokenAddr); // #2: streak toward blacklisting a token that never fills
     hooks?.onAutoClose({ tokenId: it.tokenId, sym: it.sym, version: it.version, reason, pnlPct: it.pnlPct, pnlEth: it.pnlEth, txHash, swapHash });
     // keep it in `closing` a while so a stale /list (before Blockscout updates) can't re-fire it

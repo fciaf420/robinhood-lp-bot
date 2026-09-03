@@ -59,6 +59,13 @@ async function routeCallback(cq: any): Promise<void> {
   if (d === "usdgw") return H.onUseWalletUsdg(mid); // single-side pakai USDG di wallet (no swap/input)
   if (d.startsWith("mint:")) return H.onMint(mid, d.slice(5)); // single|inrange|v4|v4r
   if (d === "mint") return H.onMint(mid, "single");
+  if (d.startsWith("pr:")) return H.onPositionRuleButton(d, mid);
+  if (d.startsWith("cmp:ask:")) return H.onCompoundAsk(d.slice("cmp:ask:".length), mid);
+  if (d.startsWith("cmp:confirm:")) return H.onCompoundConfirm(d.slice("cmp:confirm:".length), mid);
+  if (d === "cmp:cancel") {
+    await call("editMessageText", { chat_id: chatId, message_id: mid, text: "✅ Compound cancelled. The position remains unchanged.", parse_mode: "HTML" });
+    return;
+  }
   if (d === "cancel") {
     H.cancelPending();
     await call("editMessageText", { chat_id: chatId, message_id: mid, text: "❌ Cancelled.", parse_mode: "HTML" });
@@ -106,6 +113,7 @@ async function routeMessage(m: any): Promise<void> {
     return;
   }
 
+  if (await H.onPositionRuleInput(t)) return;
   if (await H.onAutoInput(t)) return;
   if (await H.onSettingsInput(t)) return;
 

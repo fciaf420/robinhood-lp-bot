@@ -220,7 +220,7 @@ PnL    +0.013813Ξ     +$25.47
 - `3h 20m · $2.10/hr` → still productive, leave it
 - `2d 5h · $0.04/hr` → dead, capital stuck for nothing → close it, rotate to another pool
 
-The TOTAL (v3+v4+v2 combined) always sits at the very bottom. The 🔄 **Refresh** button fetches fresh data; a plain `/list` is served from a 20-second cache (so it's instant). Each position shows live PnL when its deposit basis is recorded, and each token has a **Close** / **💰 Claim** button. v4 Close and Close ALL require an explicit confirmation step.
+The TOTAL (v3+v4+v2 combined) always sits at the very bottom. The 🔄 **Refresh** button fetches fresh data; a plain `/list` is served from a 20-second cache (so it's instant). Each position shows live PnL when its deposit basis is recorded, and each token has **🎯 TP/SL** controls plus a **Close** / **💰 Claim** button. Per-position TP/SL overrides apply to manually opened or Auto-LP positions and are checked by the manager even when automatic entries are off. v4 USDG/ERC20 positions also have a one-time **🔁 Compound fees** action; continuous compounding remains an Auto-LP advanced rule. v4 Close and Close ALL require an explicit confirmation step.
 
 ### Close a position
 
