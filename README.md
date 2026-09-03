@@ -37,7 +37,7 @@ On top of the LP sits a **detection + screening** layer:
 
 …and an **automated farming** layer (new):
 
-- **Candidate hunter** (`/hunt`) — every 3 min: scan GMGN trending → screen → keep only tokens that have a **busy 3-5% fee pool**, ranked by **fee-yield** (`vol × fee%`), inside a **market-cap band** you set (small-cap = bigger fee share for small capital).
+- **Candidate hunter** (`/hunt`) — every 3 min: scan GMGN trending → screen → keep only tokens that have a **busy 3-10% fee pool**, ranked by **fee-yield** (`vol × fee%`), inside a **market-cap band** you set (small-cap = bigger fee share for small capital).
 - **Auto-farming** (`/auto`) — auto-**add** candidates that clear the gate + auto-**close** by TP / SL / out-of-range. Mode `single` (park the quote asset, rug-safe) or `inrange` (both-sided, fee immediately) — switchable live.
 - **Approval hygiene** (`/revoke`) — scan and zero known token approvals to bot protocol spenders.
 - **Reuse USDG + sweep back to ETH** — if you already hold USDG it isn't re-swapped; every close sweeps proceeds back to ETH (wallet stays clean, gas tops up).
@@ -306,7 +306,7 @@ GMGN (optional enrichment): install `gmgn-cli` + config on the machine running t
 
 The top layer: the bot **finds, opens, and closes positions on its own** — you just set the gates.
 
-**1. Hunter (`/hunt`)** — every 3 min: `100 trending → screening (thesis + LLM) → only tokens with a BUSY 3-5% fee pool → candidates`. Quality gates (all tunable via `/set`):
+**1. Hunter (`/hunt`)** — every 3 min: `100 trending → screening (thesis + LLM) → only tokens with a BUSY 3-10% fee pool → candidates`. Quality gates (all tunable via `/set`):
 
 - **Fee-yield** — pools are ranked by the fees they actually generate (`vol24h × fee%`), not raw volume. A 5% pool @ $8k vol beats a 3% pool @ $9k.
 - **Market-cap band** — only tokens in the range you want. Small-cap = your small position is a **bigger share of fees**.
@@ -345,7 +345,7 @@ The top layer: the bot **finds, opens, and closes positions on its own** — you
 | `/watch` | Scanner status + current top volume |
 | `/feed` | Real-time sequencer monitor · `/feed on`/`off` |
 | `/scan` | Check volume right now (manual) |
-| `/hunt` | Candidate hunter (fee 3-5% + busy tx + screening) |
+| `/hunt` | Candidate hunter (fee 3-10% + busy tx + screening) |
 | `/auto` | Auto-farming: auto-add + auto-close · `/auto on`\|`off` · `/auto tp 100` · `/auto sl 30` · `/auto oor on`\|`off` |
 | `/v4` | Inspect a token's Uniswap v4 pools by CA |
 | `/closeall` | Review and confirm closing ALL positions |
@@ -413,7 +413,7 @@ src/
 │   ├── positions.ts      v3 open / list / close + USDG single-side & in-range (Uniswap SDK math)
 │   ├── pools.ts          findPools, poolState, range math (SDK)
 │   ├── swaps.ts          quote + swap v3 (slippage floor)
-│   ├── candidate.ts      qualifyCandidate — 3-5% pool + fee-yield gate (hunter)
+│   ├── candidate.ts      qualifyCandidate — 3-10% pool + fee-yield gate (hunter)
 │   ├── dexscreener.ts    pool volume/liquidity (cached) — fee-farming signal
 │   ├── txlock.ts         wallet-tx serializer (no nonce collisions)
 │   ├── ledger.ts         permanent ledger + on-chain rebuild
@@ -438,7 +438,7 @@ src/
 │   ├── decode · listener (WS + IP-pin) · swapdecode · lpdecode · monitor
 ├── radar/                screening + auto-farming
 │   ├── openrouter.ts · gmgn.ts · screen.ts (/screen thesis) · radar.ts (LLM+GMGN verdict)
-│   ├── scanLoop.ts       hunter (/hunt) — trending → screen → 3-5% candidates
+│   ├── scanLoop.ts       hunter (/hunt) — trending → screen → 3-10% candidates
 │   ├── autolp.ts         auto-add: gate chain + open (1 token/position dedup + txlock)
 │   ├── automanage.ts     auto-close TP/SL/OOR (restart-proof grace)
 │   └── oorcool.ts        OOR cooldown (blacklist tokens that never enter range)

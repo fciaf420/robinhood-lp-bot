@@ -62,6 +62,10 @@
     "attachToNewToken": true,
     "attachToWatch": true
   },
+  "scan": {
+    "feeMinPpm": 30000,
+    "feeMaxPpm": 100000
+  },
   "autoLp": {
     "enabled": false,
     "sizeEth": 0.001,

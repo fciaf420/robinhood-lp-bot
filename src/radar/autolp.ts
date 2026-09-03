@@ -97,7 +97,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   const now = Date.now();
   const st = load();
   st.opens = st.opens.filter((o) => now - o.ts < 24 * 3600_000); // prune >24h
-  // count BOTH v3 and v4 — auto-add now opens v4 (3-5%) pools, so a v3-only count let maxOpen leak.
+  // count BOTH v3 and v4 — auto-add now opens v4 (3-10%) pools, so a v3-only count let maxOpen leak.
   const [v3rows, v4rows] = await Promise.all([
     listPositions().catch(() => []),
     import("../chain/v4/list.js").then((m) => m.listV4Positions()).catch(() => []),
@@ -129,7 +129,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   // has already been used" / revert, token already bought = stuck). Also mutually excludes auto-close.
   if (!acquireWallet()) return skip("wallet is sending another transaction (serialized to prevent nonce collisions)");
   try {
-    // 7. prefer a FARMABLE 3-5% pool
+    // 7. prefer a FARMABLE 3-10% pool
     const { qualifyCandidate } = await import("../chain/candidate.js");
     const q = await qualifyCandidate(candidate.token).catch(() => null);
 
@@ -155,7 +155,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     } else {
       const pools = await findPools(candidate.token).catch(() => []);
       const pool = pickLpPool(pools);
-      if (!pool) return skip(`no 3-5% pool (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
+      if (!pool) return skip(`no 3-10% pool (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
       log.info(`AUTO-OPEN ${candidate.symbol} ${a.sizeEth}Ξ ${modeLabel} v3 fee ${pool.fee}`);
       result = await openPosition(candidate.token, pool.pool, String(a.sizeEth), { mode: inRange ? "inrange" : "single" });
     }
@@ -180,7 +180,7 @@ export async function reopenRecentered(token: string, symbol: string): Promise<O
   const a = cfg.autoLp;
   const { qualifyCandidate } = await import("../chain/candidate.js");
   const q = await qualifyCandidate(token).catch(() => null);
-  if (!q) return null; // no farmable 3-5% pool anymore → don't redeploy into a dead token
+  if (!q) return null; // no farmable 3-10% pool anymore → don't redeploy into a dead token
   const b = await balances().catch(() => null);
   if (b) {
     const usable = Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);

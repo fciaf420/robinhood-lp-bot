@@ -107,7 +107,7 @@ export async function notifyNewToken(a: NewTokenAlert, verdict: Verdict | null =
   );
 }
 
-/** Quality LP candidate from the hunter: passed screening + busy + has a 3-5% v4 pool. */
+/** Quality LP candidate from the hunter: passed screening + busy + has a 3-10% v4 pool. */
 export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Promise<void> {
   const t = r.token;
   const verd = r.verdict === "ape" ? "🟢 APE" : r.verdict === "watch" ? "🟡 WATCH" : r.verdict === "skip" ? "🔴 SKIP" : "";
@@ -123,7 +123,7 @@ export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Pro
   await send(
     [
       `🎯 <b>LP CANDIDATE</b> · ${tokenEmoji(t.symbol)} <b>${esc(t.symbol)}</b> ${verd}`,
-      `<i>passed screening + active trading + 3-5% fee pool</i>`,
+      `<i>passed screening + active trading + 3-10% fee pool</i>`,
       pre(T.join("\n")),
       r.thesis ? `🧠 <i>${esc(r.thesis)}</i>` : "",
       r.flags.length ? `🚩 ${esc(r.flags.slice(0, 4).join(" · "))}` : "",

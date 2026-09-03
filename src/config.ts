@@ -10,7 +10,7 @@ import path from "node:path";
 import { z } from "zod";
 import { ROOT, dataPath, readJson, writeJson } from "./util/files.js";
 import { logger } from "./util/log.js";
-import { mergeRuntimeConfig } from "./configPersistence.js";
+import { mergeRuntimeConfig, migrateRuntimeConfig } from "./configPersistence.js";
 
 const log = logger("config");
 const CONFIG_FILE = path.join(ROOT, "config.json");
@@ -132,13 +132,13 @@ const AutoLpSchema = z.object({
 });
 
 // Quality-candidate hunter: poll GMGN trending → screen (thesis + LLM) → keep only tokens that
-// have a v4 pool in the target fee band (3-5%) with real 24h volume → alert with 1-tap LP.
+// have a v4 pool in the target fee band (3-10%) with real 24h volume → alert with 1-tap LP.
 // Replaces the noisy "every new token/pool" feed spam with focused, farmable candidates.
 const ScanSchema = z.object({
   enabled: z.boolean().default(true),
   intervalMin: z.number().int().positive().default(3),
   feeMinPpm: z.number().int().default(30000), // 3.00%
-  feeMaxPpm: z.number().int().default(50000), // 5.00%
+  feeMaxPpm: z.number().int().default(100000), // 10.00%
   minVolUsd: z.number().default(10000), // pool 24h volume floor ("tx rame")
   minPoolFeesUsd: z.number().default(250), // #1 fee-yield: min 24h fees the pool generated (vol × fee%) — weights busy + HIGH-fee over raw volume
   minFeeYieldPct: z.number().default(0), // #1 fee-yield: min daily fee/TVL yield % — only enforced when TVL is readable (v4 singleton often reads $0 → skipped)
@@ -153,8 +153,8 @@ const ScanSchema = z.object({
   minScore: z.number().default(55), // screening score floor (0-100)
   cooldownMin: z.number().default(120), // don't re-alert the same token within this window
   // GMGN trending gates for the hunt — LOOSER than /screen (which targets big tokens), because
-  // the 3-5% high-fee pools live on SMALLER tokens (a JACKET, not a VIRTUAL). These decide which
-  // tokens get to the per-token 3-5%-pool check.
+  // the 3-10% high-fee pools live on SMALLER tokens (a JACKET, not a VIRTUAL). These decide which
+  // tokens get to the per-token 3-10%-pool check.
   screenMinMcap: z.number().default(20000),
   screenMaxMcap: z.number().default(0), // 0 = no ceiling. Set to farm SMALL-cap pools: for a fixed small position, a smaller pool = bigger fee share = faster fees.
   screenMinVol: z.number().default(50000),
@@ -192,7 +192,7 @@ function load(): Config {
     throw new Error(`config.json could not be read: ${(e as Error).message}`);
   }
   const runtime = readJson<Record<string, unknown> | null>(RUNTIME_CONFIG_FILE, null);
-  const raw = mergeRuntimeConfig((baseline ?? {}) as Record<string, any>, runtime);
+  const raw = mergeRuntimeConfig((baseline ?? {}) as Record<string, any>, migrateRuntimeConfig(runtime));
   const parsed = ConfigSchema.safeParse(raw);
   if (!parsed.success) {
     log.error("config.json invalid", parsed.error.flatten().fieldErrors);

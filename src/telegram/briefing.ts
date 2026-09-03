@@ -205,7 +205,7 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
   }
   const system =
     "You are a quantitative analyst for a liquidity-provider (LP) bot on Uniswap v4 (Robinhood Chain). " +
-    "The bot auto-hunts tokens, opens LP in high-fee pools (3-5%), then auto-closes on take-profit (TP), stop-loss (SL), " +
+    "The bot auto-hunts tokens, opens LP in high-fee pools (3-10%), then auto-closes on take-profit (TP), stop-loss (SL), " +
     "out-of-range (OOR), or volume-fade (VFADE). You receive the last 24 hours of activity plus strategy config. " +
     "Write a SHORT & SHARP analysis in English in an operator style, not formal.\n" +
     "Use EXACTLY 3 sections, one short paragraph each, STARTING with a label wrapped in **...**:\n" +

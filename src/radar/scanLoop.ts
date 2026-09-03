@@ -1,6 +1,6 @@
 /**
  * Quality-candidate hunter. Every `cfg.scan.intervalMin` it screens GMGN trending (thesis + LLM),
- * keeps only survivors that ALSO have a v4 pool in the 3-5% fee band with real volume, and alerts
+ * keeps only survivors that ALSO have a v4 pool in the 3-10% fee band with real volume, and alerts
  * with a 1-tap LP button. This is the focused replacement for the old "every new token" feed spam.
  */
 import { cfg, env } from "../config.js";
@@ -61,7 +61,7 @@ async function tick(): Promise<void> {
 
 async function runScan(): Promise<{ found: number; scanned: number }> {
   const s = cfg.scan;
-  // Loose GMGN gates (the 3-5% pools live on smaller tokens) + thesis/LLM screening.
+  // Loose GMGN gates (the 3-10% pools live on smaller tokens) + thesis/LLM screening.
   const { results, scanned } = await screenTokens({
     llm: !!env.openrouterKey,
     llmTop: 1,
@@ -74,7 +74,7 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
   stats.lastAt = Date.now();
   stats.lastScanned = scanned;
   const now = Date.now();
-  // survivors past the score/verdict floor and out of cooldown → check the 3-5% pool in parallel
+  // survivors past the score/verdict floor and out of cooldown → check the 3-10% pool in parallel
   const cand = results
     .filter(
       (r) =>
@@ -122,6 +122,6 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
     hooks?.onCandidate(q.r, q.pool);
   }
   stats.lastFound = found;
-  log.info(`hunt scan: ${scanned} trending → ${cand.length} passed screening → ${found} candidates (active 3-5% pool)`);
+  log.info(`hunt scan: ${scanned} trending → ${cand.length} passed screening → ${found} candidates (active 3-10% pool)`);
   return { found, scanned };
 }

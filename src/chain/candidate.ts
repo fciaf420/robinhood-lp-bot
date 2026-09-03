@@ -1,5 +1,5 @@
 /**
- * Candidate qualifier — does a token have a v4 pool in the target fee band (3-5%) with real 24h
+ * Candidate qualifier — does a token have a v4 pool in the target fee band (3-10%) with real 24h
  * volume? This is the "hard gate" shared by the hunter scanner and the feed: a token only counts
  * as a farmable LP candidate if there's an actual high-fee pool with turnover to earn from.
  */
@@ -21,7 +21,7 @@ export interface QualifiedPool {
 }
 
 /**
- * Best v4 pool for `token` inside [feeMinPpm, feeMaxPpm]. Gates (#1 fee-yield):
+ * Best v4 pool for `token` inside [feeMinPpm, feeMaxPpm] (3-10% by default). Gates (#1 fee-yield):
  *   - volume ≥ minVolUsd (busy)
  *   - 24h fees generated (vol × feeRate) ≥ minPoolFeesUsd — weights a busy HIGH-fee pool over raw
  *     volume (a 5% pool at $8k vol beats a 3% pool at $9k), which is exactly what we farm.
@@ -38,7 +38,7 @@ export async function qualifyCandidate(token: string): Promise<QualifiedPool | n
   ]);
   let best: QualifiedPool | null = null;
   for (const p of [...eth, ...usd]) {
-    if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) continue; // outside the 3-5% band
+    if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) continue; // outside the 3-10% band
     const d = dex.get(p.poolId.toLowerCase());
     const volUsd = d?.vol24h ?? 0;
     if (volUsd < s.minVolUsd) continue; // not busy enough

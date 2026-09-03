@@ -2250,7 +2250,7 @@ export async function onSwapDo(mid: number): Promise<void> {
 
 // ══════════ 🎯 candidate hunter ══════════
 
-/** /hunt [on|off|now] — the quality-candidate scanner (fee 3-5% + active trading + screening). */
+/** /hunt [on|off|now] — the quality-candidate scanner (fee 3-10% + active trading + screening). */
 export async function onHunt(arg?: string): Promise<void> {
   const { startScan, stopScan, scanStatus, scanNow } = await import("../radar/scanLoop.js");
   const a = (arg ?? "").toLowerCase();
@@ -2258,7 +2258,7 @@ export async function onHunt(arg?: string): Promise<void> {
     cfg.scan.enabled = true;
     persist();
     startScan();
-    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (3-5% fee + active trading + passed screening).`);
+    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (3-10% fee + active trading + passed screening).`);
     return;
   }
   if (a === "off") {
@@ -2273,7 +2273,7 @@ export async function onHunt(arg?: string): Promise<void> {
     const mid = m?.result?.message_id;
     try {
       const r = await scanNow();
-      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (3-5% fee + activity + screening).${r.found ? " Alert sent ↑" : " None passed right now."}`);
+      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (3-10% fee + activity + screening).${r.found ? " Alert sent ↑" : " None passed right now."}`);
     } catch (e) {
       await edit(mid, `❌ Scan failed: ${short(e, 100)}`);
     }
@@ -2600,7 +2600,7 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
       { text: `Minimum pool volume: $${cfg.scan.minVolUsd}`, callback_data: "settings:hunt:volume" },
       { text: `Alert cooldown: ${cfg.scan.cooldownMin} minutes`, callback_data: "settings:hunt:cooldown" },
     ];
-    const page = settingsSubmenu("Hunter settings", ["Hunter searches GMGN, screens candidates, and checks for active 3–5% pools."], rows);
+    const page = settingsSubmenu("Hunter settings", ["Hunter searches GMGN, screens candidates, and checks for active 3–10% pools."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
