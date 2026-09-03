@@ -23,7 +23,7 @@ import { ethers } from "ethers";
 import { esc, pre, padR, padL, sg, money, tokenEmoji, rangeBins } from "./format.js";
 import { fmtMcap, fmtAge } from "../util/format.js";
 import { logger } from "../util/log.js";
-import { autoPanelKeyboard, autoBackButton, exitRuleKeyboard, type AutoPanelButton } from "./autoPanel.js";
+import { autoPanelKeyboard, autoBackButton, autoEntryButtons, autoAdvancedButtons, exitRuleKeyboard, type AutoPanelButton } from "./autoPanel.js";
 import { settingsPanelKeyboard, type SettingsButton } from "./settingsPanel.js";
 import { feedPanelKeyboard, feedAutoCloseConfirmKeyboard } from "./feedPanel.js";
 import { screenDisplayCount } from "./screenDisplay.js";
@@ -162,9 +162,44 @@ interface Pending {
   balancedEth?: number; // ETH that balances the held token for a dual-side mint
 }
 let pending: Pending | null = null;
-type AutoInput = "sizeEth" | "minScore" | "maxOpen" | "maxPerHour" | "dailyCapEth" | "compoundMinUsd" | "tpPct" | "slPct";
+type AutoInput =
+  | "sizeEth"
+  | "minScore"
+  | "maxOpen"
+  | "maxPerHour"
+  | "dailyCapEth"
+  | "minLiqUsd"
+  | "maxTaxPct"
+  | "compoundMinUsd"
+  | "tpPct"
+  | "slPct"
+  | "oorGraceMin"
+  | "oorCooldownCount"
+  | "oorCooldownHours"
+  | "vfadeMinAgeMin"
+  | "feeGraceMin";
 let pendingAutoInput: AutoInput | null = null;
-type SettingsInput = "widthPct" | "slippagePct" | "minFeePpm" | "nativeTargetEth";
+type SettingsInput =
+  | "widthPct"
+  | "depositUsd"
+  | "slippagePct"
+  | "minFeePpm"
+  | "nativeTargetEth"
+  | "newTokenMinWethSeed"
+  | "activityThreshold"
+  | "feedCooldownMin"
+  | "minPoolFeesUsd"
+  | "minFeeYieldPct"
+  | "minPoolLiqUsd"
+  | "maxVolLiqRatio"
+  | "minSpikeX"
+  | "screenMinMcap"
+  | "screenMaxMcap"
+  | "watchMinVol5m"
+  | "watchMinVol1h"
+  | "watchMaxTaxPct"
+  | "watchCooldownMin"
+  | "watchMaxTokens";
 let pendingSettingsInput: SettingsInput | null = null;
 // "➕ Add" flow — top up an EXISTING position (increase liquidity, not a new NFT)
 let pendingAdd: { tokenId: string; version: "v3" | "v4" } | null = null;
@@ -1352,6 +1387,7 @@ export async function onFeed(arg?: string): Promise<void> {
 /** Handle the feed panel without forcing the user to remember slash commands. */
 export async function onFeedButton(data: string, mid: number): Promise<void> {
   if (data === "feed:refresh") return renderFeedPanel(mid);
+  if (data === "feed:newtoken:settings") return onSettingsButton("settings:feed:newtoken", mid);
   if (data === "feed:on") {
     cfg.feed.enabled = true;
     persist();
@@ -1568,7 +1604,8 @@ function autoPanelText(): string {
     `Status: <b>${a.enabled ? "🟢 ON" : "🔴 OFF"}</b>`,
     `<i>Auto-LP can use real funds when enabled.</i>`,
     ``,
-    `Entry: <b>${a.sizeEth} ETH</b> · score ≥ <b>${a.minScore}</b> · ${a.mode === "single" ? "Safe single-side" : "In-range"}`,
+    `Entry: <b>${a.sizeEth} ETH</b> · score ≥ <b>${a.minScore}</b> · liq ≥ <b>$${a.minLiqUsd}</b> · tax ≤ <b>${a.maxTaxPct}%</b>`,
+    `Mode: <b>${a.mode === "single" ? "Safe single-side" : "In-range"}</b> · trigger <b>${a.requireAction}</b> · LLM ${a.requireLlm ? "required" : "optional"} · GMGN ${a.requireGmgn ? "required" : "optional"}`,
     `Limits: <b>${a.maxOpen}</b> open · <b>${a.maxPerHour}</b>/hour · <b>${a.dailyCapEth} ETH</b>/day`,
     `Sources: <b>${sources}</b>`,
     `Exits: TP ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"} · SL ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"} · OOR ${a.closeOor ? "on" : "off"}`,
@@ -1618,14 +1655,7 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
     return showAutoPanel(mid);
   }
   if (data === "auto:entry") {
-    const rows: AutoPanelButton[] = [
-      { text: `0.001 ETH${a.sizeEth === 0.001 ? " ✓" : ""}`, callback_data: "auto:size:0.001" },
-      { text: `0.002 ETH${a.sizeEth === 0.002 ? " ✓" : ""}`, callback_data: "auto:size:0.002" },
-      { text: `0.005 ETH${a.sizeEth === 0.005 ? " ✓" : ""}`, callback_data: "auto:size:0.005" },
-      { text: "Custom size", callback_data: "auto:size:custom" },
-      { text: `Score ≥ ${a.minScore}`, callback_data: "auto:score:custom" },
-    ];
-    const page = autoSubmenu("Entry settings", ["Choose how much each automatic LP entry may use."], rows);
+    const page = autoSubmenu("Entry settings", ["Set the amount, screening threshold, liquidity/tax safety gates, and which verdicts may trigger an entry."], autoEntryButtons(a));
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
@@ -1668,6 +1698,8 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
       { text: `Take profit: ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"}`, callback_data: "auto:exit:tp" },
       { text: `Stop loss: ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"}`, callback_data: "auto:exit:sl" },
       { text: `Out of range: ${a.closeOor ? "close" : "leave open"}`, callback_data: "auto:exit:oor" },
+      { text: `OOR grace period: ${a.oorGraceMin} minutes`, callback_data: "auto:oor:grace" },
+      { text: `OOR action: ${a.oorAction}`, callback_data: "auto:oor:action" },
       { text: "Advanced performance rules", callback_data: "auto:advanced" },
     ];
     const page = autoSubmenu("Exit rules", ["All exit rules are off by default."], rows);
@@ -1692,13 +1724,9 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
     return;
   }
   if (data === "auto:advanced") {
-    const rows: AutoPanelButton[] = [
-      { text: `Compound fees: ${a.compound ? "on" : "off"}`, callback_data: "auto:compound:toggle" },
-      { text: `Compound minimum: $${a.compoundMinUsd}`, callback_data: "auto:compound:min" },
-      { text: `Volume fade: ${a.volFadeX > 0 ? a.volFadeX + "×" : "off"}`, callback_data: "auto:advanced:vol" },
-      { text: `Fee-rate exit: ${a.minFeePerHourUsd > 0 ? "$" + a.minFeePerHourUsd + "/h" : "off"}`, callback_data: "auto:advanced:fee" },
-    ];
-    const page = autoSubmenu("Advanced exit rules", ["These rules can close positions when pool performance deteriorates."], rows);
+    const rows = autoAdvancedButtons(a);
+    rows.push({ text: `OOR cooldown: ${a.oorCooldownCount} closes / ${a.oorCooldownHours}h`, callback_data: "auto:oor:cooldown" });
+    const page = autoSubmenu("Advanced exit rules", ["These rules can close positions when pool performance deteriorates. Age guards prevent premature exits."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
@@ -1734,35 +1762,85 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
+  if (data === "auto:vfade:age" || data === "auto:fee:age") {
+    const fee = data === "auto:fee:age";
+    const current = fee ? a.feeGraceMin : a.vfadeMinAgeMin;
+    const values = [0, 20, 30, 60, 120];
+    const rows: AutoPanelButton[] = values.map((v) => ({ text: `${v} minutes${current === v ? " ✓" : ""}`, callback_data: `auto:${fee ? "fee" : "vfade"}:age:${v}` }));
+    rows.push({ text: "Custom minutes", callback_data: `auto:${fee ? "fee" : "vfade"}:age:custom` });
+    const page = autoSubmenu(fee ? "Fee-rate minimum age" : "Volume-fade minimum age", [fee ? "Do not close on low fee-rate until the position is this old." : "Do not close on volume fade until the position is this old."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data === "auto:oor:grace") {
+    const values = [0, 15, 30, 60, 120];
+    const rows: AutoPanelButton[] = values.map((v) => ({ text: `${v} minutes${a.oorGraceMin === v ? " ✓" : ""}`, callback_data: `auto:oor:grace:${v}` }));
+    rows.push({ text: "Custom minutes", callback_data: "auto:oor:grace:custom" });
+    const page = autoSubmenu("OOR grace period", ["Wait this long before closing a position that moved out of range."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data === "auto:oor:action") {
+    const rows: AutoPanelButton[] = [
+      { text: `Close to ETH${a.oorAction === "close" ? " ✓" : ""}`, callback_data: "auto:oor:action:close" },
+      { text: `Close + reopen recentered${a.oorAction === "rebalance" ? " ✓" : ""}`, callback_data: "auto:oor:action:rebalance" },
+    ];
+    const page = autoSubmenu("OOR action", ["Rebalance closes the position, then reopens at the current price when the pool still qualifies."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data === "auto:oor:cooldown") {
+    const page = autoSubmenu("OOR cooldown", ["After this many OOR closes, pause re-entry for the selected number of hours."], [
+      { text: `${a.oorCooldownCount} OOR closes · custom count`, callback_data: "auto:oor:count:custom" },
+      { text: `${a.oorCooldownHours} hours · custom duration`, callback_data: "auto:oor:hours:custom" },
+      { text: "3 closes", callback_data: "auto:oor:count:3" },
+      { text: "6 closes", callback_data: "auto:oor:count:6" },
+      { text: "12 hours", callback_data: "auto:oor:hours:12" },
+      { text: "24 hours", callback_data: "auto:oor:hours:24" },
+    ]);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
   if (data.startsWith("auto:vol:")) {
     a.volFadeX = Number(data.slice("auto:vol:".length));
     persist();
     return onAutoButton("auto:advanced", mid);
   }
-  if (data.startsWith("auto:fee:")) {
+  if (data.startsWith("auto:fee:") && !data.startsWith("auto:fee:age:")) {
     a.minFeePerHourUsd = Number(data.slice("auto:fee:".length));
     persist();
     return onAutoButton("auto:advanced", mid);
   }
-  if (data.startsWith("auto:size:") || data.startsWith("auto:score:") || data.startsWith("auto:maxopen:") || data.startsWith("auto:maxhour:") || data.startsWith("auto:daily:")) {
+  if (data.startsWith("auto:size:") || data.startsWith("auto:score:") || data.startsWith("auto:minliq:") || data.startsWith("auto:maxtax:") || data.startsWith("auto:maxopen:") || data.startsWith("auto:maxhour:") || data.startsWith("auto:daily:")) {
     const [_, kind, value] = data.split(":");
     if (value === "custom") {
-      const input: Record<string, AutoInput> = { size: "sizeEth", score: "minScore", maxopen: "maxOpen", maxhour: "maxPerHour", daily: "dailyCapEth" };
+      const input: Record<string, AutoInput> = { size: "sizeEth", score: "minScore", minliq: "minLiqUsd", maxtax: "maxTaxPct", maxopen: "maxOpen", maxhour: "maxPerHour", daily: "dailyCapEth" };
       pendingAutoInput = input[kind];
       await edit(mid, `Reply with a custom value for <b>${kind === "size" ? "entry size in ETH" : kind === "daily" ? "daily ETH limit" : kind}</b>.`, { reply_markup: { inline_keyboard: [autoBackButton()] } });
       return;
     }
-    const input: Record<string, AutoInput> = { size: "sizeEth", score: "minScore", maxopen: "maxOpen", maxhour: "maxPerHour", daily: "dailyCapEth" };
+    const input: Record<string, AutoInput> = { size: "sizeEth", score: "minScore", minliq: "minLiqUsd", maxtax: "maxTaxPct", maxopen: "maxOpen", maxhour: "maxPerHour", daily: "dailyCapEth" };
     const key = input[kind];
     if (!key) return;
     (a[key] as number) = Number(value);
     persist();
-    return kind === "size" || kind === "score" ? onAutoButton("auto:entry", mid) : onAutoButton("auto:limits", mid);
+    return kind === "size" || kind === "score" || kind === "minliq" || kind === "maxtax" ? onAutoButton("auto:entry", mid) : onAutoButton("auto:limits", mid);
   }
   if (data.startsWith("auto:mode:")) {
     a.mode = data.endsWith("inrange") ? "inrange" : "single";
     persist();
     return onAutoButton("auto:mode", mid);
+  }
+  if (data.startsWith("auto:action:")) {
+    a.requireAction = data.slice("auto:action:".length) as typeof a.requireAction;
+    persist();
+    return onAutoButton("auto:entry", mid);
+  }
+  if (data.startsWith("auto:require:")) {
+    const key = data.endsWith("gmgn") ? "requireGmgn" : "requireLlm";
+    a[key] = !a[key];
+    persist();
+    return onAutoButton("auto:entry", mid);
   }
   if (data.startsWith("auto:source:")) {
     const source = data.slice("auto:source:".length) as "watch-spike" | "hunt" | "feed-new";
@@ -1807,9 +1885,49 @@ export async function onAutoButton(data: string, mid: number): Promise<void> {
     return onAutoButton("auto:exits", mid);
   }
   if (data.startsWith("auto:oor:")) {
+    const parts = data.split(":");
+    if (parts[2] === "grace") {
+      if (parts[3] === "custom") {
+        pendingAutoInput = "oorGraceMin";
+        await edit(mid, "Reply with the OOR grace period in minutes.", { reply_markup: { inline_keyboard: [autoBackButton()] } });
+        return;
+      }
+      a.oorGraceMin = Number(parts[3]);
+      persist();
+      return onAutoButton("auto:exits", mid);
+    }
+    if (parts[2] === "action") {
+      a.oorAction = parts[3] as "close" | "rebalance";
+      persist();
+      return onAutoButton("auto:exits", mid);
+    }
+    if (parts[2] === "count" || parts[2] === "hours") {
+      if (parts[3] === "custom") {
+        pendingAutoInput = parts[2] === "count" ? "oorCooldownCount" : "oorCooldownHours";
+        await edit(mid, `Reply with the OOR cooldown ${parts[2] === "count" ? "close count" : "duration in hours"}.`, { reply_markup: { inline_keyboard: [autoBackButton()] } });
+        return;
+      }
+      if (parts[2] === "count") a.oorCooldownCount = Number(parts[3]);
+      else a.oorCooldownHours = Number(parts[3]);
+      persist();
+      return onAutoButton("auto:oor:cooldown", mid);
+    }
     a.closeOor = data.endsWith(":1");
     persist();
     return onAutoButton("auto:exits", mid);
+  }
+  if (data.startsWith("auto:vfade:age:") || data.startsWith("auto:fee:age:")) {
+    const fee = data.startsWith("auto:fee:");
+    const value = data.split(":").at(-1);
+    if (value === "custom") {
+      pendingAutoInput = fee ? "feeGraceMin" : "vfadeMinAgeMin";
+      await edit(mid, "Reply with the minimum age in minutes.", { reply_markup: { inline_keyboard: [autoBackButton()] } });
+      return;
+    }
+    if (fee) a.feeGraceMin = Number(value);
+    else a.vfadeMinAgeMin = Number(value);
+    persist();
+    return onAutoButton("auto:advanced", mid);
   }
 }
 
@@ -1822,8 +1940,9 @@ export async function onAutoInput(text: string): Promise<boolean> {
   const key = pendingAutoInput;
   pendingAutoInput = null;
   const n = Number(text.trim());
-  const integer = key === "minScore" || key === "maxOpen" || key === "maxPerHour";
-  if (!Number.isFinite(n) || n < 0 || (integer && !Number.isInteger(n)) || (key === "sizeEth" && n <= 0)) {
+  const integer = ["minScore", "maxOpen", "maxPerHour", "oorCooldownCount", "vfadeMinAgeMin", "feeGraceMin", "oorGraceMin"].includes(key);
+  const boundedPct = key === "minScore" || key === "maxTaxPct" || key === "tpPct" || key === "slPct";
+  if (!Number.isFinite(n) || n < 0 || (integer && !Number.isInteger(n)) || (key === "sizeEth" && n <= 0) || (boundedPct && n > 100)) {
     await send("That value is not valid. Open <code>/auto</code> and try again.");
     return true;
   }
@@ -2561,7 +2680,7 @@ function settingsText(): string {
     `LP: width <b>${cfg.lp.widthPct}%</b> · slippage <b>${cfg.lp.slippagePct}%</b> · fee floor <b>${(cfg.lp.minFeePpm / 10000).toFixed(2)}%</b>`,
     `Gas target: <b>${cfg.lp.nativeTargetEth} ETH</b> · auto-wrap <b>${cfg.lp.autoWrap ? "on" : "off"}</b>`,
     `Radar: <b>${cfg.radar.enabled ? "on" : "off"}</b> · GMGN <b>${cfg.radar.useGmgn ? "on" : "off"}</b>`,
-    `Feed: <b>${cfg.feed.enabled ? "on" : "off"}</b> · Auto-LP: <b>${cfg.autoLp.enabled ? "on" : "off"}</b>`,
+    `Feed: <b>${cfg.feed.enabled ? "on" : "off"}</b> · Hunter: <b>${cfg.scan.enabled ? "on" : "off"}</b> · Auto-LP: <b>${cfg.autoLp.enabled ? "on" : "off"}</b>`,
     `Fast submit: <b>${env.fastSubmit ? "on" : "off"}</b>`,
     ``,
     `<i>Use the buttons below. Technical /set commands remain available as advanced shortcuts.</i>`,
@@ -2591,6 +2710,7 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
   if (data === "settings:lp") {
     const rows: SettingsButton[] = [
       { text: `Width: ${cfg.lp.widthPct}%`, callback_data: "settings:width" },
+      { text: `Deposit target: $${cfg.lp.depositUsd}`, callback_data: "settings:deposit" },
       { text: `Slippage: ${cfg.lp.slippagePct}%`, callback_data: "settings:slippage" },
       { text: `Fee floor: ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`, callback_data: "settings:fee" },
       { text: `Auto-wrap: ${cfg.lp.autoWrap ? "on" : "off"}`, callback_data: "settings:toggle:wrap" },
@@ -2599,18 +2719,19 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
-  if (data === "settings:width" || data === "settings:slippage" || data === "settings:fee" || data === "settings:gas") {
+  if (data === "settings:width" || data === "settings:deposit" || data === "settings:slippage" || data === "settings:fee" || data === "settings:gas") {
     const isWidth = data === "settings:width";
+    const isDeposit = data === "settings:deposit";
     const isSlippage = data === "settings:slippage";
-    const values = isWidth ? [25, 50, 100] : isSlippage ? [1, 3, 5, 10] : data === "settings:fee" ? [0, 0.3, 1, 3, 5] : [0.005, 0.01, 0.015, 0.03];
-    const current = isWidth ? cfg.lp.widthPct : isSlippage ? cfg.lp.slippagePct : data === "settings:fee" ? cfg.lp.minFeePpm / 10000 : cfg.lp.nativeTargetEth;
+    const values = isWidth ? [25, 50, 100] : isDeposit ? [10, 20, 50, 100] : isSlippage ? [1, 3, 5, 10] : data === "settings:fee" ? [0, 0.3, 1, 3, 5] : [0.005, 0.01, 0.015, 0.03];
+    const current = isWidth ? cfg.lp.widthPct : isDeposit ? cfg.lp.depositUsd : isSlippage ? cfg.lp.slippagePct : data === "settings:fee" ? cfg.lp.minFeePpm / 10000 : cfg.lp.nativeTargetEth;
     const rows: SettingsButton[] = values.map((v) => ({
-      text: `${v}${data === "settings:gas" ? " ETH" : "%"}${v === current ? " ✓" : ""}`,
-      callback_data: `settings:set:${data.slice("settings:".length)}:${v}`,
+      text: `${v}${data === "settings:gas" ? " ETH" : isDeposit ? " USD" : "%"}${v === current ? " ✓" : ""}`,
+      callback_data: `settings:set:${isDeposit ? "deposit" : data.slice("settings:".length)}:${v}`,
     }));
-    rows.push({ text: "Custom value", callback_data: `settings:custom:${isWidth ? "widthPct" : isSlippage ? "slippagePct" : data === "settings:fee" ? "minFeePpm" : "nativeTargetEth"}` });
-    const title = isWidth ? "LP width" : isSlippage ? "Swap slippage" : data === "settings:fee" ? "LP fee floor" : "Gas target";
-    const page = settingsSubmenu(title, [isWidth ? "Wider ranges stay active longer but earn less concentrated fees." : isSlippage ? "Higher slippage is more tolerant but increases execution risk." : data === "settings:fee" ? "Pools below this fee tier will not be preferred for LP." : "Keep this much native ETH available for future gas."], rows);
+    rows.push({ text: "Custom value", callback_data: `settings:custom:${isWidth ? "widthPct" : isDeposit ? "depositUsd" : isSlippage ? "slippagePct" : data === "settings:fee" ? "minFeePpm" : "nativeTargetEth"}` });
+    const title = isWidth ? "LP width" : isDeposit ? "Deposit target" : isSlippage ? "Swap slippage" : data === "settings:fee" ? "LP fee floor" : "Gas target";
+    const page = settingsSubmenu(title, [isWidth ? "Wider ranges stay active longer but earn less concentrated fees." : isDeposit ? "Reference amount for manual LP prompts; it does not authorize a transaction." : isSlippage ? "Higher slippage is more tolerant but increases execution risk." : data === "settings:fee" ? "Pools below this fee tier will not be preferred for LP." : "Keep this much native ETH available for future gas."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
@@ -2618,8 +2739,16 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     const rows: SettingsButton[] = [
       { text: `LLM radar: ${cfg.radar.enabled ? "on" : "off"}`, callback_data: "settings:toggle:radar" },
       { text: `GMGN enrichment: ${cfg.radar.useGmgn ? "on" : "off"}`, callback_data: "settings:toggle:gmgn" },
+      { text: "Provider status & fallback", callback_data: "settings:providers" },
     ];
     const page = settingsSubmenu("Radar & GMGN", ["Radar adds LLM scoring; GMGN adds market and safety data."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data === "settings:providers") {
+    const primary = env.openrouterKey ? `${env.openrouterModel} (OpenRouter)` : "not configured";
+    const fallback = env.deepseekKey ? `${env.deepseekModel} (DeepSeek paid)` : "not configured";
+    const page = settingsSubmenu("LLM providers", [`Primary: <b>${primary}</b>`, `Fallback: <b>${fallback}</b>`, "OpenRouter is tried first. DeepSeek is used automatically after a provider failure; there is no separate toggle."], []);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
@@ -2627,6 +2756,7 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     const rows: SettingsButton[] = [
       { text: `Sequencer feed: ${cfg.feed.enabled ? "on" : "off"}`, callback_data: "settings:toggle:feed" },
       { text: `New-token alerts: ${cfg.feed.newToken ? "on" : "off"}`, callback_data: "settings:toggle:newtoken" },
+      { text: "New-token detection settings", callback_data: "settings:feed:newtoken" },
       { text: `Position monitor: ${cfg.feed.positionMonitor ? "on" : "off"}`, callback_data: "settings:toggle:posmon" },
       { text: `Feed auto-close OOR: ${cfg.feed.autoCloseOutOfRange ? "on" : "off"}`, callback_data: "settings:toggle:feedoor" },
     ];
@@ -2634,14 +2764,48 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
+  if (data === "settings:feed:newtoken") {
+    const rows: SettingsButton[] = [
+      { text: `Minimum seed: ${cfg.feed.newTokenMinWethSeed} WETH`, callback_data: "settings:feednew:seed" },
+      { text: `Activity threshold: ${cfg.feed.activityThreshold} swaps`, callback_data: "settings:feednew:activity" },
+      { text: `Alert cooldown: ${cfg.feed.cooldownMin} minutes`, callback_data: "settings:feednew:cooldown" },
+    ];
+    const page = settingsSubmenu("New-token detection", ["New-token alerts watch fresh WETH pools. These controls change detection noise, not Auto-LP entry approval."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
   if (data === "settings:hunt") {
     const rows: SettingsButton[] = [
+      { text: `Hunter scanner: ${cfg.scan.enabled ? "on" : "off"}`, callback_data: "settings:toggle:hunt" },
       { text: `Scan interval: ${cfg.scan.intervalMin} minutes`, callback_data: "settings:hunt:interval" },
       { text: `Minimum score: ${cfg.scan.minScore}`, callback_data: "settings:hunt:score" },
       { text: `Minimum pool volume: $${cfg.scan.minVolUsd}`, callback_data: "settings:hunt:volume" },
       { text: `Alert cooldown: ${cfg.scan.cooldownMin} minutes`, callback_data: "settings:hunt:cooldown" },
+      { text: `Pool fee band: ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}–${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}%`, callback_data: "settings:hunt:feeband" },
+      { text: "Quality, market-cap & anti-wash filters", callback_data: "settings:hunt:quality" },
     ];
     const page = settingsSubmenu("Hunter settings", ["Hunter searches GMGN, screens candidates, and checks for active 3–10% pools."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data === "settings:hunt:feeband") {
+    const bands: [number, number][] = [[3, 10], [5, 10], [3, 5], [5, 25]];
+    const rows = bands.map(([lo, hi]) => ({ text: `${lo}–${hi}%${cfg.scan.feeMinPpm === lo * 10000 && cfg.scan.feeMaxPpm === hi * 10000 ? " ✓" : ""}`, callback_data: `settings:huntset:feeband:${lo}:${hi}` }));
+    const page = settingsSubmenu("Hunter pool fee band", ["Only pools inside this fee range are eligible for Hunter candidates."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data === "settings:hunt:quality") {
+    const rows: SettingsButton[] = [
+      { text: `Minimum pool fees: $${cfg.scan.minPoolFeesUsd}`, callback_data: "settings:huntq:fees" },
+      { text: `Minimum fee yield: ${cfg.scan.minFeeYieldPct}%`, callback_data: "settings:huntq:yield" },
+      { text: `Minimum pool liquidity: $${cfg.scan.minPoolLiqUsd}`, callback_data: "settings:huntq:liq" },
+      { text: `Max volume/liquidity: ${cfg.scan.maxVolLiqRatio || "off"}`, callback_data: "settings:huntq:ratio" },
+      { text: `Minimum volume spike: ${cfg.scan.minSpikeX || "off"}×`, callback_data: "settings:huntq:spike" },
+      { text: `Market-cap minimum: $${cfg.scan.screenMinMcap}`, callback_data: "settings:huntq:mcapmin" },
+      { text: `Market-cap maximum: ${cfg.scan.screenMaxMcap ? "$" + cfg.scan.screenMaxMcap : "off"}`, callback_data: "settings:huntq:mcapmax" },
+    ];
+    const page = settingsSubmenu("Hunter quality filters", ["These filters reduce noisy or wash-traded candidates before Auto-LP sees them."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
@@ -2651,10 +2815,118 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
       { text: `Scan interval: ${cfg.watch.intervalSec}s`, callback_data: "settings:watch:interval" },
       { text: `Rise threshold: ${cfg.watch.riseFactor}×`, callback_data: "settings:watch:rise" },
       { text: `Minimum liquidity: $${cfg.watch.minLiqUsd}`, callback_data: "settings:watch:liq" },
+      { text: "Volume & token-safety filters", callback_data: "settings:watch:filters" },
     ];
     const page = settingsSubmenu("Watch settings", ["Watch detects rising volume and can send candidate alerts."], rows);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
+  }
+  if (data === "settings:watch:filters") {
+    const rows: SettingsButton[] = [
+      { text: `5-minute volume: $${cfg.watch.minVol5m}`, callback_data: "settings:watchq:vol5m" },
+      { text: `1-hour volume: $${cfg.watch.minVol1h}`, callback_data: "settings:watchq:vol1h" },
+      { text: `Maximum token tax: ${cfg.watch.maxTaxPct}%`, callback_data: "settings:watchq:tax" },
+      { text: `Alert cooldown: ${cfg.watch.cooldownMin} minutes`, callback_data: "settings:watchq:cooldown" },
+      { text: `Maximum tokens per scan: ${cfg.watch.maxTokens}`, callback_data: "settings:watchq:tokens" },
+    ];
+    const page = settingsSubmenu("Watch filters", ["Watch detects rising volume. These gates control how many candidates it evaluates and alerts."], rows);
+    await edit(mid, page.text, { reply_markup: page.reply_markup });
+    return;
+  }
+  if (data.startsWith("settings:feednew:")) {
+    const [, , kind, raw] = data.split(":");
+    const current = { seed: cfg.feed.newTokenMinWethSeed, activity: cfg.feed.activityThreshold, cooldown: cfg.feed.cooldownMin }[kind];
+    const values: Record<string, number[]> = { seed: [0.005, 0.02, 0.05], activity: [1, 3, 5, 10], cooldown: [5, 15, 30, 60] };
+    if (!values[kind]) return;
+    if (raw == null) {
+      const rows = values[kind].map((v) => ({ text: `${v}${kind === "seed" ? " WETH" : kind === "activity" ? " swaps" : " minutes"}${v === current ? " ✓" : ""}`, callback_data: `settings:feednew:${kind}:${v}` }));
+      rows.push({ text: "Custom value", callback_data: `settings:feednew:${kind}:custom` });
+      const page = settingsSubmenu(kind === "seed" ? "Minimum new-token seed" : kind === "activity" ? "New-token activity threshold" : "New-token alert cooldown", [kind === "seed" ? "Ignore fresh pools below this WETH seed." : kind === "activity" ? "Require this many swaps before re-checking activity." : "Avoid repeating the same new-token alert inside this window."], rows);
+      await edit(mid, page.text, { reply_markup: page.reply_markup });
+      return;
+    }
+    if (raw === "custom") {
+      pendingSettingsInput = kind === "seed" ? "newTokenMinWethSeed" : kind === "activity" ? "activityThreshold" : "feedCooldownMin";
+      await edit(mid, "Reply with the custom new-token value. Use WETH, swaps, or minutes as shown on the previous screen.", { reply_markup: { inline_keyboard: [[{ text: "◀️ Back to Settings", callback_data: "settings:refresh" }]] } });
+      return;
+    }
+    if (kind === "seed") cfg.feed.newTokenMinWethSeed = Number(raw);
+    else if (kind === "activity") cfg.feed.activityThreshold = Number(raw);
+    else cfg.feed.cooldownMin = Number(raw);
+    persist();
+    return onSettingsButton("settings:feed:newtoken", mid);
+  }
+  if (data.startsWith("settings:huntq:")) {
+    const [, , kind, raw] = data.split(":");
+    const current: Record<string, number> = {
+      fees: cfg.scan.minPoolFeesUsd,
+      yield: cfg.scan.minFeeYieldPct,
+      liq: cfg.scan.minPoolLiqUsd,
+      ratio: cfg.scan.maxVolLiqRatio,
+      spike: cfg.scan.minSpikeX,
+      mcapmin: cfg.scan.screenMinMcap,
+      mcapmax: cfg.scan.screenMaxMcap,
+    };
+    const values: Record<string, number[]> = {
+      fees: [0, 100, 250, 500, 1000],
+      yield: [0, 1, 3, 5],
+      liq: [0, 1000, 5000, 20000],
+      ratio: [0, 5, 10, 25],
+      spike: [0, 1.2, 1.5, 2],
+      mcapmin: [0, 20000, 100000, 500000],
+      mcapmax: [0, 250000, 1000000, 5000000],
+    };
+    const input: Record<string, SettingsInput> = { fees: "minPoolFeesUsd", yield: "minFeeYieldPct", liq: "minPoolLiqUsd", ratio: "maxVolLiqRatio", spike: "minSpikeX", mcapmin: "screenMinMcap", mcapmax: "screenMaxMcap" };
+    if (!values[kind]) return;
+    if (raw == null) {
+      const rows = values[kind].map((v) => ({ text: `${v === 0 ? "Off / 0" : "$" + v}${kind === "yield" ? "% yield" : kind === "spike" ? "× spike" : kind === "ratio" ? "× volume/liquidity" : kind.startsWith("mcap") ? " mcap" : " fees"}${v === current[kind] ? " ✓" : ""}`, callback_data: `settings:huntq:${kind}:${v}` }));
+      rows.push({ text: "Custom value", callback_data: `settings:huntq:${kind}:custom` });
+      const page = settingsSubmenu("Hunter quality filter", ["Choose a preset or enter a custom value. Zero means off for optional filters."], rows);
+      await edit(mid, page.text, { reply_markup: page.reply_markup });
+      return;
+    }
+    if (raw === "custom") {
+      pendingSettingsInput = input[kind];
+      await edit(mid, "Reply with the custom Hunter filter value. Use 0 to turn off optional filters.", { reply_markup: { inline_keyboard: [[{ text: "◀️ Back to Settings", callback_data: "settings:refresh" }]] } });
+      return;
+    }
+    const value = Number(raw);
+    if (kind === "fees") cfg.scan.minPoolFeesUsd = value;
+    else if (kind === "yield") cfg.scan.minFeeYieldPct = value;
+    else if (kind === "liq") cfg.scan.minPoolLiqUsd = value;
+    else if (kind === "ratio") cfg.scan.maxVolLiqRatio = value;
+    else if (kind === "spike") cfg.scan.minSpikeX = value;
+    else if (kind === "mcapmin") cfg.scan.screenMinMcap = value;
+    else cfg.scan.screenMaxMcap = value;
+    persist();
+    return onSettingsButton("settings:hunt:quality", mid);
+  }
+  if (data.startsWith("settings:watchq:")) {
+    const [, , kind, raw] = data.split(":");
+    const current: Record<string, number> = { vol5m: cfg.watch.minVol5m, vol1h: cfg.watch.minVol1h, tax: cfg.watch.maxTaxPct, cooldown: cfg.watch.cooldownMin, tokens: cfg.watch.maxTokens };
+    const values: Record<string, number[]> = { vol5m: [50000, 150000, 300000], vol1h: [300000, 1000000, 3000000], tax: [0, 5, 10], cooldown: [30, 60, 120], tokens: [100, 300, 500] };
+    const input: Record<string, SettingsInput> = { vol5m: "watchMinVol5m", vol1h: "watchMinVol1h", tax: "watchMaxTaxPct", cooldown: "watchCooldownMin", tokens: "watchMaxTokens" };
+    if (!values[kind]) return;
+    if (raw == null) {
+      const rows = values[kind].map((v) => ({ text: `${kind === "tax" ? v + "% tax" : kind === "tokens" ? v + " tokens" : "$" + v}${v === current[kind] ? " ✓" : ""}`, callback_data: `settings:watchq:${kind}:${v}` }));
+      rows.push({ text: "Custom value", callback_data: `settings:watchq:${kind}:custom` });
+      const page = settingsSubmenu("Watch filter", ["Set the volume, tax, alert-frequency, and scan-size gates."], rows);
+      await edit(mid, page.text, { reply_markup: page.reply_markup });
+      return;
+    }
+    if (raw === "custom") {
+      pendingSettingsInput = input[kind];
+      await edit(mid, "Reply with the custom Watch filter value.", { reply_markup: { inline_keyboard: [[{ text: "◀️ Back to Settings", callback_data: "settings:refresh" }]] } });
+      return;
+    }
+    const value = Number(raw);
+    if (kind === "vol5m") cfg.watch.minVol5m = value;
+    else if (kind === "vol1h") cfg.watch.minVol1h = value;
+    else if (kind === "tax") cfg.watch.maxTaxPct = value;
+    else if (kind === "cooldown") cfg.watch.cooldownMin = value;
+    else cfg.watch.maxTokens = value;
+    persist();
+    return onSettingsButton("settings:watch:filters", mid);
   }
   if (data.startsWith("settings:hunt:")) {
     const kind = data.slice("settings:hunt:".length);
@@ -2690,6 +2962,12 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     else if (key === "newtoken") cfg.feed.newToken = !cfg.feed.newToken;
     else if (key === "posmon") cfg.feed.positionMonitor = !cfg.feed.positionMonitor;
     else if (key === "feedoor") cfg.feed.autoCloseOutOfRange = !cfg.feed.autoCloseOutOfRange;
+    else if (key === "hunt") {
+      cfg.scan.enabled = !cfg.scan.enabled;
+      const { startScan, stopScan } = await import("../radar/scanLoop.js");
+      if (cfg.scan.enabled) startScan();
+      else stopScan();
+    }
     else if (key === "watch") {
       cfg.watch.enabled = !cfg.watch.enabled;
       if (cfg.watch.enabled) startWatch();
@@ -2699,6 +2977,10 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
       if (cfg.feed.enabled) void startFeed();
       else stopFeed();
     }
+    if ((key === "newtoken" || key === "posmon") && cfg.feed[key === "newtoken" ? "newToken" : "positionMonitor"]) {
+      cfg.feed.enabled = true;
+      void startFeed();
+    }
     persist();
     return showSettingsPanel(mid);
   }
@@ -2707,12 +2989,20 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     const kind = parts[2];
     const value = Number(parts[3]);
     if (kind === "width") cfg.lp.widthPct = value;
+    else if (kind === "deposit") cfg.lp.depositUsd = value;
     else if (kind === "slippage") cfg.lp.slippagePct = value;
     else if (kind === "fee") cfg.lp.minFeePpm = Math.round(value * 10000);
     else if (kind === "gas") cfg.lp.nativeTargetEth = value;
     else return;
     persist();
     return showSettingsPanel(mid);
+  }
+  if (data.startsWith("settings:huntset:feeband:")) {
+    const [, , , lo, hi] = data.split(":");
+    cfg.scan.feeMinPpm = Number(lo) * 10000;
+    cfg.scan.feeMaxPpm = Number(hi) * 10000;
+    persist();
+    return onSettingsButton("settings:hunt", mid);
   }
   if (data.startsWith("settings:huntset:")) {
     const [, , kind, raw] = data.split(":");
@@ -2752,14 +3042,36 @@ export async function onSettingsInput(text: string): Promise<boolean> {
   const key = pendingSettingsInput;
   pendingSettingsInput = null;
   const n = Number(text.trim());
-  if (!Number.isFinite(n) || n < 0 || (key === "widthPct" && n <= 0) || (key === "slippagePct" && n > 50)) {
+  const integer = ["activityThreshold", "watchMaxTokens"].includes(key);
+  const percentage = ["widthPct", "slippagePct", "minFeeYieldPct", "watchMaxTaxPct"].includes(key);
+  if (!Number.isFinite(n) || n < 0 || (integer && !Number.isInteger(n)) || (key === "widthPct" && n <= 0) || (key === "slippagePct" && n > 50) || (percentage && n > 100)) {
     await send("That value is not valid. Open <code>/settings</code> and try again.");
     return true;
   }
   if (key === "widthPct") cfg.lp.widthPct = n;
+  else if (key === "depositUsd") cfg.lp.depositUsd = n;
   else if (key === "slippagePct") cfg.lp.slippagePct = n;
   else if (key === "minFeePpm") cfg.lp.minFeePpm = Math.round(n * 10000);
-  else cfg.lp.nativeTargetEth = n;
+  else if (key === "nativeTargetEth") cfg.lp.nativeTargetEth = n;
+  else if (key === "newTokenMinWethSeed") cfg.feed.newTokenMinWethSeed = n;
+  else if (key === "activityThreshold") cfg.feed.activityThreshold = n;
+  else if (key === "feedCooldownMin") cfg.feed.cooldownMin = n;
+  else if (key === "minPoolFeesUsd") cfg.scan.minPoolFeesUsd = n;
+  else if (key === "minFeeYieldPct") cfg.scan.minFeeYieldPct = n;
+  else if (key === "minPoolLiqUsd") cfg.scan.minPoolLiqUsd = n;
+  else if (key === "maxVolLiqRatio") cfg.scan.maxVolLiqRatio = n;
+  else if (key === "minSpikeX") cfg.scan.minSpikeX = n;
+  else if (key === "screenMinMcap") cfg.scan.screenMinMcap = n;
+  else if (key === "screenMaxMcap") cfg.scan.screenMaxMcap = n;
+  else if (key === "watchMinVol5m") cfg.watch.minVol5m = n;
+  else if (key === "watchMinVol1h") cfg.watch.minVol1h = n;
+  else if (key === "watchMaxTaxPct") cfg.watch.maxTaxPct = n;
+  else if (key === "watchCooldownMin") cfg.watch.cooldownMin = n;
+  else if (key === "watchMaxTokens") cfg.watch.maxTokens = n;
+  else {
+    await send("That setting is not available. Open <code>/settings</code> and try again.");
+    return true;
+  }
   persist();
   await showSettingsPanel();
   return true;

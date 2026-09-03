@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { autoPanelKeyboard, exitRuleKeyboard } from "../src/telegram/autoPanel.ts";
+import { autoAdvancedButtons, autoEntryButtons, autoPanelKeyboard, exitRuleKeyboard } from "../src/telegram/autoPanel.ts";
 
 test("auto panel exposes plain-English controls for the full Auto-LP setup", () => {
   const rows = autoPanelKeyboard({
@@ -37,4 +37,15 @@ test("exit rule panels offer custom take-profit and stop-loss percentages", () =
   assert.ok(sl.flat().some((b) => b.text.startsWith("Custom percentage") && b.callback_data === "auto:sl:custom"));
   assert.ok(tp.flat().some((b) => b.text === "Custom percentage (37%) ✓"));
   assert.ok(sl.flat().some((b) => b.text === "Custom percentage (18%) ✓"));
+});
+
+test("Auto entry and advanced panels expose the important safety gates", () => {
+  const entry = autoEntryButtons({ sizeEth: 0.001, minScore: 75, minLiqUsd: 20_000, maxTaxPct: 5, requireAction: "ape", requireLlm: true, requireGmgn: false });
+  const advanced = autoAdvancedButtons({ compound: false, compoundMinUsd: 0.5, volFadeX: 0, vfadeMinAgeMin: 20, minFeePerHourUsd: 0, feeGraceMin: 30 });
+  const labels = [...entry, ...advanced].map((b) => b.text).join(" | ");
+  assert.match(labels, /Liquidity/);
+  assert.match(labels, /Max tax/);
+  assert.match(labels, /Require trusted LLM/);
+  assert.match(labels, /Volume-fade minimum age/);
+  assert.match(labels, /Fee-rate minimum age/);
 });

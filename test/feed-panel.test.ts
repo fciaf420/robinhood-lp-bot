@@ -6,6 +6,7 @@ test("feed panel exposes clear controls and valid callback shapes", () => {
   const rows = feedPanelKeyboard({ enabled: false, newToken: true, positionMonitor: true, autoCloseOutOfRange: false, radar: false });
   assert.ok(rows.some((row) => row[0]?.text === "▶️ Start feed"));
   assert.ok(rows.some((row) => row[0]?.callback_data === "feed:toggle:posmon"));
+  assert.ok(rows.some((row) => row[0]?.callback_data === "feed:newtoken:settings"));
   for (const row of [...rows, ...feedAutoCloseConfirmKeyboard()]) {
     assert.equal(row.length, 1);
     assert.ok(row[0]?.callback_data?.startsWith("feed:"));

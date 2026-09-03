@@ -13,6 +13,7 @@ export function feedPanelKeyboard(state: FeedPanelState): FeedPanelButton[][] {
   return [
     [{ text: state.enabled ? "⏹ Stop feed" : "▶️ Start feed", callback_data: state.enabled ? "feed:off" : "feed:on" }],
     [{ text: `🆕 New-token alerts: ${state.newToken ? "ON" : "OFF"}`, callback_data: "feed:toggle:newtoken" }],
+    [{ text: "⚙️ New-token detection settings", callback_data: "feed:newtoken:settings" }],
     [{ text: `👁 Position monitoring: ${state.positionMonitor ? "ON" : "OFF"}`, callback_data: "feed:toggle:posmon" }],
     [{ text: `🤖 Radar scoring: ${state.radar ? "ON" : "OFF"}`, callback_data: "feed:toggle:radar" }],
     [{ text: state.autoCloseOutOfRange ? "⚠️ Auto-close OOR: ON" : "⚠️ Auto-close OOR: OFF", callback_data: "feed:toggle:autoclose" }],
