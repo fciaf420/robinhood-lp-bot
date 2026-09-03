@@ -259,3 +259,56 @@ export async function overrides(): Promise<ethers.Overrides> {
   }
   return {};
 }
+
+function checkedTxError(error: unknown): string {
+  const e = error as { shortMessage?: unknown; reason?: unknown; message?: unknown } | null;
+  return String(e?.shortMessage ?? e?.reason ?? e?.message ?? error).replace(/\s+/g, " ").slice(0, 180);
+}
+
+/**
+ * Preflight a contract transaction with the same sender, then submit it with an explicit gas
+ * limit. Calling sendTransaction without gasLimit makes ethers run an implicit estimate and turns
+ * Robinhood's empty `require(false)` response into an opaque error. Keeping the call and estimate
+ * here also makes every close step identify itself before anything is broadcast.
+ */
+export async function sendCheckedTransaction(
+  request: ethers.TransactionRequest,
+  label: string,
+): Promise<ethers.TransactionResponse> {
+  const w = wallet();
+  const data = requireCalldata(request.data, label);
+  const simulation = { ...request, data, from: w.address };
+
+  try {
+    await provider.call(simulation);
+  } catch (e) {
+    throw new Error(`${label} simulation reverted: ${checkedTxError(e)}`);
+  }
+
+  let estimated: bigint;
+  try {
+    estimated = await provider.estimateGas(simulation);
+  } catch (primaryError) {
+    // A transient private-RPC estimate failure should not prevent a close when the read fallback
+    // can independently validate the exact same calldata. This is still a simulation/estimate,
+    // never a blind send.
+    try {
+      estimated = await readProvider.estimateGas(simulation);
+      log.warn(`${label}: primary gas estimate failed; read fallback supplied the estimate`);
+    } catch (fallbackError) {
+      throw new Error(
+        `${label} gas estimate reverted: ${checkedTxError(primaryError)}; fallback: ${checkedTxError(fallbackError)}`,
+      );
+    }
+  }
+
+  const sendRequest: ethers.TransactionRequest = {
+    ...request,
+    data,
+    gasLimit: estimated > 0n ? estimated * 2n : 1_000_000n,
+    ...(await overrides()),
+  };
+  // populateTransaction may carry a `from`; the signer supplies the authoritative sender.
+  delete sendRequest.from;
+  return w.sendTransaction(sendRequest);
+}

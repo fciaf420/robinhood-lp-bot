@@ -7,7 +7,7 @@ import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
 import v4sdk from "@uniswap/v4-sdk";
 import { C, cfg } from "../../config.js";
-import { wallet, provider, overrides, waitTx } from "../client.js";
+import { wallet, provider, waitTx, sendCheckedTransaction } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
 import { NATIVE } from "./poolkey.js";
@@ -64,13 +64,10 @@ async function loadPosition(tokenId: string) {
 }
 
 async function simulateAndSend(calldata: string, value: string, label: string): Promise<string> {
-  const w = wallet();
-  try {
-    await provider.call({ to: C.v4PositionManager!, data: calldata, value, from: w.address });
-  } catch (e) {
-    throw new Error(`simulation ${label} v4 reverted: ${((e as any).shortMessage || (e as Error).message || "").slice(0, 140)}`);
-  }
-  const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...(await overrides()) });
+  const tx = await sendCheckedTransaction(
+    { to: C.v4PositionManager!, data: calldata, value: BigInt(value) },
+    `v4 ${label}`,
+  );
   await waitTx(tx, `v4-${label}`);
   return tx.hash;
 }

@@ -9,7 +9,7 @@
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
 import { cfg, C } from "../config.js";
-import { wallet, readProvider, overrides } from "./client.js";
+import { wallet, readProvider, overrides, waitTx, sendCheckedTransaction } from "./client.js";
 import { NPM_ABI, FACTORY_ABI, POOL_ABI, ERC20_ABI } from "./abis.js";
 import { tokenMeta } from "./tokens.js";
 import { getPoolState, computeRange, mcapAtTick, widthInTicks, USDG, type PoolState } from "./pools.js";
@@ -886,18 +886,25 @@ export async function closePosition(
   // ── execute ──
   let decreaseHash: string | null = null;
   if (p.liquidity > 0n) {
-    const dtx = await npm.decreaseLiquidity!(
-      { tokenId, liquidity: p.liquidity, amount0Min: 0n, amount1Min: 0n, deadline: deadline() },
-      await overrides(),
-    );
-    await dtx.wait();
+    const dtxRequest = await npm.decreaseLiquidity!.populateTransaction({
+      tokenId,
+      liquidity: p.liquidity,
+      amount0Min: 0n,
+      amount1Min: 0n,
+      deadline: deadline(),
+    });
+    const dtx = await sendCheckedTransaction(dtxRequest, `v3 #${tokenId} decreaseLiquidity`);
+    await waitTx(dtx, `v3-${tokenId}-decreaseLiquidity`);
     decreaseHash = dtx.hash;
   }
-  const ctx = await npm.collect!(
-    { tokenId, recipient: w.address, amount0Max: MAX_U128, amount1Max: MAX_U128 },
-    await overrides(),
-  );
-  await ctx.wait();
+  const collectRequest = await npm.collect!.populateTransaction({
+    tokenId,
+    recipient: w.address,
+    amount0Max: MAX_U128,
+    amount1Max: MAX_U128,
+  });
+  const ctx = await sendCheckedTransaction(collectRequest, `v3 #${tokenId} collect`);
+  await waitTx(ctx, `v3-${tokenId}-collect`);
   let burnHash: string | null = null;
   try {
     const btx = await npm.burn!(tokenId, await overrides());
@@ -1052,12 +1059,25 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean;
   // ── execute close ──
   let decreaseHash: string | null = null;
   if (p.liquidity > 0n) {
-    const dtx = await npm.decreaseLiquidity!({ tokenId, liquidity: p.liquidity, amount0Min: 0n, amount1Min: 0n, deadline: deadline() }, await overrides());
-    await dtx.wait();
+    const dtxRequest = await npm.decreaseLiquidity!.populateTransaction({
+      tokenId,
+      liquidity: p.liquidity,
+      amount0Min: 0n,
+      amount1Min: 0n,
+      deadline: deadline(),
+    });
+    const dtx = await sendCheckedTransaction(dtxRequest, `v3 #${tokenId} decreaseLiquidity`);
+    await waitTx(dtx, `v3-${tokenId}-decreaseLiquidity`);
     decreaseHash = dtx.hash;
   }
-  const ctx = await npm.collect!({ tokenId, recipient: w.address, amount0Max: MAX_U128, amount1Max: MAX_U128 }, await overrides());
-  await ctx.wait();
+  const collectRequest = await npm.collect!.populateTransaction({
+    tokenId,
+    recipient: w.address,
+    amount0Max: MAX_U128,
+    amount1Max: MAX_U128,
+  });
+  const ctx = await sendCheckedTransaction(collectRequest, `v3 #${tokenId} collect`);
+  await waitTx(ctx, `v3-${tokenId}-collect`);
   let burnHash: string | null = null;
   try {
     const btx = await npm.burn!(tokenId, await overrides());
