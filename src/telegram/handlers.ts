@@ -368,6 +368,33 @@ export function manualFundingButtons({ heldTokenUi, balancedEth }: { heldTokenUi
   return rows;
 }
 
+export function manualFundingPrompt({
+  symbol,
+  availableEth,
+  weth,
+  eth,
+  heldTokenUi,
+  choice,
+}: {
+  symbol: string;
+  availableEth?: number;
+  weth: number;
+  eth: number;
+  heldTokenUi: number;
+  choice: "fresh" | "held" | "custom";
+}): string {
+  const amount = heldTokenUi > 0 ? (heldTokenUi >= 1000 ? Math.round(heldTokenUi).toLocaleString("en-US") : heldTokenUi.toPrecision(5)) : "0";
+  const ethLine = availableEth != null
+    ? `Available for LP: <b>${availableEth.toFixed(5)} ETH</b> (WETH ${weth.toFixed(4)} + ETH ${eth.toFixed(4)})`
+    : "Available for LP: <b>could not be refreshed</b>";
+  const modeLine = choice === "fresh"
+    ? `🎯 Fresh mode: the existing ${esc(symbol)} balance will not be used.`
+    : choice === "held"
+      ? `♻️ Held-token mode: the wallet's ${esc(symbol)} balance will be used.`
+      : `⌨️ Custom amount: held ${esc(symbol)} will be reused unless you choose Fresh two-sided.`;
+  return [ethLine, `Wallet token balance: <b>${amount} ${esc(symbol)}</b>`, modeLine].join("\n");
+}
+
 export async function onPick(idx: number, mid: number): Promise<void> {
   if (!pending) return;
   const p = pending.pools[idx];
@@ -458,11 +485,14 @@ export async function onBalancedLp(mid: number): Promise<void> {
 
 export async function onFundingButton(data: string, mid: number): Promise<void> {
   if (!pending?.chosen?.v4 || pending.chosen.v4.quote === "usd") return;
+  const b = await balances().catch(() => null);
+  const heldRaw = await tokenBalanceRaw(pending.token).catch(() => 0n);
+  pending.heldTokenUi = heldRaw > 0n ? Number(heldRaw) / 10 ** pending.meta.decimals : 0;
   if (data === "fund:fresh") {
     pending.tokenFunding = "fresh";
     pending.ethAmt = undefined;
     pending.awaitingAmount = true;
-    await edit(mid, `🎯 <b>Fresh two-sided entry</b>\n\nThe bot will buy the token through Kyber and will not use the token balance already in the wallet.\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+    await edit(mid, `🎯 <b>Fresh two-sided entry</b>\n\n${manualFundingPrompt({ symbol: pending.meta.symbol, availableEth: b ? usableEth(b) : undefined, weth: b ? Number(b.weth) : 0, eth: b ? Number(b.eth) : 0, heldTokenUi: pending.heldTokenUi, choice: "fresh" })}\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
     return;
   }
   if (data === "fund:held") {
@@ -470,13 +500,13 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
     if (pending.balancedEth) return onBalancedLp(mid);
     pending.ethAmt = undefined;
     pending.awaitingAmount = true;
-    await edit(mid, `♻️ <b>Use held ${esc(pending.meta.symbol)} balance</b>\n\nEnter the ETH amount to pair with the token balance (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+    await edit(mid, `♻️ <b>Use held ${esc(pending.meta.symbol)} balance</b>\n\n${manualFundingPrompt({ symbol: pending.meta.symbol, availableEth: b ? usableEth(b) : undefined, weth: b ? Number(b.weth) : 0, eth: b ? Number(b.eth) : 0, heldTokenUi: pending.heldTokenUi, choice: "held" })}\n\nEnter the ETH amount to pair with the token balance (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
     return;
   }
   if (data === "amount:custom") {
     pending.awaitingAmount = true;
     pending.ethAmt = undefined;
-    await edit(mid, `⌨️ <b>Custom two-sided amount</b>\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).${pending.heldTokenUi ? `\nHeld ${esc(pending.meta.symbol)} will be reused unless you choose Fresh two-sided first.` : ""}`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+    await edit(mid, `⌨️ <b>Custom two-sided amount</b>\n\n${manualFundingPrompt({ symbol: pending.meta.symbol, availableEth: b ? usableEth(b) : undefined, weth: b ? Number(b.weth) : 0, eth: b ? Number(b.eth) : 0, heldTokenUi: pending.heldTokenUi, choice: "custom" })}\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
   }
 }
 
