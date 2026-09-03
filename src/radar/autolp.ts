@@ -60,6 +60,11 @@ export function hasTrustedLlmApproval(verdict: Verdict | null): boolean {
   return verdict?.provenance === "llm" && !!verdict.llm;
 }
 
+/** A candidate must be rescored when Auto-LP requires model approval but none was attached. */
+export function needsLlmApproval(requireLlm: boolean, verdict: Verdict | null): boolean {
+  return requireLlm && !hasTrustedLlmApproval(verdict);
+}
+
 /** Run the full gate chain; open a position only if ALL pass. Returns null if disabled. */
 export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null): Promise<AutoLpResult | null> {
   const a = cfg.autoLp;

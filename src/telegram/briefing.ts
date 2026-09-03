@@ -215,9 +215,7 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
     "**🔧 FIX** — ONE highest-impact config change for tomorrow (name the knob and a concrete number).\n" +
     "You may **bold** important token names/numbers. Do NOT use Markdown headings (#) or HTML tags. " +
     "Use real numbers and token names from the data. Maximum ~180 words, insight only, do not repeat raw data.";
-  // OpenRouter remains the primary briefing gateway; llmComplete immediately tries the paid
-  // DeepSeek fallback after a transient provider failure instead of waiting through another long
-  // free-model timeout. The rule-based analysis still remains the final fallback.
+  // DeepSeek is the active briefing provider. The rule-based analysis remains the final fallback.
   const result = await llmComplete(system, dataBlock, {
     timeoutMs: 70_000,
     retries: 1,
@@ -320,7 +318,7 @@ export async function buildBriefing(): Promise<string> {
   }
 
   H.push("");
-  H.push("🧠 <b>ANALYSIS</b>" + (env.briefKey ? "" : " <i>(rule-based)</i>") + ":");
+  H.push("🧠 <b>ANALYSIS</b>" + (env.briefKey || env.deepseekKey ? "" : " <i>(rule-based)</i>") + ":");
   H.push(analysisMono(analysis));
 
   return H.join("\n");

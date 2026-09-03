@@ -6,7 +6,7 @@
 import { cfg } from "../config.js";
 import { scoreCandidate, type Candidate, type Verdict } from "../radar/radar.js";
 import { qualifyCandidate } from "../chain/candidate.js";
-import { maybeAutoLp } from "../radar/autolp.js";
+import { maybeAutoLp, needsLlmApproval } from "../radar/autolp.js";
 import { notifySpike, notifyNewToken, notifyAutoLp } from "./notify.js";
 import { logger } from "../util/log.js";
 import type { SpikeHit } from "../types.js";
@@ -81,9 +81,9 @@ export async function handleNewToken(a: NewTokenAlert): Promise<void> {
 }
 
 /**
- * Hunter candidate (already screened + has a busy 3-10% pool) → auto-LP. The hunter's screening IS
- * the verdict here, so auto-open fires when the operator's gate (requireAction/minScore) is met and
- * "hunt" is an allowed source. maybeAutoLp then opens SINGLE-SIDE on that 3-10% pool.
+ * Hunter candidate (already screened + has a busy 3-10% pool) → auto-LP. The hunter may only attach
+ * a model verdict to its top screen result; if Auto-LP requires LLM approval, rescore candidates
+ * without one through the active radar provider before applying the safety gates.
  */
 export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool): Promise<void> {
   const candidate: Candidate = {
@@ -97,10 +97,14 @@ export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool):
   // A heuristic screen score is useful for ranking/alerts, but must never masquerade as model
   // approval when Auto-LP's requireLlm gate is enabled.
   const action = r.verdictSource === "llm" ? (r.verdict ?? "skip") : "skip";
-  const verdict: Verdict = {
+  let verdict: Verdict | null = {
     llm: r.verdictSource === "llm" ? { action, score: r.score, summary: r.thesis ?? `${r.kind} · ${r.community}` } : null,
     gmgn: null,
     provenance: r.verdictSource === "llm" ? "llm" : "none",
   };
+  if (needsLlmApproval(cfg.autoLp.requireLlm, verdict)) {
+    verdict = await scoreCandidate(candidate).catch(() => null);
+    if (verdict) log.info(`hunter ${candidate.symbol}: attached radar verdict for Auto-LP`);
+  }
   await runAuto(candidate, verdict);
 }

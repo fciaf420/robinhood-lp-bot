@@ -1,7 +1,7 @@
 /**
- * LLM client — OpenRouter is the primary endpoint and DeepSeek is an optional paid fallback.
- * Both speak the OpenAI-compatible chat-completions API. stream:false keeps every call to one
- * JSON response. Best-effort: returns null if no key or if every configured provider fails.
+ * LLM client — DeepSeek is the active paid provider. OpenRouter remains understood for legacy
+ * installations, but is ignored whenever a DeepSeek key is configured. Both speak the
+ * OpenAI-compatible chat-completions API. Best-effort: returns null if no key or if the provider fails.
  */
 import { env } from "../config.js";
 import { logger } from "../util/log.js";
@@ -45,11 +45,11 @@ export interface LlmProviderPlanInput {
   deepseek: boolean;
 }
 
-/** Provider order is exported so the failover contract stays covered without calling paid APIs. */
+/** DeepSeek is exclusive when configured; OpenRouter is only a legacy fallback for old installs. */
 export function llmProviderPlan(input: LlmProviderPlanInput): LlmProvider[] {
   const plan: LlmProvider[] = [];
-  if (input.openrouter && !input.openrouterCoolingDown) plan.push("openrouter");
   if (input.deepseek) plan.push("deepseek");
+  else if (input.openrouter && !input.openrouterCoolingDown) plan.push("openrouter");
   return plan;
 }
 

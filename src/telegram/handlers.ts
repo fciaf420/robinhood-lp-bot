@@ -2746,9 +2746,8 @@ export async function onSettingsButton(data: string, mid: number): Promise<void>
     return;
   }
   if (data === "settings:providers") {
-    const primary = env.openrouterKey ? `${env.openrouterModel} (OpenRouter)` : "not configured";
-    const fallback = env.deepseekKey ? `${env.deepseekModel} (DeepSeek paid)` : "not configured";
-    const page = settingsSubmenu("LLM providers", [`Primary: <b>${primary}</b>`, `Fallback: <b>${fallback}</b>`, "OpenRouter is tried first. DeepSeek is used automatically after a provider failure; there is no separate toggle."], []);
+    const active = env.deepseekKey ? `${env.deepseekModel} (DeepSeek paid)` : env.openrouterKey ? `${env.openrouterModel} (legacy OpenRouter)` : "not configured";
+    const page = settingsSubmenu("LLM provider", [`Active: <b>${active}</b>`, env.deepseekKey ? "DeepSeek is the only active provider." : "Add DEEPSEEK_API_KEY to enable DeepSeek Flash.", "The bot uses a deterministic fallback if no LLM key is available."], []);
     await edit(mid, page.text, { reply_markup: page.reply_markup });
     return;
   }
