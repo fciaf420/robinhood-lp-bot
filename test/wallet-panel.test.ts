@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { unwrapConfirmationKeyboard, walletBalanceText, walletKeyboard } from "../src/telegram/walletPanel.ts";
 
 test("wallet exposes a manual WETH unwrap action", () => {
-  assert.deepEqual(walletKeyboard(), [[{ text: "🔓 Unwrap all WETH → ETH", callback_data: "unwrap:ask" }]]);
+  assert.deepEqual(walletKeyboard(), [
+    [{ text: "💱 Swap USDG → ETH", callback_data: "wallet:usdg" }],
+    [{ text: "🔓 Unwrap all WETH → ETH", callback_data: "unwrap:ask" }],
+  ]);
 });
 
 test("manual WETH unwrap requires confirmation or cancellation", () => {

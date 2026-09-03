@@ -2472,6 +2472,29 @@ export async function onWallet(): Promise<void> {
   }
 }
 
+/** Wallet shortcut: use the same percentage + quote + confirmation flow to sell USDG → ETH. */
+export async function onWalletUsdgSwap(mid: number): Promise<void> {
+  const { kyberEnabled, kyberRoute, KYBER_NATIVE } = await import("../chain/kyber.js");
+  if (!kyberEnabled()) {
+    await edit(mid, "💱 USDG → ETH requires KyberSwap, which is not configured.");
+    return;
+  }
+  const raw = await tokenBalanceRaw(USDG).catch(() => 0n);
+  if (raw <= 0n) {
+    await edit(mid, "💱 <b>USDG → ETH</b>\n\nNo USDG is currently available in the wallet.");
+    return;
+  }
+  const route = await kyberRoute(USDG, KYBER_NATIVE, raw).catch(() => null);
+  if (!route) {
+    await edit(mid, "💱 <b>USDG → ETH</b>\n\nKyber found no route right now. Try again shortly.");
+    return;
+  }
+  const px = await ethUsd().catch(() => 0);
+  const ethOut = Number(ethers.formatEther(BigInt(route.routeSummary.amountOut)));
+  swapTokens = [{ addr: USDG, symbol: "USDG", decimals: 6, raw, ui: Number(ethers.formatUnits(raw, 6)), ethOut, usd: ethOut * px }];
+  return onSwapFrom(USDG, mid);
+}
+
 export async function onUnwrapAsk(mid: number): Promise<void> {
   try {
     const b = await balances();
