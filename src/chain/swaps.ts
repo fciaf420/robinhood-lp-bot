@@ -8,7 +8,7 @@ import { ethers } from "ethers";
 import { cfg, C } from "../config.js";
 import { wallet, provider, overrides } from "./client.js";
 import { ERC20_ABI, WETH_ABI, QUOTER_ABI, ROUTER_ABI } from "./abis.js";
-import { kyberSwap, kyberEnabled } from "./kyber.js";
+import { kyberSwap, kyberEnabled, isKyberBroadcastUnknown } from "./kyber.js";
 import { logger } from "../util/log.js";
 import type { TopUp } from "../types.js";
 
@@ -175,6 +175,7 @@ export async function swapWethToTokenBest(tokenAddr: string, wethRaw: bigint, fe
       }
       log.warn("Kyber could not route WETH→token → falling back to the deepest v3 pool");
     } catch (e) {
+      if (isKyberBroadcastUnknown(e)) throw e;
       log.warn(`Kyber failed (${(e as Error).message.slice(0, 80)}) → falling back to v3 pool`);
     }
   }

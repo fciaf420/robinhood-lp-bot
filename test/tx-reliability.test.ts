@@ -1,12 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasUsableCalldata, isNonceConflict } from "../src/chain/client.ts";
+import { hasUsableCalldata, isNonceConflict, isRetryableSendError } from "../src/chain/client.ts";
 import { shouldKeepV3Position } from "../src/chain/positions.ts";
 
 test("nonce conflict detection recognizes retryable provider errors", () => {
   assert.equal(isNonceConflict(new Error("nonce has already been used")), true);
   assert.equal(isNonceConflict({ code: "NONCE_EXPIRED", message: "nonce too low" }), true);
   assert.equal(isNonceConflict(new Error("execution reverted")), false);
+});
+
+test("empty-calldata send rejections are retryable nonce/provider errors", () => {
+  assert.equal(
+    isRetryableSendError({
+      action: "sendTransaction",
+      message: "transaction execution reverted",
+      transaction: { data: "", from: "0x0000000000000000000000000000000000000001" },
+    }),
+    true,
+  );
+  assert.equal(isRetryableSendError(new Error("execution reverted by token")), false);
 });
 
 test("empty transaction calldata is rejected before broadcast", () => {

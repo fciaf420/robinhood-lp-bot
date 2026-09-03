@@ -24,3 +24,13 @@ export function acquireWallet(): boolean {
 export function releaseWallet(): void {
   busy = false;
 }
+
+/** Run one wallet transaction sequence while holding the process-wide lock. */
+export async function withWalletLock<T>(work: () => Promise<T>): Promise<T | false> {
+  if (!acquireWallet()) return false;
+  try {
+    return await work();
+  } finally {
+    releaseWallet();
+  }
+}

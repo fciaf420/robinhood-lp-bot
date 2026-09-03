@@ -26,6 +26,20 @@ export function isNonceConflict(error: unknown): boolean {
   );
 }
 
+/**
+ * Some Robinhood RPC responses report a nonce/provider rejection as a generic
+ * `sendTransaction` revert with an empty transaction payload. Once calldata has
+ * been validated by the caller, that shape is safe to retry with a fresh nonce.
+ */
+export function isRetryableSendError(error: unknown): boolean {
+  if (isNonceConflict(error)) return true;
+  const e = error as { action?: unknown; message?: unknown; transaction?: { data?: unknown } } | null;
+  const action = String(e?.action ?? "").toLowerCase();
+  const message = String(e?.message ?? error ?? "").toLowerCase();
+  const data = e?.transaction?.data;
+  return action === "sendtransaction" && message.includes("transaction execution reverted") && (data === "" || data == null);
+}
+
 /** A contract transaction must contain at least a valid function selector. */
 export function hasUsableCalldata(data: unknown): data is string {
   return typeof data === "string" && /^0x[0-9a-f]+$/i.test(data) && data.length >= 10;
@@ -153,8 +167,8 @@ if (usingOwnWatchRpc || usingOwnLogsRpc) log.info(`RPC split — watch:${usingOw
  *
  * The bot already serializes its own sequences, but a stale RPC nonce (or a transaction from a
  * second signer using the same wallet) can still make a send fail. Reserve nonces locally for the
- * normal case, and resync/retry once when the node explicitly reports a consumed nonce. A rejected
- * send never gets a response/hash, so retrying with a fresh nonce is safe here.
+ * normal case, and resync/retry up to three times when the node explicitly reports a consumed nonce.
+ * A rejected send never gets a response/hash, so retrying with a fresh nonce is safe here.
  */
 class ResilientWallet extends ethers.Wallet {
   private nextNonce: number | null = null;
@@ -178,16 +192,16 @@ class ResilientWallet extends ethers.Wallet {
   }
 
   override async sendTransaction(tx: ethers.TransactionRequest): Promise<ethers.TransactionResponse> {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       const nonce = tx.nonce == null || attempt > 0 ? await this.reserveNonce() : tx.nonce;
       try {
         return await super.sendTransaction({ ...tx, nonce });
       } catch (e) {
         // Any rejected send did not consume the reserved nonce; resync before the next operation.
         this.resetNonce();
-        if (attempt === 0 && tx.nonce == null && isNonceConflict(e)) {
-          log.warn("nonce conflict — resyncing pending nonce and retrying transaction");
-          await new Promise((resolve) => setTimeout(resolve, 250));
+        if (attempt < 3 && tx.nonce == null && isRetryableSendError(e)) {
+          log.warn(`nonce/provider conflict — resyncing pending nonce and retrying transaction (${attempt + 1}/3)`);
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
           continue;
         }
         throw e;

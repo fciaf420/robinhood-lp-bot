@@ -16,7 +16,7 @@ import { wallet, provider, overrides, waitTx, requireCalldata } from "../client.
 import { tokenMeta } from "../tokens.js";
 import { discoverV4Pools, pickV4Pool, USDG, type V4Pool } from "./discover.js";
 import { swapEthToTokenV4, quoteV4 } from "./swap.js";
-import { kyberSwap, kyberEnabled, KYBER_NATIVE } from "../kyber.js";
+import { kyberSwap, kyberEnabled, KYBER_NATIVE, isKyberBroadcastUnknown } from "../kyber.js";
 import { NATIVE, computePoolId, type PoolKey } from "./poolkey.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
 import { mapLimit } from "../blockscout.js";
@@ -269,6 +269,7 @@ export async function openV4InRange(
     let out = 0n;
     if (kyberEnabled()) {
       const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(token), ethToSwap).catch((e) => {
+        if (isKyberBroadcastUnknown(e)) throw e;
         log.warn(`Kyber failed (${(e as Error).message.slice(0, 80)}) → falling back to direct v4`);
         return null;
       });

@@ -24,6 +24,7 @@ import { bsFetch } from "../chain/blockscout.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import { logger } from "../util/log.js";
 import { nudge as nudgeManage } from "../radar/automanage.js";
+import { acquireWallet, releaseWallet } from "../chain/txlock.js";
 import { FeedListener } from "./listener.js";
 import { extractPoolEvents } from "./lpdecode.js";
 import { extractSwaps } from "./swapdecode.js";
@@ -199,11 +200,17 @@ export class FeedMonitor {
       let autoClosed = false;
       let closeError: string | undefined;
       if (cfg.feed.autoCloseOutOfRange) {
-        try {
-          await closePosition(pos.tokenId, { reason: "OOR" });
-          autoClosed = true;
-        } catch (e) {
-          closeError = (e as Error).message.slice(0, 100);
+        if (!acquireWallet()) {
+          closeError = "wallet is busy with another transaction; retrying on the next monitor event";
+        } else {
+          try {
+            await closePosition(pos.tokenId, { reason: "OOR" });
+            autoClosed = true;
+          } catch (e) {
+            closeError = (e as Error).message.slice(0, 100);
+          } finally {
+            releaseWallet();
+          }
         }
       }
       this.hooks.onOutOfRange({

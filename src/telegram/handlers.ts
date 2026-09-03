@@ -10,7 +10,7 @@ import { readLedger, ledgerSummary, backfillLedger, winRateText } from "../chain
 import { lifetimePnl } from "../chain/analytics.js";
 import { balances, walletTokens, type WalletToken } from "../chain/holdings.js";
 import { tokenBalanceRaw, unwrapAllWeth } from "../chain/swaps.js";
-import { acquireWallet, releaseWallet } from "../chain/txlock.js";
+import { acquireWallet, releaseWallet, withWalletLock } from "../chain/txlock.js";
 import { revokeKnownApprovals } from "../chain/approvals.js";
 import { ethUsd } from "../chain/price.js";
 import { topVolumeNow, wcfg, usingOwnWatchRpc } from "../watch/scanner.js";
@@ -209,6 +209,20 @@ let pendingPositionRule: { tokenId: string; version: "v3" | "v4"; kind: Position
 const GAS_RESERVE = 0.0004; // native ETH kept for gas (~4-5 tx at ~0.0001 each)
 const usableEth = (b: { weth: string; eth: string }): number =>
   Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
+
+/**
+ * All bot wallet actions share one signer and many are multi-transaction sequences. Keep manual
+ * actions behind the same lock as Auto-LP so a button tap cannot reserve a nonce while an auto
+ * open/close is already using it. A rejected action never consumes a nonce; the caller can retry.
+ */
+async function withManualWalletSequence(mid: number | undefined, work: () => Promise<void>): Promise<boolean> {
+  const result = await withWalletLock(work);
+  if (result !== false) return true;
+  const message = "⏳ Another wallet transaction is in progress. Try again when it finishes.";
+  if (mid != null) await edit(mid, message);
+  else await send(message);
+  return false;
+}
 
 /**
  * A computed ETH amount → a parseEther-safe decimal string. A raw JS float such as
@@ -742,9 +756,15 @@ export async function onAmount(text: string): Promise<void> {
 export async function onMint(mid: number, action = "single"): Promise<void> {
   invalidateListCache();
   if (!pending?.chosen || !pending.ethAmt) return;
-  if (pending.chosen.version === "v2") return onMintV2(mid);
-  if (pending.chosen.version === "v4") return onMintV4(mid, action);
-  if (pending.chosen.v3?.quote === "usd") return onMintV3Usdg(mid, action === "v3us");
+  if (!(await withManualWalletSequence(mid, () => onMintUnlocked(mid, action)))) return;
+}
+
+/** Open-flow implementation. The public entrypoint above owns the wallet lock. */
+async function onMintUnlocked(mid: number, action = "single"): Promise<void> {
+  if (!pending?.chosen || !pending.ethAmt) return;
+  if (pending.chosen.version === "v2") return onMintV2Unlocked(mid);
+  if (pending.chosen.version === "v4") return onMintV4Unlocked(mid, action);
+  if (pending.chosen.v3?.quote === "usd") return onMintV3UsdgUnlocked(mid, action === "v3us");
 
   const mode: MintMode = action === "inrange" ? "inrange" : "single";
   const inR = mode === "inrange";
@@ -776,7 +796,7 @@ export async function onMint(mid: number, action = "single"): Promise<void> {
 }
 
 /** Mint a token/USDG v3 position — both-sided in-range, or single-side USDG (park stable only). */
-async function onMintV3Usdg(mid: number, single = false): Promise<void> {
+async function onMintV3UsdgUnlocked(mid: number, single = false): Promise<void> {
   invalidateListCache();
   if (!pending?.chosen?.v3 || !pending.ethAmt) return;
   const feePct = (pending.chosen.fee / 10000).toFixed(2);
@@ -805,7 +825,11 @@ async function onMintV3Usdg(mid: number, single = false): Promise<void> {
   }
 }
 
-async function onMintV4(mid: number, action: string): Promise<void> {
+async function onMintV3Usdg(mid: number, single = false): Promise<void> {
+  if (!(await withManualWalletSequence(mid, () => onMintV3UsdgUnlocked(mid, single)))) return;
+}
+
+async function onMintV4Unlocked(mid: number, action: string): Promise<void> {
   invalidateListCache();
   if (!pending?.chosen?.v4 || !pending.ethAmt) return;
   const fee = pending.chosen.v4.fee;
@@ -858,7 +882,11 @@ async function onMintV4(mid: number, action: string): Promise<void> {
   }
 }
 
-async function onMintV2(mid: number): Promise<void> {
+async function onMintV4(mid: number, action: string): Promise<void> {
+  if (!(await withManualWalletSequence(mid, () => onMintV4Unlocked(mid, action)))) return;
+}
+
+async function onMintV2Unlocked(mid: number): Promise<void> {
   if (!pending?.chosen?.v2 || !pending.ethAmt) return;
   if (!cfg.lp.v2Enabled) {
     await edit(mid, "🛡 v2 zap disabled in optimized fork: pair-level swaps have no minimum-output protection. Use v3/v4.");
@@ -1553,6 +1581,10 @@ export async function onV4Lp(text: string): Promise<void> {
   }
   const m = await send(`⏳ <b>Mint v4 ${eth} ETH…</b> (discover pool → simulate → mint with native ETH)`);
   const mid = m?.result?.message_id;
+  if (!acquireWallet()) {
+    await edit(mid, "⏳ Another wallet transaction is in progress. Try this mint again when it finishes.");
+    return;
+  }
   try {
     const { openV4SingleSide } = await import("../chain/v4/mint.js");
     const r = await openV4SingleSide(ca, String(eth));
@@ -1573,6 +1605,8 @@ export async function onV4Lp(text: string): Promise<void> {
     );
   } catch (e) {
     await edit(mid, `❌ v4 mint failed: ${short(e, 160)}`);
+  } finally {
+    releaseWallet();
   }
 }
 
@@ -1597,6 +1631,10 @@ export async function onV4Close(text: string): Promise<void> {
   }
   const m = await send(`⏳ Closing v4 #${tokenId}…`);
   const mid = m?.result?.message_id;
+  if (!acquireWallet()) {
+    await send("⏳ Another wallet transaction is in progress. Try closing this position again when it finishes.");
+    return;
+  }
   try {
     const { closeV4Position } = await import("../chain/v4/close.js");
     const r = await closeV4Position(tokenId, "manual");
@@ -1622,12 +1660,18 @@ export async function onV4Close(text: string): Promise<void> {
     await sendCloseCard(v4CloseCardInput(r));
   } catch (e) {
     await edit(mid, `❌ v4 close failed: ${short(e, 160)}`);
+  } finally {
+    releaseWallet();
   }
 }
 
 export async function onV4Collect(tokenId: string): Promise<void> {
   const m = await send(`⏳ Claim fee v4 #${tokenId}…`);
   const mid = m?.result?.message_id;
+  if (!acquireWallet()) {
+    await send("⏳ Another wallet transaction is in progress. Try claiming fees again when it finishes.");
+    return;
+  }
   try {
     const { collectV4Fees } = await import("../chain/v4/close.js");
     const r = await collectV4Fees(tokenId);
@@ -1642,6 +1686,8 @@ export async function onV4Collect(tokenId: string): Promise<void> {
     );
   } catch (e) {
     await edit(mid, `❌ Fee claim failed: ${short(e, 160)}`);
+  } finally {
+    releaseWallet();
   }
 }
 
@@ -1653,6 +1699,10 @@ export async function onV2Close(pair: string): Promise<void> {
   }
   const m = await send(`⏳ Closing v2 ${pair.slice(0, 10)}…`);
   const mid = m?.result?.message_id;
+  if (!acquireWallet()) {
+    await send("⏳ Another wallet transaction is in progress. Try closing this position again when it finishes.");
+    return;
+  }
   try {
     const { closeV2Position } = await import("../chain/v2/close.js");
     const r = await closeV2Position(pair, { autoSwap: true, reason: "manual" });
@@ -1671,6 +1721,8 @@ export async function onV2Close(pair: string): Promise<void> {
     await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth, heldMs: r.heldMs, poolFeePpm: r.poolFeePpm, reason: r.reason });
   } catch (e) {
     await edit(mid, `❌ v2 close failed: ${short(e, 160)}`);
+  } finally {
+    releaseWallet();
   }
 }
 
@@ -2127,6 +2179,10 @@ export async function onCloseAsk(tokenId: string, mid: number): Promise<void> {
 export async function onClose(tokenId: string, mid: number, _swapToken = true): Promise<void> {
   const swapToken = true;
   invalidateListCache();
+  if (!acquireWallet()) {
+    await edit(mid, "⏳ Another wallet transaction is in progress. Try closing this position again when it finishes.");
+    return;
+  }
   await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? "(swap token→ETH)" : "(keep token)"}`);
   try {
     const r = await closePosition(tokenId, { swapToken, reason: "manual" });
@@ -2159,6 +2215,8 @@ export async function onClose(tokenId: string, mid: number, _swapToken = true): 
     await sendCloseCard({ name: isUsdgClose ? `${r.tokenSym}/USDG` : `${r.tokenSym}/WETH`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs, poolFeePpm: r.poolFeePpm, reason: r.reason });
   } catch (e) {
     await send(`❌ Close failed: ${short(e, 120)}`);
+  } finally {
+    releaseWallet();
   }
 }
 
@@ -2193,6 +2251,11 @@ export async function onCloseAllAsk(mid?: number): Promise<void> {
 }
 
 export async function onCloseAll(): Promise<void> {
+  if (!(await withManualWalletSequence(undefined, () => onCloseAllUnlocked()))) return;
+}
+
+/** Close-all implementation. The wrapper holds the wallet lock across the entire sequential batch. */
+async function onCloseAllUnlocked(): Promise<void> {
   invalidateListCache();
   let rows;
   try {
@@ -3359,6 +3422,10 @@ export async function onHelp(): Promise<void> {
 /** /revoke — zero allowances to the protocol spenders used by this bot. */
 export async function onRevoke(): Promise<void> {
   await send("🔒 Scanning known ERC-20 approvals… (no transfers will be made)");
+  if (!acquireWallet()) {
+    await send("⏳ Another wallet transaction is in progress. Try revoking approvals again when it finishes.");
+    return;
+  }
   try {
     const r = await revokeKnownApprovals();
     await sendMenu([
@@ -3372,6 +3439,8 @@ export async function onRevoke(): Promise<void> {
     ].join("\n"));
   } catch (e) {
     await send(`❌ Approval scan failed: ${esc(short(e, 180))}`);
+  } finally {
+    releaseWallet();
   }
 }
 
@@ -3401,6 +3470,10 @@ export async function onAddAmount(text: string): Promise<void> {
   }
   if (b && Number(b.eth) < GAS_RESERVE) {
     await send(`⚠️ Native ETH is only ${Number(b.eth).toFixed(5)} — below the gas reserve (minimum ${GAS_RESERVE}).`);
+    return;
+  }
+  if (!acquireWallet()) {
+    await send("⏳ Another wallet transaction is in progress. Try adding liquidity again when it finishes.");
     return;
   }
   const { tokenId, version } = pendingAdd;
@@ -3433,6 +3506,8 @@ export async function onAddAmount(text: string): Promise<void> {
       ? "The pool moved during settlement (volatile/high-fee pool). <b>Tap ➕ Add again</b> — the token/USDG already purchased will be reused; the second attempt usually works."
       : short(e, 160);
     await edit(mid, `❌ Failed to add liquidity: ${friendly}`);
+  } finally {
+    releaseWallet();
   }
 }
 
