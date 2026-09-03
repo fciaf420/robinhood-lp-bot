@@ -6,7 +6,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D, type Image } from "@napi-rs/canvas";
-import { readLedger, ledgerSummary, winRateText } from "../chain/ledger.js";
+import { pnlUsdForEntry, readLedger, ledgerSummary, winRateText } from "../chain/ledger.js";
 import { listPositions } from "../chain/positions.js";
 import { ethUsd } from "../chain/price.js";
 import { logger } from "../util/log.js";
@@ -289,27 +289,25 @@ async function unrealizedEth(px: number): Promise<number> {
 
 /** Whole-portfolio profit card (realized from ledger + unrealized from open positions). */
 export async function portfolioCardData(): Promise<CardData> {
-  const sum = ledgerSummary();
   const px = await ethUsd().catch(() => 0);
+  const sum = ledgerSummary(px);
   const entries = readLedger().filter((e) => e.pnlEth != null);
-  const usdFor = (e: (typeof entries)[number]): number => e.pnlUsd ?? ((e.pnlEth ?? 0) * px);
+  const usdFor = (e: (typeof entries)[number]): number => pnlUsdForEntry(e, px);
   const realizedUsd = entries.reduce((total, e) => total + usdFor(e), 0);
-  const biggestUsd = entries.reduce<number | null>((best, e) => {
-    const value = usdFor(e);
-    return best == null || value > best ? value : best;
-  }, null);
   const unreal = await unrealizedEth(px).catch(() => 0);
+  const combinedEth = sum.pnlEth + unreal;
+  const combinedUsd = realizedUsd + unreal * px;
   const signedUsd = (usd: number) => `${usd >= 0 ? "+" : "-"}$${Math.abs(usd).toFixed(2)}`;
   return {
     title: "ALL-TIME",
-    // Realized USD uses each close's recorded ETH/USD value, matching /ledger and /pnl.
-    headline: px ? signedUsd(realizedUsd) : `${signed(sum.pnlEth, 4)} ETH`,
-    positive: sum.pnlEth >= 0,
-    subtitle: px ? `(${signed(sum.pnlEth, 4)} ETH)` : undefined,
+    // The portfolio headline combines realized closed LP PnL with open-position unrealized PnL.
+    headline: px ? signedUsd(combinedUsd) : `${signed(combinedEth, 4)} ETH`,
+    positive: combinedEth >= 0,
+    subtitle: px ? `(${signed(combinedEth, 4)} ETH)` : undefined,
     stats: [
       { label: "Realized", value: signedUsd(realizedUsd), color: realizedUsd >= 0 ? GREEN : RED },
       { label: "Unrealized", value: signedUsd(unreal * px), color: unreal >= 0 ? GREEN : RED },
-      { label: "Biggest Win", value: biggestUsd != null ? signedUsd(biggestUsd) : "—", color: GREEN },
+      { label: "LP Total", value: signedUsd(combinedUsd), color: combinedUsd >= 0 ? GREEN : RED },
       { label: "Win Rate", value: winRateText(sum.wins, sum.count) },
     ],
     date: today(),
@@ -327,6 +325,7 @@ export interface ClosePnl {
   feeEth?: number;
   heldMs?: number | null;
   ethUsd?: number; // ETH/USD at close (for stable pairs); falls back to live rate
+  poolFeePpm?: number; // Uniswap fee tier, e.g. 30400 = 3.04%
   reason?: string;
 }
 
@@ -351,6 +350,7 @@ export async function closeCardData(p: ClosePnl): Promise<CardData> {
     { label: "Entry", value: p.depEth != null ? dol(p.depEth) : "—" },
     { label: "Fee", value: dol(p.feeEth || 0), color: GREEN },
     { label: "Exit", value: dol(p.outEth) },
+    { label: "Pool", value: p.poolFeePpm != null ? `${(p.poolFeePpm / 10000).toFixed(2)}%` : "—" },
   ];
 
   const headline = has && px ? `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl * px).toFixed(2)}` : has ? `${signed(pnl, 4)} ETH` : "—";

@@ -154,6 +154,7 @@ export async function reconstructV4Pnl(tokenId: string, posmTxs: any[]): Promise
     depEth,
     outEth,
     feeEth: feeUsd / px,
+    poolFeePpm: fee,
     pnlEth,
     pnlPct: depEth > 0 ? (pnlEth / depEth) * 100 : null,
     pnlUsd: pnlEth * px,

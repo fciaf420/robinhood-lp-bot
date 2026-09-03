@@ -5,7 +5,8 @@
  */
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
 import { existsSync } from "node:fs";
-import { readLedger } from "../chain/ledger.js";
+import { pnlUsdForEntry, readLedger } from "../chain/ledger.js";
+import type { LedgerEntry } from "../types.js";
 import { loadBg, drawCover } from "./card.js";
 
 let fontsReady = false;
@@ -39,19 +40,26 @@ export interface DayPnl {
 }
 
 /** Realized PnL by UTC day for a month (day boundary 00:00 UTC = 07:00 WIB). */
-export function monthlyDailyPnl(year: number, month0: number): Map<number, DayPnl> {
+export function dailyPnlFromEntries(entries: LedgerEntry[], year: number, month0: number, fallbackEthUsd = 0): Map<number, DayPnl> {
   const m = new Map<number, DayPnl>();
-  for (const e of readLedger()) {
-    if (e.closedAt == null || e.pnlUsd == null) continue;
+  for (const e of entries) {
+    // Open positions have no close timestamp and must never be shown as realized PnL.
+    if (e.closedAt == null || e.pnlEth == null) continue;
+    const pnlUsd = pnlUsdForEntry(e, fallbackEthUsd);
+    if (!Number.isFinite(pnlUsd) || (e.pnlUsd == null && !e.ethUsdAtClose && !fallbackEthUsd)) continue;
     const d = new Date(e.closedAt);
     if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month0) continue;
     const day = d.getUTCDate();
     const cur = m.get(day) ?? { pnlUsd: 0, trades: 0 };
-    cur.pnlUsd += e.pnlUsd;
+    cur.pnlUsd += pnlUsd;
     cur.trades += 1;
     m.set(day, cur);
   }
   return m;
+}
+
+export function monthlyDailyPnl(year: number, month0: number, fallbackEthUsd = 0): Map<number, DayPnl> {
+  return dailyPnlFromEntries(readLedger(), year, month0, fallbackEthUsd);
 }
 
 function fmtUsd(v: number): string {
@@ -71,9 +79,9 @@ function rr(g: SKRSContext2D, x: number, y: number, w: number, h: number, r: num
 }
 
 /** Render the month's profit calendar → PNG Buffer. */
-export async function renderCalendar(year: number, month0: number): Promise<Buffer> {
+export async function renderCalendar(year: number, month0: number, fallbackEthUsd = 0): Promise<Buffer> {
   ensureFonts();
-  const data = monthlyDailyPnl(year, month0);
+  const data = monthlyDailyPnl(year, month0, fallbackEthUsd);
   const daysInMonth = new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
   const firstDow = new Date(Date.UTC(year, month0, 1)).getUTCDay();
   const weeks = Math.ceil((firstDow + daysInMonth) / 7);

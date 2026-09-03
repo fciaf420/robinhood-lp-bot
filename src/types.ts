@@ -100,6 +100,8 @@ export interface CloseResult {
   depEth: number | null;
   pnlEth: number | null;
   pnlPct: number | null;
+  /** Uniswap fee tier in hundredths of a bip (e.g. 30400 = 3.04%). */
+  poolFeePpm?: number;
 }
 
 export interface TopUp {
@@ -133,6 +135,8 @@ export interface LedgerEntry {
   unsoldEth?: number;
   source?: "onchain" | "bot";
   reason?: CloseReason; // why the position was closed (for the daily briefing)
+  /** Uniswap fee tier in hundredths of a bip (e.g. 30400 = 3.04%). */
+  poolFeePpm?: number;
 }
 
 /** A token that passed every watch filter + safety check. */

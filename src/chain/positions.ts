@@ -954,6 +954,7 @@ export async function closePosition(
       depEth: depEth ?? 0,
       outEth: realOutEth,
       feeEth: feeEthOnly,
+      poolFeePpm: Number(p.fee),
       pnlEth: pnlEthReal,
       pnlPct: pnlPctReal,
       pnlUsd: pnlEthReal != null && pxClose ? pnlEthReal * pxClose : null,
@@ -986,6 +987,7 @@ export async function closePosition(
     depEth,
     pnlEth: pnlEthReal,
     pnlPct: pnlPctReal,
+    poolFeePpm: Number(p.fee),
   };
 }
 
@@ -1106,6 +1108,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean;
       depEth: basisEth ?? 0,
       outEth,
       feeEth: feeEthOnly,
+      poolFeePpm: Number(p.fee),
       pnlEth,
       pnlPct,
       pnlUsd: pnlEth != null && px ? pnlEth * px : null,
@@ -1138,6 +1141,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean;
     depEth: basisEth,
     pnlEth,
     pnlPct,
+    poolFeePpm: Number(p.fee),
   };
 }
 

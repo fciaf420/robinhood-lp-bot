@@ -1455,7 +1455,7 @@ export async function onV4Close(text: string): Promise<void> {
         .join("\n"),
     );
     const v4quote = /usdg|usd/i.test(r.pair) && !/\beth\b|weth/i.test(r.pair) ? ("usd" as const) : ("eth" as const);
-    await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, reason: r.reason });
+    await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, poolFeePpm: r.fee, reason: r.reason });
   } catch (e) {
     await edit(mid, `❌ v4 close failed: ${short(e, 160)}`);
   }
@@ -1504,7 +1504,7 @@ export async function onV2Close(pair: string): Promise<void> {
         .filter(Boolean)
         .join("\n"),
     );
-    await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth, reason: r.reason });
+    await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth, poolFeePpm: r.poolFeePpm, reason: r.reason });
   } catch (e) {
     await edit(mid, `❌ v2 close failed: ${short(e, 160)}`);
   }
@@ -1909,7 +1909,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
         .join("\n"),
     );
     const isUsdgClose = r.wethSym === "USDG";
-    await sendCloseCard({ name: isUsdgClose ? `${r.tokenSym}/USDG` : `${r.tokenSym}/WETH`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs, reason: r.reason });
+    await sendCloseCard({ name: isUsdgClose ? `${r.tokenSym}/USDG` : `${r.tokenSym}/WETH`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs, poolFeePpm: r.poolFeePpm, reason: r.reason });
   } catch (e) {
     await send(`❌ Close failed: ${short(e, 120)}`);
   }
@@ -2307,8 +2307,9 @@ export async function onCardFor(tokenId: string): Promise<void> {
         pnlEth: e.pnlEth,
         pnlPct: e.pnlPct,
         feeEth: e.feeEth,
-        heldMs: e.heldMs,
+        heldMs: e.heldMs ?? (e.openedAt != null && e.closedAt != null ? e.closedAt - e.openedAt : null),
         ethUsd: e.ethUsdAtClose ?? undefined,
+        poolFeePpm: e.poolFeePpm,
         reason: e.reason,
       }),
     );
@@ -2330,6 +2331,7 @@ async function sendCloseCard(p: {
   pnlPct?: number | null;
   feeEth?: number;
   heldMs?: number | null;
+  poolFeePpm?: number;
   reason?: string;
 }): Promise<void> {
   try {
@@ -2365,7 +2367,7 @@ export async function onPnl(): Promise<void> {
   const $ = (e: number) => (px ? "$" + (e * px).toFixed(2) : "?");
   // ACCURATE LP number from the ledger (closed positions). The wallet capital-flow below is
   // wallet-level and — because this wallet is shared with the arb bot — mixes in non-LP flows.
-  const sum = ledgerSummary();
+  const sum = ledgerSummary(px);
   const row = (lbl: string, eth: string, usd = "") => `${padR(lbl, 8)}${padL(eth, 12)}${usd ? "  " + padL(usd, 9) : ""}`;
 
   const T: string[] = [];
@@ -2375,6 +2377,14 @@ export async function onPnl(): Promise<void> {
   T.push(row("win rate", winRateText(sum.wins, sum.count)));
   T.push(row("fee", sum.feeEth.toFixed(5) + "Ξ"));
   T.push("");
+  const openPnlUsd = r.openLpPnlEth * px;
+  const lpTotalEth = sum.pnlEth + r.openLpPnlEth;
+  T.push(`LP TOTAL (closed + open)`);
+  T.push("─".repeat(31));
+  T.push(row("closed", sg(sum.pnlEth, 5) + "Ξ", money(sum.pnlUsd)));
+  T.push(row("open", sg(r.openLpPnlEth, 5) + "Ξ", money(openPnlUsd)));
+  T.push(row("total", sg(lpTotalEth, 5) + "Ξ", money(lpTotalEth * px)));
+  T.push("");
   T.push(`WALLET FLOWS (+arb) · ${r.historySource}`);
   T.push("─".repeat(31));
   T.push(row("in", r.capIn.toFixed(5) + "Ξ", $(r.capIn)));
@@ -2382,7 +2392,7 @@ export async function onPnl(): Promise<void> {
   T.push(row("value", r.valueNowEth.toFixed(5) + "Ξ", $(r.valueNowEth)));
   T.push(`  native ${r.nativeEth.toFixed(4)}  WETH ${r.wethHeld.toFixed(4)}`);
   T.push(`  LP ${r.openLpEth.toFixed(4)}Ξ  token $${r.tokensUsd.toFixed(2)}`);
-  T.push(row("net", sg(r.pnlEth, 5) + "Ξ", money(r.pnlUsd)));
+  T.push(row("estimate", sg(r.pnlEth, 5) + "Ξ", money(r.pnlUsd)));
 
   const grave = r.graveyardCount
     ? `\n🪦 <b>${r.graveyardCount} stranded tokens</b> <i>(rug/thin liquidity)</i>\n${pre(r.graveyard.join(", ") + (r.graveyardCount > r.graveyard.length ? " …" : ""))}`
@@ -2390,7 +2400,7 @@ export async function onPnl(): Promise<void> {
   await sendMenu(
       `📊 <b>LIFETIME PNL</b>${px ? ` · ETH $${px.toFixed(0)}` : ""}\n` +
       pre(T.join("\n")) +
-      `<i>⚠️ Net wallet mixes arb flow — LP figures are accurate as "LP realized".</i>` +
+      `<i>Wallet estimate includes non-LP/arb transfers. Use LP TOTAL for the LP result; open PnL is unrealized.</i>` +
       grave,
   );
 }
@@ -2961,7 +2971,8 @@ export async function onCalendar(year?: number, month0?: number): Promise<void> 
   const m = month0 ?? now.getUTCMonth();
   try {
     const { renderCalendar } = await import("./calendar.js");
-    const png = await renderCalendar(y, m);
+    const calendarPx = await ethUsd().catch(() => 0);
+    const png = await renderCalendar(y, m, calendarPx);
     const prev = m === 0 ? [y - 1, 11] : [y, m - 1];
     const next = m === 11 ? [y + 1, 0] : [y, m + 1];
     await sendPhoto(png, "📅 <b>Profit Calendar</b> — each square = the PnL of positions closed that day (fees included). Resets at 07:00 WIB.", {

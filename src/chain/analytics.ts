@@ -47,6 +47,7 @@ export interface LifetimePnl {
   graveyardCount: number;
   graveyard: string[];
   openLpEth: number;
+  openLpPnlEth: number;
   valueNowEth: number;
   pnlEth: number;
   pnlUsd: number;
@@ -191,6 +192,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
   const nativeEth = Number(ethers.formatEther(await provider.getBalance(w.address)));
 
   let openLpEth = 0;
+  let openLpPnlEth = 0;
   // v3 valEth already includes unclaimed fees. v4 valueUsd also includes fees, so do not add them
   // twice. Fetch the two position families independently so one flaky indexer cannot erase both.
   const [v3Rows, v4Rows] = await Promise.all([
@@ -198,7 +200,9 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
     listV4Positions(0).catch(() => [] as Awaited<ReturnType<typeof listV4Positions>>),
   ]);
   openLpEth = v3Rows.reduce((sum, r) => sum + (r.valEth || 0), 0);
+  openLpPnlEth += v3Rows.reduce((sum, r) => sum + (r.pnlEth || 0), 0);
   if (px > 0) openLpEth += v4Rows.reduce((sum, r) => sum + ((r.valueUsd || 0) / px), 0);
+  if (px > 0) openLpPnlEth += v4Rows.reduce((sum, r) => sum + (r.depEth != null ? (r.valueUsd || 0) / px - r.depEth : 0), 0);
   const valueNowEth = nativeEth + wethHeld + tokensEth + openLpEth;
   const pnlEth = valueNowEth - netCapEth;
 
@@ -213,6 +217,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
     graveyardCount,
     graveyard,
     openLpEth,
+    openLpPnlEth,
     valueNowEth,
     pnlEth,
     pnlUsd: pnlEth * px,

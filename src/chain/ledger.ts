@@ -28,6 +28,14 @@ export function appendLedger(entry: LedgerEntry): void {
   entries.push(entry);
   writeJson(LEDGER_FILE, { entries });
 }
+
+/** USD value for a ledger close, preserving older records that never stored pnlUsd. */
+export function pnlUsdForEntry(entry: LedgerEntry, fallbackEthUsd = 0): number {
+  if (Number.isFinite(entry.pnlUsd)) return Number(entry.pnlUsd);
+  if (entry.pnlEth == null) return 0;
+  const px = Number(entry.ethUsdAtClose) || fallbackEthUsd;
+  return Number.isFinite(px) ? entry.pnlEth * px : 0;
+}
 export function writeLedger(entries: LedgerEntry[]): void {
   writeJson(LEDGER_FILE, { entries });
 }
@@ -52,7 +60,7 @@ export function winRateText(wins: number, closed: number): string {
   return `${rate.toFixed(0)}% (${safeWins}/${total})`;
 }
 
-export function ledgerSummary(): LedgerSummary {
+export function ledgerSummary(fallbackEthUsd = 0): LedgerSummary {
   const e = readLedger().filter((x) => x.pnlEth != null);
   const wins = e.filter((x) => (x.pnlEth ?? 0) > 0).length;
   const sum = (k: keyof LedgerEntry) => e.reduce((s, x) => s + (Number(x[k]) || 0), 0);
@@ -62,7 +70,7 @@ export function ledgerSummary(): LedgerSummary {
     losses: e.length - wins,
     winRate: e.length ? (wins / e.length) * 100 : 0,
     pnlEth: sum("pnlEth"),
-    pnlUsd: sum("pnlUsd"),
+    pnlUsd: e.reduce((s, x) => s + pnlUsdForEntry(x, fallbackEthUsd), 0),
     depEth: sum("depEth"),
     feeEth: sum("feeEth"),
     unsoldEth: sum("unsoldEth"),

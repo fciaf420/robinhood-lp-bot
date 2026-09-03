@@ -241,6 +241,7 @@ export async function closeV4Position(tokenId: string, reason: CloseReason = "ma
       depEth: ledgerBasis,
       outEth: ledgerOut,
       feeEth: ledgerFee,
+      poolFeePpm: fee,
       pnlEth,
       pnlPct,
       pnlUsd: pnlEth != null && px ? pnlEth * px : null,

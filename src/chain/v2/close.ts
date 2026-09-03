@@ -30,6 +30,7 @@ export interface V2CloseResult {
   soldToken: boolean;
   depEth: number | null;
   pnlEth: number | null;
+  poolFeePpm: number;
 }
 
 export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boolean; reason?: CloseReason } = {}): Promise<V2CloseResult> {
@@ -126,6 +127,7 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
       depEth: depEth ?? 0,
       outEth: recvEth,
       feeEth: 0,
+      poolFeePpm: 3000,
       pnlEth,
       pnlPct: pnlEth != null && depEth ? (pnlEth / depEth) * 100 : null,
       pnlUsd: pnlEth != null && px ? pnlEth * px : null,
@@ -153,5 +155,6 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
     soldToken,
     depEth,
     pnlEth,
+    poolFeePpm: 3000,
   };
 }
