@@ -941,13 +941,27 @@ function positionRuleChoices(kind: PositionRuleKind, tokenId: string, version: "
   return rows;
 }
 
-export async function onPositionRuleButton(data: string, mid: number): Promise<void> {
+export function parsePositionRuleCallback(data: string): {
+  action: string;
+  kind: PositionRuleKind | null;
+  version: "v3" | "v4" | null;
+  tokenId: string | null;
+} | null {
   const parts = data.split(":");
-  const action = parts[1];
-  const kind = (action === "tp" || action === "sl" ? action : parts[2]) as PositionRuleKind;
-  const version = (action === "panel" ? parts[2] : parts[3]) as "v3" | "v4";
-  const tokenId = action === "panel" ? parts[3] : action === "tp" || action === "sl" ? parts[3] : parts[4];
-  if (!tokenId || !/^\d+$/.test(tokenId) || !["v3", "v4"].includes(version) || (action !== "panel" && !["tp", "sl"].includes(kind))) return;
+  if (parts[0] !== "pr") return null;
+  const action = parts[1] ?? "";
+  if (action === "panel") return { action, kind: null, version: parts[2] as "v3" | "v4", tokenId: parts[3] ?? null };
+  if (action === "tp" || action === "sl") return { action, kind: action, version: parts[2] as "v3" | "v4", tokenId: parts[3] ?? null };
+  if (action === "custom") return { action, kind: parts[2] as PositionRuleKind, version: parts[3] as "v3" | "v4", tokenId: parts[4] ?? null };
+  if (action === "set") return { action, kind: parts[2] as PositionRuleKind, version: parts[3] as "v3" | "v4", tokenId: parts[4] ?? null };
+  return null;
+}
+
+export async function onPositionRuleButton(data: string, mid: number): Promise<void> {
+  const parsed = parsePositionRuleCallback(data);
+  if (!parsed) return;
+  const { action, kind, version, tokenId } = parsed;
+  if (!tokenId || !/^\d+$/.test(tokenId) || !version || !["v3", "v4"].includes(version) || (action !== "panel" && !kind)) return;
 
   if (action === "panel") {
     pendingPositionRule = null;
@@ -962,6 +976,7 @@ export async function onPositionRuleButton(data: string, mid: number): Promise<v
     return;
   }
   if (action === "custom") {
+    if (!kind) return;
     pendingPositionRule = { tokenId, version, kind };
     await edit(mid, `Reply with a custom ${kind === "tp" ? "take-profit" : "stop-loss"} percentage for <b>${version} #${tokenId}</b> (example: <code>${kind === "tp" ? "100" : "25"}</code>). Use <code>0</code> to turn it off.`, {
       reply_markup: { inline_keyboard: [[{ text: "◀️ Cancel", callback_data: `pr:panel:${version}:${tokenId}` }]] },
@@ -969,6 +984,8 @@ export async function onPositionRuleButton(data: string, mid: number): Promise<v
     return;
   }
   if (action === "set") {
+    if (!kind) return;
+    const parts = data.split(":");
     const value = parts[5];
     if (value === "inherit") clearPositionExitRule(tokenId, kind);
     else if (value != null && Number.isFinite(Number(value))) setPositionExitRule(tokenId, kind, Number(value));
