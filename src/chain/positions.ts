@@ -95,7 +95,7 @@ export async function openPosition(
   _tokenAddr: string,
   poolAddr: string,
   amountEthStr: string,
-  opts: { mode?: MintMode } = {},
+  opts: { mode?: MintMode; widthPct?: number } = {},
 ): Promise<OpenResult> {
   const mode: MintMode = opts.mode === "inrange" ? "inrange" : "single";
   const w = wallet();
@@ -125,9 +125,9 @@ export async function openPosition(
   const depositAmt = realBal < amount ? realBal : amount;
 
   if (mode === "inrange") {
-    return openInRange(st, poolAddr, tokenReal, tokMeta, depositAmt, px, wrapHash);
+    return openInRange(st, poolAddr, tokenReal, tokMeta, depositAmt, px, wrapHash, opts.widthPct);
   }
-  return openSingleSide(st, poolAddr, tokMeta, depositAmt, px, wrapHash);
+  return openSingleSide(st, poolAddr, tokMeta, depositAmt, px, wrapHash, opts.widthPct);
 }
 
 async function openSingleSide(
@@ -137,6 +137,7 @@ async function openSingleSide(
   depositAmt: bigint,
   px: number,
   wrapHash: string | undefined,
+  widthPct?: number,
 ): Promise<OpenResult> {
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
@@ -148,7 +149,7 @@ async function openSingleSide(
   for (let attempt = 0, buf = cfg.lp.rangeBufferSpacings || 2; attempt < 3; attempt++, buf += 2) {
     const tickNow = Number((await pc.slot0!()).tick);
     const fresh = { ...st, tick: tickNow };
-    const { tickLower, tickUpper } = computeRange(fresh, "single", buf);
+    const { tickLower, tickUpper } = computeRange(fresh, "single", buf, widthPct);
     const params = {
       token0: st.token0,
       token1: st.token1,
@@ -202,13 +203,14 @@ async function openInRange(
   depositAmt: bigint,
   px: number,
   wrapHash: string | undefined,
+  widthPct?: number,
 ): Promise<OpenResult> {
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   const pc = new ethers.Contract(poolAddr, POOL_ABI, readProvider);
   const tickNow = Number((await pc.slot0!()).tick);
   const fresh = { ...st, tick: tickNow };
-  const { tickLower, tickUpper, swapFraction } = computeRange(fresh, "inrange");
+  const { tickLower, tickUpper, swapFraction } = computeRange(fresh, "inrange", cfg.lp.rangeBufferSpacings, widthPct);
   const erc = new ethers.Contract(tokenReal, ERC20_ABI, w);
 
   // REUSE token already in the wallet (bought on a prior failed attempt / leftover inventory)
@@ -335,7 +337,7 @@ function currencyUsd(st: PoolState, isSide0: boolean, raw: bigint, px: number): 
  * both-sided through the v3 NPM. The NPM only pulls up to `amountDesired` and refunds the rest,
  * so passing the actual balances with amountMin=0 (staticCall-guarded) can never over-pull.
  */
-export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): Promise<OpenResult> {
+export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string, opts: { widthPct?: number } = {}): Promise<OpenResult> {
   if (!kyberEnabled()) throw new Error("KyberSwap is not configured — USDG LP requires the aggregator (set KYBERSWAP_ROUTER_ADDRESS).");
   const w = wallet();
   const st = await getPoolState(pool.pool);
@@ -355,7 +357,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
     wrapHash = wtx.hash;
   }
 
-  const { tickLower, tickUpper } = computeRange(st, "inrange");
+  const { tickLower, tickUpper } = computeRange(st, "inrange", cfg.lp.rangeBufferSpacings, opts.widthPct);
   const fracC1 = valueFracC1(st.tick, tickLower, tickUpper);
   const wethForC1 = (total * BigInt(Math.round(fracC1 * 1e6))) / 1_000_000n;
   const wethForC0 = total - wethForC1;
@@ -449,7 +451,7 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string): P
  * the position stays 100% USDG until the token PUMPS into range (rug-safe). USDG=token0 → range ABOVE
  * tick; USDG=token1 → range BELOW. Funds the USDG entirely from the ETH budget via Kyber.
  */
-export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string): Promise<OpenResult> {
+export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string, opts: { widthPct?: number } = {}): Promise<OpenResult> {
   if (!kyberEnabled()) throw new Error("KyberSwap is not configured — USDG LP requires the aggregator.");
   const w = wallet();
   const st = await getPoolState(pool.pool);
@@ -500,7 +502,7 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string)
   const pc = new ethers.Contract(pool.pool, POOL_ABI, readProvider);
   const tickNow = Number((await pc.slot0!()).tick);
   const sp = st.spacing;
-  const width = widthInTicks(sp);
+  const width = widthInTicks(sp, opts.widthPct);
   const buf = cfg.lp.rangeBufferSpacings || 2;
   let tickLower: number;
   let tickUpper: number;
@@ -564,10 +566,11 @@ export async function previewRange(
   _tokenAddr: string,
   poolAddr: string,
   mode: MintMode = "single",
+  widthPct = cfg.lp.widthPct,
 ): Promise<RangePreview> {
   const st = await getPoolState(poolAddr);
   const { addr: _addr, meta } = await tokenSide(st);
-  const { tickLower, tickUpper, swapFraction } = computeRange(st, mode);
+  const { tickLower, tickUpper, swapFraction } = computeRange(st, mode, cfg.lp.rangeBufferSpacings, widthPct);
   const px = await ethUsd().catch(() => 0);
   const mLo = mcapAtTick(st, tickLower, px, meta.supplyUi);
   const mHi = mcapAtTick(st, tickUpper, px, meta.supplyUi);

@@ -31,6 +31,7 @@ import { closeAllConfirmationKeyboard, totalCloseAllPositions } from "./position
 import { walletBalanceText, walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 import { clearPositionExitRule, getPositionExitRule, setPositionExitRule, type PositionRuleKind } from "../radar/positionRules.js";
+import { MANUAL_RANGE_PRESETS, normalizeManualRangePct, MAX_MANUAL_RANGE_PCT } from "./manualRange.js";
 
 const log = logger("handlers");
 
@@ -153,6 +154,9 @@ interface Pending {
   pools: UPool[];
   chosen?: UPool;
   awaitingAmount?: boolean;
+  awaitingRangeWidth?: boolean;
+  rangeMessageId?: number;
+  rangeWidthPct?: number;
   ethAmt?: string;
   heldTokenUi?: number; // token already in wallet (reused for dual-side)
   balancedEth?: number; // ETH that balances the held token for a dual-side mint
@@ -439,6 +443,156 @@ export async function onUseWalletUsdg(mid: number): Promise<void> {
   return onMintV3Usdg(mid, true);
 }
 
+function manualRangeLabel(): string {
+  if (!pending?.rangeWidthPct) return `📐 Range: Auto (${cfg.lp.widthPct}%)`;
+  return `📐 Range: Custom (${pending.rangeWidthPct}%)`;
+}
+
+type InlineButton = { text: string; callback_data?: string; url?: string };
+
+function manualRangeButton(): InlineButton[] {
+  return [{ text: manualRangeLabel(), callback_data: "range:choose" }];
+}
+
+function rangeChoiceKeyboard(): InlineButton[][] {
+  return [
+    [{ text: `⚙️ Auto range (${cfg.lp.widthPct}%)`, callback_data: "range:auto" }],
+    MANUAL_RANGE_PRESETS.slice(0, 2).map((pct) => ({ text: `✏️ ${pct}%`, callback_data: `range:preset:${pct}` })),
+    MANUAL_RANGE_PRESETS.slice(2).map((pct) => ({ text: `✏️ ${pct}%`, callback_data: `range:preset:${pct}` })),
+    [{ text: "⌨️ Type a custom %", callback_data: "range:custom" }],
+    [{ text: "◀️ Back to LP choices", callback_data: "range:back" }],
+  ];
+}
+
+async function renderPendingConfirmation(mid?: number): Promise<void> {
+  if (!pending?.chosen || !pending.ethAmt) return;
+  const p = pending;
+  const chosen = p.chosen;
+  if (!chosen) return;
+  const eth = p.ethAmt;
+
+  // v2 has no concentrated range; it is always a full-range both-sided zap.
+  if (chosen.version === "v2") {
+    const text = [
+      `<b>Confirm LP · Uniswap v2</b>`,
+      `${esc(p.meta.symbol)} · fee <b>0.30%</b> · deposit <b>${eth} ETH</b> · full-range`,
+      ``,
+      `🎯 v2 is always <b>both-sided 50/50</b>: the bot swaps ~half the ETH → ${esc(p.meta.symbol)}, with the rest becoming the LP pair. <b>Fees start immediately.</b>`,
+      `⚠️ You hold the token directly (a rug can lose ~half). v2 has no single-side mode.`,
+    ].join("\n");
+    const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 LP v2 (zap ${eth}Ξ)`, callback_data: "mint:v2" }], [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+    if (mid) await edit(mid, text, opts); else await send(text, opts);
+    return;
+  }
+
+  if (chosen.version === "v4") {
+    const feePct = (chosen.fee / 10000).toFixed(2);
+    const isUsd = chosen.v4?.quote === "usd";
+    const text = isUsd
+      ? [
+          `<b>Confirm LP · Uniswap v4 · USDG</b> 🦄`,
+          `${esc(p.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
+          manualRangeLabel(),
+          ``,
+          `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
+          ``,
+          `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
+        ].join("\n")
+      : [
+          `<b>Confirm mint · Uniswap v4</b> 🦄`,
+          `${esc(p.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b> · pair native ETH`,
+          manualRangeLabel(),
+          ``,
+          `🎯 <b>In-range (farming)</b> — buy the token through the best route (Kyber), then mint around the current price. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
+          ``,
+          `🛡 <b>Single-side ETH</b> — park ETH with the range above the current price. Fees start only when price rises into range. Protected from token rugs.`,
+        ].join("\n");
+    const buttons: InlineButton[][] = isUsd
+      ? [[{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v4us" }]]
+      : [[{ text: `🎯 In-range farming ${feePct}%`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side ETH ${feePct}%`, callback_data: "mint:v4" }]];
+    buttons.push(manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]);
+    const opts = { reply_markup: { inline_keyboard: buttons } };
+    if (mid) await edit(mid, text, opts); else await send(text, opts);
+    return;
+  }
+
+  if (chosen.v3?.quote === "usd") {
+    const feePct = (chosen.fee / 10000).toFixed(2);
+    const text = [
+      `<b>Confirm LP · Uniswap v3 · USDG</b>`,
+      `${esc(p.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
+      manualRangeLabel(),
+      ``,
+      `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
+      ``,
+      `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
+    ].join("\n");
+    const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v3u" }], [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v3us" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+    if (mid) await edit(mid, text, opts); else await send(text, opts);
+    return;
+  }
+
+  const v3pool = chosen.v3!.pool;
+  const widthPct = p.rangeWidthPct ?? cfg.lp.widthPct;
+  const [pS, pI] = await Promise.all([
+    previewRange(p.token, v3pool, "single", widthPct).catch(() => null),
+    previewRange(p.token, v3pool, "inrange", widthPct).catch(() => null),
+  ]);
+  const rng = (value: typeof pS): string => (value ? `${fmtMcap(value.rangeMcapLow)} → ${fmtMcap(value.rangeMcapHigh)}` : "?");
+  const text = [
+    `<b>Confirm mint · Uniswap v3</b>`,
+    `${esc(p.meta.symbol)} · fee ${(chosen.fee / 10000).toFixed(2)}% · deposit <b>${eth} ETH</b> · width ${widthPct}%`,
+    pS ? `📊 MCAP now: <b>${fmtMcap(pS.mcapNow)}</b>` : "",
+    ``,
+    `🛡 <b>Single-side ETH</b> — range ${rng(pS)}`,
+    `   0% token. Fees start only when MCAP enters the range. Protected from token rugs.`,
+    ``,
+    `🎯 <b>In-range</b> — range ${rng(pI)}`,
+    `   swap ~<b>${pI?.swapPct ?? "?"}%</b> of the capital into ${esc(p.meta.symbol)} first. Fees start immediately,`,
+    `   but you hold the token directly (a rug can immediately lose ~${pI?.swapPct ?? "?"}%).`,
+  ].filter(Boolean).join("\n");
+  const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range (swap ~${pI?.swapPct ?? "?"}%)`, callback_data: "mint:inrange" }], [{ text: "🛡 Single-side ETH", callback_data: "mint:single" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+  if (mid) await edit(mid, text, opts); else await send(text, opts);
+}
+
+export async function onRangeButton(data: string, mid: number): Promise<void> {
+  if (!pending?.chosen || !pending.ethAmt) return;
+  if (data === "range:choose") {
+    await edit(mid, `<b>📐 Choose manual LP range</b>\n\n<b>Auto range</b> uses the configured ${cfg.lp.widthPct}% width. A custom percentage makes the concentrated range narrower or wider.\n\nChoose a width:`, { reply_markup: { inline_keyboard: rangeChoiceKeyboard() } });
+    return;
+  }
+  if (data === "range:back") return renderPendingConfirmation(mid);
+  if (data === "range:auto") {
+    pending.rangeWidthPct = undefined;
+    return renderPendingConfirmation(mid);
+  }
+  if (data === "range:custom") {
+    pending.awaitingRangeWidth = true;
+    pending.rangeMessageId = mid;
+    await edit(mid, `<b>📐 Type a custom range width</b>\n\nEnter a positive percentage from <b>1% to ${MAX_MANUAL_RANGE_PCT}%</b>.\nExample: <code>75</code>`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
+    return;
+  }
+  const preset = data.match(/^range:preset:(\d+(?:\.\d+)?)$/);
+  if (preset) {
+    pending.rangeWidthPct = normalizeManualRangePct(preset[1]! ) ?? undefined;
+    return renderPendingConfirmation(mid);
+  }
+}
+
+export async function onRangeWidth(text: string): Promise<void> {
+  if (!pending?.awaitingRangeWidth) return;
+  const pct = normalizeManualRangePct(text);
+  if (pct == null) {
+    await send(`Enter a range from 1% to ${MAX_MANUAL_RANGE_PCT}%, for example <code>75</code>.`);
+    return;
+  }
+  const mid = pending.rangeMessageId;
+  pending.rangeWidthPct = pct;
+  pending.awaitingRangeWidth = false;
+  pending.rangeMessageId = undefined;
+  await renderPendingConfirmation(mid);
+}
+
 export async function onAmount(text: string): Promise<void> {
   if (!pending?.awaitingAmount || !pending.chosen) return;
   const eth = parseFloat(text);
@@ -461,139 +615,7 @@ export async function onAmount(text: string): Promise<void> {
   }
   pending.ethAmt = toEthStr(eth) ?? String(eth);
   pending.awaitingAmount = false;
-
-  // ── v2 pool → zap (full-range, always both-sided) ──
-  if (pending.chosen.version === "v2") {
-    await send(
-      [
-        `<b>Confirm LP · Uniswap v2</b>`,
-        `${esc(pending.meta.symbol)} · fee <b>0.30%</b> · deposit <b>${eth} ETH</b> · full-range`,
-        ``,
-        `🎯 v2 is always <b>both-sided 50/50</b>: the bot swaps ~half the ETH → ${esc(pending.meta.symbol)}, with the rest becoming the LP pair. <b>Fees start immediately.</b>`,
-        `⚠️ You hold the token directly (a rug can lose ~half). v2 has no single-side mode.`,
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: `🎯 LP v2 (zap ${eth}Ξ)`, callback_data: "mint:v2" }],
-            [chartButton(pending.chosen, pending.token)],
-            [{ text: "❌ Cancel", callback_data: "cancel" }],
-          ],
-        },
-      },
-    );
-    return;
-  }
-
-  // ── v4 pool → single-side / in-range (farming) ──
-  if (pending.chosen.version === "v4") {
-    const feePct = (pending.chosen.fee / 10000).toFixed(2);
-    const isUsd = pending.chosen.v4?.quote === "usd";
-    if (isUsd) {
-      await send(
-        [
-          `<b>Confirm LP · Uniswap v4 · USDG</b> 🦄`,
-          `${esc(pending.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
-          ``,
-          `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(pending.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
-          ``,
-          `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees start only when ${esc(pending.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
-        ].join("\n"),
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v4r" }],
-              [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v4us" }],
-              [chartButton(pending.chosen, pending.token)],
-              [{ text: "❌ Cancel", callback_data: "cancel" }],
-            ],
-          },
-        },
-      );
-      return;
-    }
-    await send(
-      [
-        `<b>Confirm mint · Uniswap v4</b> 🦄`,
-        `${esc(pending.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b> · pair native ETH`,
-        ``,
-        `🎯 <b>In-range (farming)</b> — buy the token through the best route (Kyber), then mint around the current price. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
-        ``,
-        `🛡 <b>Single-side ETH</b> — park ETH with the range above the current price. Fees start only when price rises into range. Protected from token rugs.`,
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: `🎯 In-range farming ${feePct}%`, callback_data: "mint:v4r" }],
-            [{ text: `🛡 Single-side ETH ${feePct}%`, callback_data: "mint:v4" }],
-            [chartButton(pending.chosen, pending.token)],
-            [{ text: "❌ Cancel", callback_data: "cancel" }],
-          ],
-        },
-      },
-    );
-    return;
-  }
-
-  // ── v3 token/USDG pool → in-range (farming) or single-side USDG ──
-  if (pending.chosen.v3?.quote === "usd") {
-    const feePct = (pending.chosen.fee / 10000).toFixed(2);
-    await send(
-      [
-          `<b>Confirm LP · Uniswap v3 · USDG</b>`,
-        `${esc(pending.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
-        ``,
-        `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(pending.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
-        ``,
-        `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees start only when ${esc(pending.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
-      ].join("\n"),
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: `🎯 In-range ${feePct}% (${eth}Ξ)`, callback_data: "mint:v3u" }],
-            [{ text: `🛡 Single-side USDG ${feePct}%`, callback_data: "mint:v3us" }],
-            [chartButton(pending.chosen, pending.token)],
-            [{ text: "❌ Cancel", callback_data: "cancel" }],
-          ],
-        },
-      },
-    );
-    return;
-  }
-
-  // ── v3 pool → single / in-range ──
-  const v3pool = pending.chosen.v3!.pool;
-  const [pS, pI] = await Promise.all([
-    previewRange(pending.token, v3pool, "single").catch(() => null),
-    previewRange(pending.token, v3pool, "inrange").catch(() => null),
-  ]);
-  const rng = (p: typeof pS): string => (p ? `${fmtMcap(p.rangeMcapLow)} → ${fmtMcap(p.rangeMcapHigh)}` : "?");
-  await send(
-    [
-        `<b>Confirm mint · Uniswap v3</b>`,
-      `${esc(pending.meta.symbol)} · fee ${(pending.chosen.fee / 10000).toFixed(2)}% · deposit <b>${eth} ETH</b> · width ${cfg.lp.widthPct}%`,
-      pS ? `📊 MCAP now: <b>${fmtMcap(pS.mcapNow)}</b>` : "",
-      ``,
-      `🛡 <b>Single-side ETH</b> — range ${rng(pS)}`,
-      `   0% token. Fees start only when MCAP enters the range. Protected from token rugs.`,
-      ``,
-      `🎯 <b>In-range</b> — range ${rng(pI)}`,
-      `   swap ~<b>${pI?.swapPct ?? "?"}%</b> of the capital into ${esc(pending.meta.symbol)} first. Fees start immediately,`,
-      `   but you hold the token directly (a rug can immediately lose ~${pI?.swapPct ?? "?"}%).`,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: `🎯 In-range (swap ~${pI?.swapPct ?? "?"}%)`, callback_data: "mint:inrange" }],
-          [{ text: "🛡 Single-side ETH", callback_data: "mint:single" }],
-          [chartButton(pending.chosen, pending.token)],
-          [{ text: "❌ Cancel", callback_data: "cancel" }],
-        ],
-      },
-    },
-  );
+  await renderPendingConfirmation();
 }
 
 export async function onMint(mid: number, action = "single"): Promise<void> {
@@ -610,7 +632,7 @@ export async function onMint(mid: number, action = "single"): Promise<void> {
     `⏳ <b>Minting v3 ${pending.ethAmt} ETH…</b> ${inR ? "(wrap → swap → approve → mint)" : "(wrap → approve → mint)"}`,
   );
   try {
-    const r = await openPosition(pending.token, pending.chosen.v3!.pool, pending.ethAmt, { mode });
+    const r = await openPosition(pending.token, pending.chosen.v3!.pool, pending.ethAmt, { mode, widthPct: pending.rangeWidthPct });
     const sym = pending.meta.symbol;
     pending = null;
     await send(
@@ -639,7 +661,9 @@ async function onMintV3Usdg(mid: number, single = false): Promise<void> {
   const feePct = (pending.chosen.fee / 10000).toFixed(2);
   await edit(mid, `⏳ <b>Minting v3 USDG ${pending.ethAmt} ETH…</b> ${single ? "(Kyber → USDG → single-side)" : "(Kyber → USDG+token → mint both-sided)"}`);
   try {
-    const r = single ? await openV3UsdgSingleSide(pending.chosen.v3, pending.ethAmt) : await openV3UsdgInRange(pending.chosen.v3, pending.ethAmt);
+    const r = single
+      ? await openV3UsdgSingleSide(pending.chosen.v3, pending.ethAmt, { widthPct: pending.rangeWidthPct })
+      : await openV3UsdgInRange(pending.chosen.v3, pending.ethAmt, { widthPct: pending.rangeWidthPct });
     const sym = pending.meta.symbol;
     pending = null;
     await send(
@@ -672,12 +696,12 @@ async function onMintV4(mid: number, action: string): Promise<void> {
   try {
     const { openV4SingleSide, openV4InRange, openV4UsdgInRange, openV4UsdgSingleSide } = await import("../chain/v4/mint.js");
     const r = usdgSingle
-      ? await openV4UsdgSingleSide(v4pool, pending.ethAmt)
+      ? await openV4UsdgSingleSide(v4pool, pending.ethAmt, { widthPct: pending.rangeWidthPct })
       : isUsd
-        ? await openV4UsdgInRange(v4pool, pending.ethAmt)
+        ? await openV4UsdgInRange(v4pool, pending.ethAmt, { widthPct: pending.rangeWidthPct })
         : inR
-          ? await openV4InRange(pending.token, pending.ethAmt, { fee })
-          : await openV4SingleSide(pending.token, pending.ethAmt, { fee });
+          ? await openV4InRange(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct })
+          : await openV4SingleSide(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct });
     const market = v4MarketLine(v4pool, pending.meta, pending.token, r.tickLower, r.tickUpper, await ethUsd().catch(() => 0));
     const sym = pending.meta.symbol;
     pending = null;
@@ -2991,6 +3015,7 @@ export async function onCalendar(year?: number, month0?: number): Promise<void> 
 }
 
 export const isAwaitingAmount = (): boolean => !!pending?.awaitingAmount;
+export const isAwaitingRangeWidth = (): boolean => !!pending?.awaitingRangeWidth;
 export const cancelPending = (): void => {
   pending = null;
   pendingAutoInput = null;

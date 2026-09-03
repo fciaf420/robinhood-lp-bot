@@ -55,6 +55,7 @@ async function routeCallback(cq: any): Promise<void> {
   if (d === "lgrb") return H.onLedgerRebuild(mid);
   if (d.startsWith("lg:")) return H.onLedger(Number(d.split(":")[1]), mid);
   if (d.startsWith("pool:")) return H.onPick(Number(d.split(":")[1]), mid);
+  if (d.startsWith("range:")) return H.onRangeButton(d, mid);
   if (d === "ballp") return H.onBalancedLp(mid);
   if (d === "usdgw") return H.onUseWalletUsdg(mid); // single-side pakai USDG di wallet (no swap/input)
   if (d.startsWith("mint:")) return H.onMint(mid, d.slice(5)); // single|inrange|v4|v4r
@@ -143,6 +144,7 @@ async function routeMessage(m: any): Promise<void> {
   if (t.startsWith("/set ")) return H.onSet(t);
   if (CA_RE.test(t)) return H.onCA(t);
   if (H.isAwaitingAdd() && NUM_RE.test(t)) return H.onAddAmount(t); // ➕ add-liq amount
+  if (H.isAwaitingRangeWidth()) return H.onRangeWidth(t);
   if (H.isAwaitingAmount() && NUM_RE.test(t)) return H.onAmount(t);
   if (t.startsWith("/")) return; // unknown command
   await send("Paste a token contract address (0x… 40 hex) to open an LP.");

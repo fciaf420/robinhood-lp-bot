@@ -162,8 +162,9 @@ export function mcapAtTick(st: PoolState, tick: number, ethUsd: number, supplyUi
 }
 
 /** Width of the range in ticks, from widthPct, snapped to the pool's spacing. */
-export function widthInTicks(spacing: number): number {
-  const raw = Math.log(1 + cfg.lp.widthPct / 100) / LN_10001;
+export function widthInTicks(spacing: number, widthPct = cfg.lp.widthPct): number {
+  const pct = Number.isFinite(widthPct) && widthPct > 0 ? widthPct : cfg.lp.widthPct;
+  const raw = Math.log(1 + pct / 100) / LN_10001;
   return Math.max(spacing, Math.round(raw / spacing) * spacing);
 }
 
@@ -179,9 +180,14 @@ export interface ComputedRange {
  *           moving price doesn't cross it before the tx lands.
  *   inrange: range straddles price → needs both tokens → we swap `swapFraction` of WETH.
  */
-export function computeRange(st: PoolState, mode: MintMode, bufferSpacings = cfg.lp.rangeBufferSpacings): ComputedRange {
+export function computeRange(
+  st: PoolState,
+  mode: MintMode,
+  bufferSpacings = cfg.lp.rangeBufferSpacings,
+  widthPct = cfg.lp.widthPct,
+): ComputedRange {
   const sp = st.spacing;
-  const width = widthInTicks(sp);
+  const width = widthInTicks(sp, widthPct);
 
   if (mode === "inrange") {
     const half = Math.max(sp, Math.round(width / 2 / sp) * sp);

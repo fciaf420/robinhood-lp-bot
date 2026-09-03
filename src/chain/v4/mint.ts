@@ -31,6 +31,11 @@ const log = logger("v4mint");
 const POS_FILE = dataPath("v4-positions.json");
 const PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"; // canonical, all chains
 
+function widthSpacingsFromPct(spacing: number, widthPct?: number): number {
+  const pct = Number.isFinite(widthPct) && (widthPct ?? 0) > 0 ? widthPct! : cfg.lp.widthPct;
+  return Math.max(1, Math.round((pct / 100) / (Math.pow(1.0001, spacing) - 1)));
+}
+
 export interface V4OpenResult {
   tokenId: string | null;
   txHash: string;
@@ -98,7 +103,7 @@ function buildSdkPool(token: string, decimals: number, symbol: string, pool: V4P
 export async function openV4SingleSide(
   token: string,
   amountEthStr: string,
-  opts: { fee?: number; widthSpacings?: number } = {},
+  opts: { fee?: number; widthSpacings?: number; widthPct?: number } = {},
 ): Promise<V4OpenResult> {
   const w = wallet();
   const pools = await discoverV4Pools(token);
@@ -110,7 +115,7 @@ export async function openV4SingleSide(
 
   // single-sided ETH → range ABOVE current tick (ETH not yet sold into token)
   const sp = pool.tickSpacing;
-  const width = Math.max(1, opts.widthSpacings ?? Math.round((cfg.lp.widthPct / 100) / (Math.pow(1.0001, sp) - 1)));
+  const width = Math.max(1, opts.widthSpacings ?? widthSpacingsFromPct(sp, opts.widthPct));
   const tickLower = Math.ceil(pool.tick / sp) * sp + sp;
   const tickUpper = tickLower + width * sp;
   const amountWei = ethers.parseEther(amountEthStr);
@@ -198,7 +203,7 @@ async function sweepLeftoverToEth(sides: Array<{ addr: string; dec: number }>): 
 export async function openV4InRange(
   token: string,
   amountEthStr: string,
-  opts: { fee?: number; widthSpacings?: number } = {},
+  opts: { fee?: number; widthSpacings?: number; widthPct?: number } = {},
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const w = wallet();
   const pools = await discoverV4Pools(token);
@@ -208,7 +213,7 @@ export async function openV4InRange(
   const sp = pool.tickSpacing;
 
   // symmetric range straddling current tick
-  const halfSpacings = Math.max(1, Math.round((opts.widthSpacings ?? 8) / 2));
+  const halfSpacings = Math.max(1, Math.round((opts.widthSpacings ?? widthSpacingsFromPct(sp, opts.widthPct)) / 2));
   const anchor = Math.floor(pool.tick / sp) * sp;
   let tickLower = anchor - halfSpacings * sp;
   let tickUpper = anchor + halfSpacings * sp;
@@ -428,7 +433,7 @@ export async function approveViaPermit2(tokenAddr: string): Promise<void> {
 export async function openV4UsdgInRange(
   pool: V4Pool,
   amountEthStr: string,
-  opts?: { increaseTokenId?: string; range?: { tickLower: number; tickUpper: number }; widthSpacings?: number },
+  opts?: { increaseTokenId?: string; range?: { tickLower: number; tickUpper: number }; widthSpacings?: number; widthPct?: number },
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const w = wallet();
   const total = ethers.parseEther(amountEthStr);
@@ -445,7 +450,7 @@ export async function openV4UsdgInRange(
   const sp = pool.tickSpacing;
   // range half-width in tick-spacings — volatility-adaptive when the caller passes widthSpacings
   // (wider for volatile tokens → stays in range longer → earns fees → hits TP instead of churning OOR).
-  const half = Math.max(1, Math.round((opts?.widthSpacings ?? 8) / 2));
+  const half = Math.max(1, Math.round((opts?.widthSpacings ?? widthSpacingsFromPct(sp, opts?.widthPct)) / 2));
   const anchor0 = Math.floor(pool.tick / sp) * sp;
   const fracC1 = Math.min(0.95, Math.max(0.05, swapFractionV4(pool.tick, anchor0 - half * sp, anchor0 + half * sp)));
   const ethForC1 = (total * BigInt(Math.round(fracC1 * 1e6))) / 1_000_000n;
@@ -613,7 +618,7 @@ export async function increaseV4Position(tokenId: string, amountEthStr: string):
  * your USDG). USDG=currency0 → range ABOVE tick (fromAmount0); USDG=currency1 → range BELOW tick
  * (fromAmount1). Funds the USDG side entirely from the ETH budget via Kyber.
  */
-export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): Promise<V4OpenResult & { swapHash?: string }> {
+export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string, opts: { widthPct?: number } = {}): Promise<V4OpenResult & { swapHash?: string }> {
   if (!kyberEnabled()) throw new Error("KyberSwap is not configured — buying USDG requires the aggregator.");
   const w = wallet();
   const c0 = pool.poolKey.currency0;
@@ -669,7 +674,7 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string): 
   const cur1 = new Token(cfg.chainId, ethers.getAddress(c1), m1.decimals, m1.symbol);
   const livePool = new Pool(cur0, cur1, pool.fee, pool.tickSpacing, pool.poolKey.hooks, liveSqrt.toString(), liveLiq.toString(), liveTick);
   const sp = pool.tickSpacing;
-  const width = Math.max(1, Math.round(cfg.lp.widthPct / 100 / (Math.pow(1.0001, sp) - 1)));
+  const width = Math.max(1, widthSpacingsFromPct(sp, opts.widthPct));
 
   let tickLower: number;
   let tickUpper: number;
