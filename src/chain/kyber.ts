@@ -12,7 +12,7 @@
  */
 import { ethers } from "ethers";
 import { env, cfg } from "../config.js";
-import { wallet, provider, overrides, waitTx, requireCalldata } from "./client.js";
+import { hasUsableCalldata, wallet, provider, overrides, waitTx, requireCalldata } from "./client.js";
 import { logger } from "../util/log.js";
 
 const log = logger("kyber");
@@ -25,6 +25,13 @@ export const kyberEnabled = (): boolean => !!env.kyberBase && !!env.kyberRouter;
 interface RouteData {
   routeSummary: any;
   routerAddress: string;
+}
+
+/** Kyber has returned both a flat `data` field and transaction-shaped data across API versions. */
+export function extractKyberCalldata(build: any): string {
+  const candidates = [build?.data, build?.transaction?.data, build?.transaction?.input, build?.encodedSwapData];
+  const data = candidates.find((value): value is string => hasUsableCalldata(value));
+  return requireCalldata(data, "Kyber route");
 }
 
 /** GET /routes — the optimal route + quote. Returns null on any failure. */
@@ -58,11 +65,13 @@ async function kyberBuild(routeSummary: any, sender: string, recipient: string, 
       signal: AbortSignal.timeout(20_000),
     });
     const j: any = await r.json().catch(() => null);
-    if (!r.ok || j?.code !== 0 || !j?.data?.data) {
+    if (!r.ok || j?.code !== 0 || !j?.data) {
       log.warn(`route build failed: ${j?.message ?? r.status}`);
       return null;
     }
-    return j.data;
+    // Normalize the documented flat shape and older transaction-shaped responses into one
+    // internal shape. Empty data is rejected before any approval or broadcast can happen.
+    return { ...j.data, data: extractKyberCalldata(j.data) };
   } catch (e) {
     log.warn(`build error: ${(e as Error).message.slice(0, 80)}`);
     return null;
@@ -84,59 +93,61 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   const nativeIn = tokenIn.toLowerCase() === KYBER_NATIVE.toLowerCase();
   const slippageBps = Math.round((cfg.lp.slippagePct || 5) * 100);
 
-  // route + build hit the KyberSwap aggregator over HTTP and TRANSIENTLY return "route not found"
-  // (indexing lag / momentary thin routing) even for a pair that routes fine seconds later — that was
-  // hard-failing LP opens with "failed to buy USDG via Kyber". Retry a few times (fast when it's a quick
-  // route-not-found response) before giving up so a flaky quote doesn't kill the open.
-  let route: RouteData | null = null;
-  let built: any = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    route = await kyberRoute(tokenIn, tokenOut, amountIn);
-    if (route) {
-      built = await kyberBuild(route.routeSummary, w.address, w.address, slippageBps);
-      if (built) {
-        if (attempt > 0) log.info(`Kyber route succeeded after retry #${attempt}`);
-        break;
-      }
-    }
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1))); // 400ms · 800ms
-  }
-  if (!route || !built) return null;
-
-  // ── security gates ──
-  if (ethers.getAddress(built.routerAddress) !== ethers.getAddress(env.kyberRouter)) {
-    throw new Error(`kyber router mismatch: ${built.routerAddress} ≠ whitelist`);
-  }
-  const value = BigInt(built.transactionValue ?? "0");
-  if (value !== (nativeIn ? amountIn : 0n)) throw new Error(`kyber value sanity: got ${value}, want ${nativeIn ? amountIn : 0n}`);
-  const quotedOut = BigInt(route.routeSummary.amountOut);
-  const minOut = (quotedOut * BigInt(10_000 - slippageBps)) / 10_000n;
-  if (BigInt(built.amountIn) !== amountIn || BigInt(built.amountOut) < minOut) {
-    throw new Error(`kyber build deviates (in ${built.amountIn}, out ${built.amountOut} < ${minOut})`);
-  }
-  const calldata = requireCalldata(built.data, "Kyber route");
-
-  // ERC20 input → exact-amount approve to the router (native in carries value, no approve)
-  if (!nativeIn) {
-    const erc = new ethers.Contract(tokenIn, ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], w);
-    if ((await erc.allowance!(w.address, env.kyberRouter)) < amountIn) {
-      await waitTx(await erc.approve!(env.kyberRouter, amountIn, await overrides()), "kyber-approve");
-    }
-  }
-
   // measure output by balance delta (native ETH out → getBalance; ERC20 → balanceOf)
   const nativeOut = tokenOut.toLowerCase() === KYBER_NATIVE.toLowerCase();
   const outErc = nativeOut ? null : new ethers.Contract(tokenOut, ["function balanceOf(address) view returns (uint256)"], provider);
   const outBal = async (): Promise<bigint> => (nativeOut ? provider.getBalance(w.address) : outErc!.balanceOf!(w.address).catch(() => 0n));
+  let prepared: { calldata: string; value: bigint; gasLimit: bigint } | null = null;
+
+  // Quote, build, approve, simulate, and estimate are all retried with a fresh route. Once a
+  // transaction is broadcast, we never blindly resubmit it: an unknown receipt could otherwise
+  // turn a transient RPC error into a double sell.
+  for (let attempt = 0; attempt < 3 && !prepared; attempt++) {
+    const route = await kyberRoute(tokenIn, tokenOut, amountIn);
+    const built = route ? await kyberBuild(route.routeSummary, w.address, w.address, slippageBps) : null;
+    if (!route || !built) {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      continue;
+    }
+
+    // ── security gates ──
+    if (ethers.getAddress(built.routerAddress) !== ethers.getAddress(env.kyberRouter)) {
+      throw new Error(`kyber router mismatch: ${built.routerAddress} ≠ whitelist`);
+    }
+    const value = BigInt(built.transactionValue ?? "0");
+    if (value !== (nativeIn ? amountIn : 0n)) throw new Error(`kyber value sanity: got ${value}, want ${nativeIn ? amountIn : 0n}`);
+    const quotedOut = BigInt(route.routeSummary.amountOut);
+    const minOut = (quotedOut * BigInt(10_000 - slippageBps)) / 10_000n;
+    if (BigInt(built.amountIn) !== amountIn || BigInt(built.amountOut) < minOut) {
+      throw new Error(`kyber build deviates (in ${built.amountIn}, out ${built.amountOut} < ${minOut})`);
+    }
+    const calldata = extractKyberCalldata(built);
+
+    // ERC20 input → exact-amount approve to the router (native in carries value, no approve)
+    if (!nativeIn) {
+      const erc = new ethers.Contract(tokenIn, ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], w);
+      if ((await erc.allowance!(w.address, env.kyberRouter)) < amountIn) {
+        await waitTx(await erc.approve!(env.kyberRouter, amountIn, await overrides()), "kyber-approve");
+      }
+    }
+
+    try {
+      await provider.call({ to: env.kyberRouter, data: calldata, value, from: w.address }); // simulate (unbounded gas)
+      // Kyber's router can under-estimate hooked/v4 routes, so use a 2× buffer. A failed estimate
+      // is not safe to replace with a blind default: refresh the route instead.
+      const est = await provider.estimateGas({ to: env.kyberRouter, data: calldata, value, from: w.address });
+      prepared = { calldata, value, gasLimit: est * 2n };
+    } catch (e) {
+      const msg = (e as Error).message.slice(0, 160);
+      if (attempt === 2) throw new Error(`Kyber preflight reverted after 3 fresh attempts: ${msg}`);
+      log.warn(`Kyber preflight failed (attempt ${attempt + 1}/3): ${msg} — refreshing route`);
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  if (!prepared) return null;
+
   const before = await outBal();
-  await provider.call({ to: env.kyberRouter, data: calldata, value, from: w.address }); // simulate (unbounded gas)
-  // GAS: give the swap an explicit gasLimit = estimate × 2. The Kyber router runs the underlying pool
-  // swap via a low-level call and eth_estimateGas structurally UNDER-estimates that pattern (esp. v4 /
-  // hooked pools) — a bare estimate ran the inner call out of gas and the router reverted "Call failed"
-  // with gasUsed == gasLimit (233382). The 2× buffer absorbs the under-estimate + any state drift before
-  // inclusion; only gasUsed is actually paid, so over-provisioning the limit costs nothing.
-  const est = await provider.estimateGas({ to: env.kyberRouter, data: calldata, value, from: w.address }).catch(() => 300_000n);
-  const tx = await w.sendTransaction({ to: env.kyberRouter, data: calldata, value, gasLimit: est * 2n, ...(await overrides()) });
+  const tx = await w.sendTransaction({ to: env.kyberRouter, data: prepared.calldata, value: prepared.value, gasLimit: prepared.gasLimit, ...(await overrides()) });
   await waitTx(tx, "kyber-swap");
   const after = await outBal();
   return { tx: tx.hash, amountOut: after > before ? after - before : 0n };

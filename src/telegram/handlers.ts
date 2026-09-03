@@ -2230,12 +2230,27 @@ async function onSwapManual(text: string): Promise<void> {
 
 export async function onSwapDo(mid: number): Promise<void> {
   if (!pendingSwap) return;
+  if (!acquireWallet()) {
+    await edit(mid, "⏳ Another wallet transaction is in progress. Try this swap again when it finishes.");
+    return;
+  }
   const s = pendingSwap;
   pendingSwap = null;
   await edit(mid, `⏳ Swap ${esc(s.fromSym)} → ${esc(s.toSym)}…`);
   try {
-    const { kyberSwap } = await import("../chain/kyber.js");
-    const r = await kyberSwap(s.fromAddr, s.toAddr, s.amountIn);
+    const { kyberSwap, KYBER_NATIVE } = await import("../chain/kyber.js");
+    // The quote may have been sitting in Telegram while Auto/another wallet action changed the
+    // balance. Cap ERC-20 input to the live balance so the confirmation can never overspend it.
+    let amountIn = s.amountIn;
+    if (s.fromAddr.toLowerCase() !== KYBER_NATIVE.toLowerCase()) {
+      const live = await tokenBalanceRaw(s.fromAddr);
+      if (live <= 0n) {
+        await edit(mid, `❌ ${esc(s.fromSym)} is no longer available in the wallet. Send /swap again.`);
+        return;
+      }
+      if (live < amountIn) amountIn = live;
+    }
+    const r = await kyberSwap(s.fromAddr, s.toAddr, amountIn);
     if (!r || r.amountOut <= 0n) {
     await edit(mid, "❌ Swap failed / output was 0.");
       return;
@@ -2246,6 +2261,8 @@ export async function onSwapDo(mid: number): Promise<void> {
     );
   } catch (e) {
     await edit(mid, `❌ Swap failed: ${short(e, 150)}`);
+  } finally {
+    releaseWallet();
   }
 }
 
