@@ -127,11 +127,10 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
 
   // 6. wallet has funds
   const b = await balances().catch(() => null);
-  if (b) {
-    const usable = Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
-    if (usable < a.sizeEth) return skip(`available balance ${usable.toFixed(5)} < size ${a.sizeEth}`);
-    if (Number(b.eth) < GAS_RESERVE) return skip(`ETH native < gas reserve`);
-  }
+  if (!b) return skip("wallet balance unavailable; refusing to open until it is readable");
+  const usable = Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
+  if (usable < a.sizeEth) return skip(`available balance ${usable.toFixed(5)} < size ${a.sizeEth}`);
+  if (Number(b.eth) < GAS_RESERVE) return skip(`ETH native < gas reserve`);
 
   // Serialize the tx sequence on the shared wallet: take the wallet lock BEFORE qualify + the multi-tx
   // open, release in finally. Blocks the nonce collision (two opens 2s apart shared a nonce → "nonce

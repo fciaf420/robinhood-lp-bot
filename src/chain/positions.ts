@@ -28,6 +28,7 @@ import { dataPath, readJson, writeJson } from "../util/files.js";
 import { logger } from "../util/log.js";
 import type { MintMode, OpenResult, PositionRow, CloseResult, RangePreview, PoolInfo, TokenMeta, CloseReason } from "../types.js";
 import { closeTokenPolicy } from "./closePolicy.js";
+import { positiveBalanceDelta } from "./balanceDelta.js";
 
 const { CurrencyAmount } = sdkCore as any;
 const log = logger("position");
@@ -878,6 +879,9 @@ export async function closePosition(
 
   const dep = loadDeposit(String(tokenId));
   const depEth = dep ? Number(ethers.formatEther(dep.depositWeth)) : null;
+  const tokenMint = wethIs0 ? p.token1 : p.token0;
+  const tokDec = wethIs0 ? m1.decimals : m0.decimals;
+  const tokenBefore = await tokenBalanceRaw(tokenMint);
 
   // ── execute ──
   let decreaseHash: string | null = null;
@@ -904,13 +908,12 @@ export async function closePosition(
   }
 
   // ── auto-swap token → ETH (timeout so close can't hang) ──
-  const tokenMint = wethIs0 ? p.token1 : p.token0;
-  const tokDec = wethIs0 ? m1.decimals : m0.decimals;
   let swapHash: string | null = null;
   let swappedWeth = 0;
   let tokenStuck = 0;
   let tokenSellEth = 0;
-  const raw = await tokenBalanceRaw(tokenMint).catch(() => 0n);
+  const tokenAfter = await tokenBalanceRaw(tokenMint);
+  const raw = positiveBalanceDelta(tokenAfter, tokenBefore);
   if (raw > 0n) {
     tokenSellEth = (await quoteTokenToWeth(tokenMint, raw).catch(() => ({ weth: 0 }))).weth;
     if (swapToken) {
@@ -1039,6 +1042,12 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean;
   const dep = loadDeposit(String(tokenId));
   const basisUsd = dep?.dep0 && dep?.dep1 ? currencyUsd(st, true, BigInt(dep.dep0), px) + currencyUsd(st, false, BigInt(dep.dep1), px) : null;
   const basisEth = basisUsd != null && px ? basisUsd / px : dep ? Number(ethers.formatEther(dep.depositWeth)) : null;
+  const usdg = usdgIs0 ? st.token0 : st.token1;
+  const tokenMint = usdgIs0 ? st.token1 : st.token0;
+  const tokDec = usdgIs0 ? m1.decimals : m0.decimals;
+  const tokSym = usdgIs0 ? m1.symbol : m0.symbol;
+  const usdgBefore = await tokenBalanceRaw(usdg);
+  const tokenBefore = await tokenBalanceRaw(tokenMint);
 
   // ── execute close ──
   let decreaseHash: string | null = null;
@@ -1059,15 +1068,13 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean;
   }
 
   // ── sell BOTH sides → native ETH via Kyber (best route) so PnL realizes + gas tops up ──
-  const usdg = usdgIs0 ? st.token0 : st.token1;
-  const tokenMint = usdgIs0 ? st.token1 : st.token0;
-  const tokDec = usdgIs0 ? m1.decimals : m0.decimals;
-  const tokSym = usdgIs0 ? m1.symbol : m0.symbol;
+  const usdgAfter = await tokenBalanceRaw(usdg);
+  const tokenAfter = await tokenBalanceRaw(tokenMint);
   let swapHash: string | null = null;
   let tokenStuck = 0;
   if (swapToken) {
     for (const a of [tokenMint, usdg]) {
-      const raw = await tokenBalanceRaw(a).catch(() => 0n);
+      const raw = a === tokenMint ? positiveBalanceDelta(tokenAfter, tokenBefore) : positiveBalanceDelta(usdgAfter, usdgBefore);
       if (raw <= 0n) continue;
       try {
         const k = await Promise.race([
@@ -1081,7 +1088,7 @@ async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean;
       }
     }
   } else {
-    const raw = await tokenBalanceRaw(tokenMint).catch(() => 0n);
+    const raw = positiveBalanceDelta(tokenAfter, tokenBefore);
     if (raw > 0n) tokenStuck = Number(ethers.formatUnits(raw, tokDec));
   }
 
