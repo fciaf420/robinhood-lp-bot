@@ -8,6 +8,8 @@ import { quoteTokenToWeth, swapTokenToWeth } from "./swaps.js";
 import { kyberRoute, kyberEnabled, KYBER_NATIVE } from "./kyber.js";
 import { ethUsd } from "./price.js";
 import { bsFetch, mapLimit } from "./blockscout.js";
+import { env } from "../config.js";
+import { alchemyTokenBalances, alchemyTokenMetadata } from "./alchemy.js";
 
 export interface Balances {
   address: string;
@@ -28,6 +30,44 @@ export interface WalletToken {
   usd: number;
 }
 
+interface AlchemyTokenBalance {
+  contractAddress: string;
+  tokenBalance: string;
+}
+
+interface TokenMetadata {
+  decimals: number;
+  symbol: string;
+}
+
+/** Convert Alchemy's ERC-20 balance response to the Blockscout-shaped rows used below. */
+export function alchemyHoldingItems(
+  balances: AlchemyTokenBalance[],
+  metadata: ReadonlyMap<string, TokenMetadata>,
+): Array<{ token: { type: "ERC-20"; address_hash: string; decimals: number; symbol: string }; value: string }> {
+  return balances.flatMap((balance) => {
+    if (!/^0x[0-9a-f]+$/i.test(balance.tokenBalance)) return [];
+    let raw: bigint;
+    try {
+      raw = BigInt(balance.tokenBalance);
+    } catch {
+      return [];
+    }
+    if (raw <= 0n || !balance.contractAddress) return [];
+    const addr = balance.contractAddress;
+    const meta = metadata.get(addr.toLowerCase());
+    return [{
+      token: {
+        type: "ERC-20" as const,
+        address_hash: addr,
+        decimals: meta?.decimals ?? 18,
+        symbol: meta?.symbol || "?",
+      },
+      value: raw.toString(),
+    }];
+  });
+}
+
 /**
  * Non-WETH ERC-20 holdings the wallet can ACTUALLY sell → ETH, richest first, dust dropped.
  * Valued via the KyberSwap aggregator (not v3-only quoting) so USDG-paired tokens like JACKET are
@@ -39,9 +79,33 @@ export async function walletTokens(minUsd = 0.1, cap = 25): Promise<WalletToken[
   const wethL = C.weth.toLowerCase();
   const px = await ethUsd().catch(() => 0);
   const tk = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${w.address}/tokens`).catch(() => null);
-  const items = (tk?.items ?? [])
+  let items = (tk?.items ?? [])
     .filter((it) => it.token?.type === "ERC-20" && it.token.address_hash && it.token.address_hash.toLowerCase() !== wethL && BigInt(it.value ?? "0") > 0n)
     .slice(0, cap);
+
+  // Blockscout can be unavailable behind Cloudflare even when the chain RPC is healthy. Use
+  // Alchemy's Data API to enumerate wallet ERC-20s, then keep the same Kyber route validation.
+  if (!items.length) {
+    const balances = await alchemyTokenBalances(env.rpcUrl, w.address).catch(() => null);
+    if (balances?.length) {
+      const nonzero = balances.filter((balance) => {
+        if (!/^0x[0-9a-f]+$/i.test(balance.tokenBalance)) return false;
+        try {
+          return BigInt(balance.tokenBalance) > 0n;
+        } catch {
+          return false;
+        }
+      });
+      const metadataRows = await mapLimit(nonzero, 8, async (balance) => [
+        balance.contractAddress.toLowerCase(),
+        await alchemyTokenMetadata(env.rpcUrl, balance.contractAddress).catch(() => null),
+      ] as const);
+      const metadata = new Map<string, TokenMetadata>(metadataRows.flatMap(([address, value]) => value ? [[address, value]] : []));
+      items = alchemyHoldingItems(nonzero, metadata)
+        .filter((it) => it.token.address_hash.toLowerCase() !== wethL)
+        .slice(0, cap);
+    }
+  }
   if (!items.length) return [];
   const rows = await mapLimit(items, 8, async (it: any): Promise<WalletToken | null> => {
     try {
