@@ -45,7 +45,7 @@ const LpSchema = z.object({
   autoWrap: z.boolean().default(true),
   rangeBufferSpacings: z.number().int().default(2),
   nativeTargetEth: z.number().min(0).default(0.015),
-  autoSwapOnClose: z.boolean().default(true),
+  autoSwapOnClose: z.boolean().default(true), // legacy compatibility; all closes now always attempt the ETH sweep
   // Pair-level v2 zaps cannot enforce amountOutMinimum. Keep them disabled until
   // a router-backed v2 path is available; legacy positions can still be burned.
   v2Enabled: z.boolean().default(false),

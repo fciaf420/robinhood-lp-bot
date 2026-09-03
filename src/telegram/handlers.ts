@@ -1489,6 +1489,7 @@ export async function onV4Close(text: string): Promise<void> {
           ? `💱 proceeds → <b>+${r.sweptEth.toFixed(6)}Ξ</b> (auto-swapped to ETH)${r.sweepHash ? ` · <a href="${explorerTx(r.sweepHash)}">tx</a>` : ""}`
           : "",
         r.unwrap ? `🔓 Unwrapped ${r.unwrap.unwrapped.toFixed(5)} WETH → native ETH · <a href="${explorerTx(r.unwrap.tx)}">tx</a>` : "",
+        r.sweepFailed?.length ? `⚠️ Could not route to ETH: <b>${esc(r.sweepFailed.join(" + "))}</b>. Retry with /sell when Kyber has a route.` : "",
         r.forfeited ? `⚠️ <b>${esc(r.forfeited)}</b> could not be withdrawn (honeypot/rug) — abandoned while saving the ETH.` : "",
         `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
       ]
@@ -1532,7 +1533,7 @@ export async function onV2Close(pair: string): Promise<void> {
   const mid = m?.result?.message_id;
   try {
     const { closeV2Position } = await import("../chain/v2/close.js");
-    const r = await closeV2Position(pair, { autoSwap: cfg.lp.v2Enabled && cfg.lp.autoSwapOnClose, reason: "manual" });
+    const r = await closeV2Position(pair, { autoSwap: true, reason: "manual" });
     await edit(
       mid,
       [
@@ -1909,17 +1910,17 @@ export async function onAuto(arg = ""): Promise<void> {
 // ══════════ close ══════════
 
 export async function onCloseAsk(tokenId: string, mid: number): Promise<void> {
-  await edit(mid, `Close #${tokenId} — what should happen to fees/tokens?\n<i>(LP principal is still returned as ETH)</i>`, {
+  await edit(mid, `Close #${tokenId} — fees and returned tokens will be swapped to native ETH.\n<i>This applies to single-sided, two-sided, v3, and v4 positions.</i>`, {
     reply_markup: {
       inline_keyboard: [
         [{ text: "🔄 Swap token → ETH (full ETH)", callback_data: `cs:${tokenId}` }],
-        [{ text: "🪙 Keep token (WETH + token)", callback_data: `ck:${tokenId}` }],
       ],
     },
   });
 }
 
-export async function onClose(tokenId: string, mid: number, swapToken = true): Promise<void> {
+export async function onClose(tokenId: string, mid: number, _swapToken = true): Promise<void> {
+  const swapToken = true;
   invalidateListCache();
   await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? "(swap token→ETH)" : "(keep token)"}`);
   try {
@@ -1978,7 +1979,7 @@ export async function onCloseAllAsk(mid?: number): Promise<void> {
     return;
   }
   const split = [rows.length ? `${rows.length} v3` : "", v4rows.length ? `${v4rows.length} v4` : ""].filter(Boolean).join(" + ");
-  const text = `⚠️ <b>Close all ${total} open positions?</b>\n\n${split}\n\nThis withdraws liquidity and may swap token balances to ETH. This cannot be undone.`;
+  const text = `⚠️ <b>Close all ${total} open positions?</b>\n\n${split}\n\nThis withdraws liquidity and swaps returned token balances to native ETH. This cannot be undone.`;
   if (mid != null) {
     await edit(mid, text, { reply_markup: { inline_keyboard: closeAllConfirmationKeyboard(total) } });
   } else {

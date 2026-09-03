@@ -27,6 +27,7 @@ import { bsFetch } from "./blockscout.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import { logger } from "../util/log.js";
 import type { MintMode, OpenResult, PositionRow, CloseResult, RangePreview, PoolInfo, TokenMeta, CloseReason } from "../types.js";
+import { closeTokenPolicy } from "./closePolicy.js";
 
 const { CurrencyAmount } = sdkCore as any;
 const log = logger("position");
@@ -830,7 +831,7 @@ export async function closePosition(
   tokenId: string,
   opts: { swapToken?: boolean; reason?: CloseReason } = {},
 ): Promise<CloseResult> {
-  const swapToken = opts.swapToken !== false && cfg.lp.autoSwapOnClose !== false;
+  const swapToken = closeTokenPolicy(opts.swapToken !== false && cfg.lp.autoSwapOnClose !== false);
   const w = wallet();
   const wethL = C.weth.toLowerCase();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
@@ -1001,7 +1002,7 @@ export async function closePosition(
  * token that only dropped in price isn't counted as an LP loss — matches the v4 USDG path.
  */
 async function closeV3UsdgPosition(tokenId: string, opts: { swapToken?: boolean; reason?: CloseReason } = {}): Promise<CloseResult> {
-  const swapToken = opts.swapToken !== false && cfg.lp.autoSwapOnClose !== false;
+  const swapToken = closeTokenPolicy(opts.swapToken !== false && cfg.lp.autoSwapOnClose !== false);
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   const p = await npm.positions!(tokenId);

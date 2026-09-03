@@ -15,6 +15,7 @@ import { appendLedger } from "../ledger.js";
 import { unwrapAllWeth } from "../swaps.js";
 import { logger } from "../../util/log.js";
 import type { CloseReason } from "../../types.js";
+import { closeTokenPolicy } from "../closePolicy.js";
 
 const log = logger("v2close");
 const WETH_L = C.weth.toLowerCase();
@@ -69,7 +70,7 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
   // optionally sell the token side back through the pair → more WETH
   let swapHash: string | undefined;
   let soldToken = false;
-  if ((opts.autoSwap ?? (cfg.lp.v2Enabled && cfg.lp.autoSwapOnClose)) && tokOut > 0n) {
+  if (closeTokenPolicy(opts.autoSwap ?? (cfg.lp.v2Enabled && cfg.lp.autoSwapOnClose)) && tokOut > 0n) {
     try {
       const res = await c.getReserves!();
       const rToken: bigint = wethIsT0 ? res[1] : res[0];

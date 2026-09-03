@@ -232,7 +232,7 @@ The bot handles: withdraw liquidity → claim fees → burn the NFT → (swap) �
 
 For honeypot tokens that can't be withdrawn (transfer reverts), the bot **force-closes**: forfeits the stuck token side and **salvages the ETH**.
 
-> ⚠️ **Note on "Keep token":** the auto-swap on close sweeps your **entire wallet balance of that token**, not just this position's share.
+> ⚠️ **Close behavior:** every close attempts to swap withdrawn token/USDG proceeds back to native ETH. If Kyber has no route or the token blocks selling, the close still completes and Telegram reports the remaining balance so you can retry with `/sell`.
 
 ### ➕ Add to an existing position (increase)
 

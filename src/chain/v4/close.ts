@@ -20,6 +20,7 @@ import { appendLedger } from "../ledger.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
 import type { TopUp, CloseReason } from "../../types.js";
+import { closeTokenPolicy } from "../closePolicy.js";
 
 const { Ether, Token, CurrencyAmount, Percent } = sdkCore as any;
 const { Pool, Position, V4PositionManager } = v4sdk as any;
@@ -90,6 +91,7 @@ export interface V4CloseResult {
   forfeited: string | null; // symbol of a honeypot token forfeited to salvage the ETH side
   sweepHash?: string | null; // Kyber tx if proceeds were auto-swapped → native ETH
   sweptEth?: number; // ETH gained from sweeping token/USDG proceeds back to native
+  sweepFailed?: string[]; // ERC-20 proceeds that could not be routed after close
   unwrap?: TopUp | null; // full wallet WETH → native ETH after close
 }
 
@@ -264,21 +266,31 @@ export async function closeV4Position(tokenId: string, reason: CloseReason = "ma
   //    cfg.lp.autoSwapOnClose. Native ETH / WETH are already ETH-equivalent so they're skipped.
   let sweepHash: string | null = null;
   let sweptEth = 0;
-  if (cfg.lp.autoSwapOnClose !== false) {
+  const sweepFailed: string[] = [];
+  if (closeTokenPolicy(cfg.lp.autoSwapOnClose !== false)) {
     for (const [addr, dec] of [[c0, m0.decimals], [c1, m1.decimals]] as const) {
       const a = addr.toLowerCase();
       if (a === NATIVE || a === WETH_L) continue; // already ETH-equivalent
       const raw = await rawBalOf(addr);
       if (raw <= 0n) continue;
       try {
-        const k = await Promise.race([kyberSwap(addr, KYBER_NATIVE, raw), new Promise<null>((r) => setTimeout(() => r(null), 60_000))]);
+        // Try native ETH first; some routes expose WETH only, so retry that destination before
+        // reporting a stranded balance. kyberSwap itself retries transient route/build failures.
+        let k = await Promise.race([kyberSwap(addr, KYBER_NATIVE, raw), new Promise<null>((r) => setTimeout(() => r(null), 60_000))]);
+        if (!k?.tx) {
+          k = await Promise.race([kyberSwap(addr, C.weth, raw), new Promise<null>((r) => setTimeout(() => r(null), 60_000))]);
+        }
         if (k?.tx) {
           sweepHash = k.tx;
           sweptEth += Number(ethers.formatEther(k.amountOut));
           log.info(`sweep v4 #${tokenId}: ${STABLES.has(a) ? "USDG" : "token"} ${ethers.formatUnits(raw, dec)} → ${Number(ethers.formatEther(k.amountOut)).toFixed(6)} ETH`);
+        } else {
+          sweepFailed.push(`${ethers.formatUnits(raw, dec)} ${STABLES.has(a) ? "USDG" : "token"}`);
+          log.warn(`sweep v4 #${tokenId}: ${ethers.formatUnits(raw, dec)} ${STABLES.has(a) ? "USDG" : "token"} could not be routed to ETH`);
         }
-      } catch {
-        /* leave the currency in the wallet if the swap fails (non-fatal) */
+      } catch (e) {
+        sweepFailed.push(`${ethers.formatUnits(raw, dec)} ${STABLES.has(a) ? "USDG" : "token"}`);
+        log.warn(`sweep v4 #${tokenId}: ${STABLES.has(a) ? "USDG" : "token"} failed — ${(e as Error).message.slice(0, 100)}`);
       }
     }
   }
@@ -310,6 +322,7 @@ export async function closeV4Position(tokenId: string, reason: CloseReason = "ma
     forfeited,
     sweepHash,
     sweptEth,
+    sweepFailed,
     unwrap,
   };
 }
