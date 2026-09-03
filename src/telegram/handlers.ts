@@ -8,7 +8,7 @@ import { type V2Pool } from "../chain/v2/pair.js";
 import { previewRange, openPosition, openV3UsdgInRange, openV3UsdgSingleSide, listPositions, closePosition } from "../chain/positions.js";
 import { readLedger, ledgerSummary, backfillLedger, winRateText } from "../chain/ledger.js";
 import { lifetimePnl } from "../chain/analytics.js";
-import { balances, sellAllTokens, walletTokens, type WalletToken } from "../chain/holdings.js";
+import { balances, walletTokens, type WalletToken } from "../chain/holdings.js";
 import { tokenBalanceRaw, unwrapAllWeth } from "../chain/swaps.js";
 import { acquireWallet, releaseWallet } from "../chain/txlock.js";
 import { revokeKnownApprovals } from "../chain/approvals.js";
@@ -2066,11 +2066,15 @@ export async function onSwap(text: string): Promise<void> {
     await send("🔄 Swap requires KyberSwap — <code>KYBERSWAP_ROUTER_ADDRESS</code> is not set in .env.");
     return;
   }
-  return text.trim().split(/\s+/).length >= 4 ? onSwapManual(text) : onSwapMenu();
+  return text.trim().split(/\s+/).length >= 4 ? onSwapManual(text) : onSwapMenu("Swap");
 }
 
 /** Auto-detect sellable tokens in the wallet → tap one → tap a %, no CA/amount typing. */
-async function onSwapMenu(): Promise<void> {
+export function sellableTokenButtons(tokens: WalletToken[]): { text: string; callback_data: string }[][] {
+  return tokens.map((t) => [{ text: `${tokenEmoji(t.symbol)} ${t.symbol} · ${fmtAmt(t.ui)} ($${t.usd.toFixed(2)})`, callback_data: `swf:${t.addr}` }]);
+}
+
+async function onSwapMenu(title = "Swap"): Promise<void> {
   const m = await send("🔄 <b>Scanning wallet tokens…</b> <i>(checking a sell route for each token, may take ~10-20s)</i>");
   const mid = m?.result?.message_id;
   swapFrom = null;
@@ -2088,8 +2092,8 @@ async function onSwapMenu(): Promise<void> {
     );
     return;
   }
-  const rows = toks.map((t) => [{ text: `${tokenEmoji(t.symbol)} ${t.symbol} · ${fmtAmt(t.ui)} ($${t.usd.toFixed(2)})`, callback_data: `swf:${t.addr}` }]);
-  await edit(mid, [`🔄 <b>Swap → ETH</b>`, `Choose a token to sell (${toks.length} detected):`].join("\n"), {
+  const rows = sellableTokenButtons(toks);
+  await edit(mid, [`🔄 <b>${title} → ETH via Kyber</b>`, `Choose a token to sell (${toks.length} detected):`].join("\n"), {
     reply_markup: { inline_keyboard: rows },
   });
 }
@@ -2447,20 +2451,12 @@ export async function onPnl(): Promise<void> {
 }
 
 export async function onSell(): Promise<void> {
-  await send("🔄 <b>Selling all stranded tokens → ETH…</b>\n(skipping rugs/illiquid pools)");
-  try {
-    const r = await sellAllTokens((msg) => {
-      void send(msg).catch(() => {});
-    });
-    await sendMenu(
-      [
-        `🏁 <b>Sales complete</b> — ${r.sold} tokens → ETH${r.skipped ? `, ${r.skipped} skipped (rug)` : ""}`,
-        `💰 Total received: <b>+${r.soldEth.toFixed(6)} WETH ($${r.soldUsd.toFixed(2)})</b>`,
-      ].join("\n"),
-    );
-  } catch (e) {
-  await send(`❌ ${short(e, 90)}`);
+  const { kyberEnabled } = await import("../chain/kyber.js");
+  if (!kyberEnabled()) {
+    await send("💸 Sell requires KyberSwap — <code>KYBERSWAP_ROUTER_ADDRESS</code> is not set in .env.");
+    return;
   }
+  return onSwapMenu("Sell");
 }
 
 export async function onWallet(): Promise<void> {
