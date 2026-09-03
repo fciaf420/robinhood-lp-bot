@@ -55,6 +55,11 @@ export interface AutoLpResult {
   result?: OpenLike;
 }
 
+/** Only an actual model response may satisfy the requireLlm safety gate. */
+export function hasTrustedLlmApproval(verdict: Verdict | null): boolean {
+  return verdict?.provenance === "llm" && !!verdict.llm;
+}
+
 /** Run the full gate chain; open a position only if ALL pass. Returns null if disabled. */
 export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null): Promise<AutoLpResult | null> {
   const a = cfg.autoLp;
@@ -74,10 +79,11 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   // 2. LLM verdict gate — action is a THRESHOLD (ape > watch > skip), not an exact match, so
   //    requireAction="watch" accepts watch-or-better (an "ape" also passes).
   if (a.requireLlm) {
-    if (!verdict?.llm) return skip("no LLM verdict");
+    const llm = verdict?.llm;
+    if (!hasTrustedLlmApproval(verdict) || !llm) return skip("no trusted LLM verdict");
     const rank = (x: string): number => (x === "ape" ? 2 : x === "watch" ? 1 : 0);
-    if (rank(verdict.llm.action) < rank(a.requireAction)) return skip(`action ${verdict.llm.action} < ${a.requireAction}`);
-    if (verdict.llm.score < a.minScore) return skip(`skor ${verdict.llm.score} < ${a.minScore}`);
+    if (rank(llm.action) < rank(a.requireAction)) return skip(`action ${llm.action} < ${a.requireAction}`);
+    if (llm.score < a.minScore) return skip(`skor ${llm.score} < ${a.minScore}`);
   }
 
   // 3. GMGN hard filters (defense beyond the LLM)
@@ -98,10 +104,13 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   const st = load();
   st.opens = st.opens.filter((o) => now - o.ts < 24 * 3600_000); // prune >24h
   // count BOTH v3 and v4 — auto-add now opens v4 (3-10%) pools, so a v3-only count let maxOpen leak.
-  const [v3rows, v4rows] = await Promise.all([
-    listPositions().catch(() => []),
-    import("../chain/v4/list.js").then((m) => m.listV4Positions()).catch(() => []),
+  const [v3read, v4read] = await Promise.all([
+    listPositions().then((rows) => ({ ok: true as const, rows })).catch(() => ({ ok: false as const, rows: [] })),
+    import("../chain/v4/list.js").then((m) => m.listV4Positions()).then((rows) => ({ ok: true as const, rows })).catch(() => ({ ok: false as const, rows: [] })),
   ]);
+  if (!v3read.ok || !v4read.ok) return skip("position state unavailable; refusing to open until it is readable");
+  const v3rows = v3read.rows;
+  const v4rows = v4read.rows;
   const openPositions = v3rows.length + v4rows.length;
   // 5a. ONE position per token — don't stack duplicates (VEX was opening every hunt cycle → #381105 +
   //     #381146). Check the on-chain holdings by tokenAddr, PLUS tokens opened in the last 15 min (the

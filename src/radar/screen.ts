@@ -39,6 +39,7 @@ export interface ScreenResult {
   flags: string[]; // human-readable warnings / notes
   thesis?: string; // LLM one-liner (if enabled)
   verdict?: "ape" | "watch" | "skip";
+  verdictSource?: "llm";
 }
 
 const MEME_RE = /(cat|dog|inu|shib|pepe|wojak|moon|elon|trump|doge|frog|chad|wif\b|bonk|floki|meme|baby|safe|rocket|\bape|kitty|puppy|lambo|degen|based|wagmi|\bgm\b|fud|coin|pump|hood|pump|milady|retard|cum|ballz|69|420)/i;
@@ -190,6 +191,7 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
       if (cached && Date.now() - cached.at < LLM_CACHE_MS) {
         r.thesis = cached.verdict.summary;
         r.verdict = cached.verdict.action;
+        r.verdictSource = "llm";
         r.score = Math.round(r.score * 0.7 + cached.verdict.score * 0.3);
         return;
       }
@@ -199,6 +201,7 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
         llmCache.set(cacheKey, { at: Date.now(), verdict: v });
         r.thesis = v.summary;
         r.verdict = v.action;
+        r.verdictSource = "llm";
         // blend LLM conviction into the rank (30% weight)
         r.score = Math.round(r.score * 0.7 + v.score * 0.3);
       }

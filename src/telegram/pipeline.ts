@@ -94,12 +94,13 @@ export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool):
     vol1h: r.token.volume,
     fdv: r.token.marketCap,
   };
-  // Use the LLM verdict when present; otherwise synthesize one from the thesis score so a qualified
-  // 3-10% candidate outside the LLM top-N is still eligible for auto-add (screen already vetted it).
-  const action = r.verdict ?? (r.score >= 75 ? "ape" : r.score >= cfg.scan.minScore ? "watch" : "skip");
+  // A heuristic screen score is useful for ranking/alerts, but must never masquerade as model
+  // approval when Auto-LP's requireLlm gate is enabled.
+  const action = r.verdictSource === "llm" ? (r.verdict ?? "skip") : "skip";
   const verdict: Verdict = {
-    llm: { action, score: r.score, summary: r.thesis ?? `${r.kind} · ${r.community} (heuristik)` },
+    llm: r.verdictSource === "llm" ? { action, score: r.score, summary: r.thesis ?? `${r.kind} · ${r.community}` } : null,
     gmgn: null,
+    provenance: r.verdictSource === "llm" ? "llm" : "none",
   };
   await runAuto(candidate, verdict);
 }

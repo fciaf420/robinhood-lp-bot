@@ -18,6 +18,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let hooks: ScanHooks | null = null;
 const alerted = new Map<string, number>(); // token → last alert ts (cooldown)
 const stats = { scans: 0, alerts: 0, lastAt: 0, lastFound: 0, lastScanned: 0 };
+let scanRun: Promise<{ found: number; scanned: number }> | null = null;
 
 /** Register hooks (pass at boot) and start the timer when enabled. Called again by /hunt on. */
 export function startScan(h?: ScanHooks): void {
@@ -48,15 +49,24 @@ export function scanStatus(): { on: boolean } & typeof cfg.scan & typeof stats {
 
 /** Run one scan immediately (used by /hunt now). */
 export async function scanNow(): Promise<{ found: number; scanned: number }> {
-  return runScan();
+  return runSingleFlight();
 }
 
 async function tick(): Promise<void> {
   try {
-    await runScan();
+    await runSingleFlight();
   } catch (e) {
       log.warn(`scan failed: ${(e as Error).message.slice(0, 90)}`);
   }
+}
+
+/** Prevent the timer, /hunt now, and a slow prior run from overlapping. */
+function runSingleFlight(): Promise<{ found: number; scanned: number }> {
+  if (scanRun) return scanRun;
+  scanRun = runScan().finally(() => {
+    scanRun = null;
+  });
+  return scanRun;
 }
 
 async function runScan(): Promise<{ found: number; scanned: number }> {

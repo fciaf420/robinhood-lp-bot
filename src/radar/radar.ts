@@ -28,6 +28,8 @@ export interface Candidate {
 export interface Verdict {
   llm: LlmVerdict | null;
   gmgn: GmgnData | null;
+  /** `llm` means a real model response; `none` means enrichment only/no model approval. */
+  provenance: "llm" | "none";
 }
 
 export function radarEnabled(): boolean {
@@ -55,7 +57,7 @@ export async function scoreCandidate(c: Candidate): Promise<Verdict | null> {
   const llm = await llmScore(SYSTEM, user);
   if (!llm && !gmgn) return null;
   if (llm) log.info(`${c.symbol}: ${llm.action} (${llm.score}) — ${llm.summary.slice(0, 60)}`);
-  return { llm, gmgn };
+  return { llm, gmgn, provenance: llm ? "llm" : "none" };
 }
 
 function buildPrompt(c: Candidate, gmgn: GmgnData | null): string {
