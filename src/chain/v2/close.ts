@@ -31,6 +31,7 @@ export interface V2CloseResult {
   soldToken: boolean;
   depEth: number | null;
   pnlEth: number | null;
+  heldMs: number | null;
   poolFeePpm: number;
 }
 
@@ -112,6 +113,8 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
   const depEth = dep ? Number(ethers.formatEther(dep.depositWei)) : null;
   const recvEth = Number(ethers.formatEther(wethOut));
   const pnlEth = depEth != null ? recvEth - depEth : null;
+  const closedAt = Date.now();
+  const heldMs = dep?.ts ? Math.max(0, closedAt - dep.ts) : null;
 
   // record to the unified ledger (v2 close → deposit/PnL in /ledger + stats)
   try {
@@ -123,8 +126,8 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
       pair: `${meta.symbol}/WETH`,
       mode: "inrange",
       openedAt: dep?.ts ?? null,
-      closedAt: Date.now(),
-      heldMs: dep?.ts ? Date.now() - dep.ts : null,
+      closedAt,
+      heldMs,
       depEth: depEth ?? 0,
       outEth: recvEth,
       feeEth: 0,
@@ -156,6 +159,7 @@ export async function closeV2Position(pairAddr: string, opts: { autoSwap?: boole
     soldToken,
     depEth,
     pnlEth,
+    heldMs,
     poolFeePpm: 3000,
   };
 }

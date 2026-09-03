@@ -89,6 +89,7 @@ export interface V4CloseResult {
   feeEth: number; // fees earned over the position's life (ETH)
   pnlEth: number | null;
   pnlPct: number | null;
+  heldMs: number | null;
   forfeited: string | null; // symbol of a honeypot token forfeited to salvage the ETH side
   sweepHash?: string | null; // Kyber tx if proceeds were auto-swapped → native ETH
   sweptEth?: number; // ETH gained from sweeping token/USDG proceeds back to native
@@ -239,6 +240,10 @@ export async function closeV4Position(tokenId: string, reason: CloseReason = "ma
   const pnlEth = !valuationBroken && basisEth != null && basisEth > 0 && pre ? outEth - basisEth : null;
   const pnlPct = pnlEth != null && basisEth ? (pnlEth / basisEth) * 100 : null;
 
+  // Record one close timestamp so the ledger and the card show the same elapsed hold time.
+  const closedAt = Date.now();
+  const heldMs = dep?.ts ? Math.max(0, closedAt - dep.ts) : null;
+
   // record to the unified ledger (so /ledger shows v4 deposit/PnL + counts it in stats)
   try {
     appendLedger({
@@ -249,8 +254,8 @@ export async function closeV4Position(tokenId: string, reason: CloseReason = "ma
       quote: isUsdgPair ? "usd" : "eth",
       mode: dep?.mode === "inrange" ? "inrange" : "single",
       openedAt: dep?.ts ?? null,
-      closedAt: Date.now(),
-      heldMs: dep?.ts ? Date.now() - dep.ts : null,
+      closedAt,
+      heldMs,
       depEth: ledgerBasis,
       outEth: ledgerOut,
       feeEth: ledgerFee,
@@ -332,6 +337,7 @@ export async function closeV4Position(tokenId: string, reason: CloseReason = "ma
     feeEth,
     pnlEth,
     pnlPct,
+    heldMs,
     forfeited,
     sweepHash,
     sweptEth,

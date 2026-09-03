@@ -1532,8 +1532,8 @@ export async function onV4Close(text: string): Promise<void> {
         .filter(Boolean)
         .join("\n"),
     );
-    const v4quote = /usdg|usd/i.test(r.pair) && !/\beth\b|weth/i.test(r.pair) ? ("usd" as const) : ("eth" as const);
-    await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, poolFeePpm: r.fee, reason: r.reason });
+    const { v4CloseCardInput } = await import("./card.js");
+    await sendCloseCard(v4CloseCardInput(r));
   } catch (e) {
     await edit(mid, `❌ v4 close failed: ${short(e, 160)}`);
   }
@@ -1582,7 +1582,7 @@ export async function onV2Close(pair: string): Promise<void> {
         .filter(Boolean)
         .join("\n"),
     );
-    await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth, poolFeePpm: r.poolFeePpm, reason: r.reason });
+    await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth, heldMs: r.heldMs, poolFeePpm: r.poolFeePpm, reason: r.reason });
   } catch (e) {
     await edit(mid, `❌ v2 close failed: ${short(e, 160)}`);
   }

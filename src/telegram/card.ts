@@ -329,6 +329,34 @@ export interface ClosePnl {
   reason?: string;
 }
 
+/** Normalize the v4 close result before rendering a per-position PnL card. */
+export function v4CloseCardInput(r: {
+  pair: string;
+  fee: number;
+  depEth: number | null;
+  outEth: number;
+  feeEth: number;
+  pnlEth: number | null;
+  pnlPct: number | null;
+  heldMs?: number | null;
+  reason?: string;
+}): ClosePnl {
+  const quote = /usdg|usd/i.test(r.pair) && !/\beth\b|weth/i.test(r.pair) ? "usd" : "eth";
+  return {
+    name: r.pair,
+    version: "v4",
+    quote,
+    depEth: r.depEth,
+    outEth: r.outEth,
+    feeEth: r.feeEth,
+    pnlEth: r.pnlEth,
+    pnlPct: r.pnlPct,
+    heldMs: r.heldMs,
+    poolFeePpm: r.fee,
+    reason: r.reason,
+  };
+}
+
 /** hh:mm:ss from a duration in ms (STRIX "HOLD 00:20:19"). */
 function fmtHold(ms: number): string {
   const t = Math.max(0, Math.floor(ms / 1000));
