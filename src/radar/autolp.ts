@@ -6,7 +6,7 @@
  * NOT sufficient — hard on-chain/GMGN filters + rate/size/count caps sit in front of it.
  * Single-side mode by default = rug-safe (parks ETH, buys token only if price enters range).
  */
-import { cfg } from "../config.js";
+import { cfg, gasReserveEth } from "../config.js";
 import { findPools, pickLpPool } from "../chain/pools.js";
 import { openPosition, listPositions } from "../chain/positions.js";
 import { balances } from "../chain/holdings.js";
@@ -18,7 +18,7 @@ import type { Candidate, Verdict } from "./radar.js";
 
 const log = logger("autolp");
 const STATE_FILE = dataPath("autolp-state.json");
-const GAS_RESERVE = 0.0004;
+const GAS_RESERVE = (): number => gasReserveEth();
 
 // Common shape of a v3 OpenResult and a v4 V4OpenResult, so auto-open can return either.
 type OpenLike = {
@@ -133,9 +133,8 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   // 6. wallet has funds
   const b = await balances().catch(() => null);
   if (!b) return skip("wallet balance unavailable; refusing to open until it is readable");
-  const usable = Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
+  const usable = Math.max(0, Number(b.weth) + Number(b.eth) - GAS_RESERVE());
   if (usable < a.sizeEth) return skip(`available balance ${usable.toFixed(5)} < size ${a.sizeEth}`);
-  if (Number(b.eth) < GAS_RESERVE) return skip(`ETH native < gas reserve`);
 
   // Serialize the tx sequence on the shared wallet: take the wallet lock BEFORE qualify + the multi-tx
   // open, release in finally. Blocks the nonce collision (two opens 2s apart shared a nonce → "nonce
@@ -196,7 +195,7 @@ export async function reopenRecentered(token: string, symbol: string): Promise<O
   if (!q) return null; // no farmable 3-10% pool anymore → don't redeploy into a dead token
   const b = await balances().catch(() => null);
   if (b) {
-    const usable = Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
+    const usable = Math.max(0, Number(b.weth) + Number(b.eth) - GAS_RESERVE());
     if (usable < a.sizeEth) return null; // close proceeds not enough to re-open at size
   }
   const inRange = a.mode === "inrange";

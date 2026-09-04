@@ -15,6 +15,7 @@
 import { ethers } from "ethers";
 import { env, cfg } from "../config.js";
 import { hasUsableCalldata, wallet, provider, overrides, waitTx, reconcileTransactionReceipt, requireCalldata } from "./client.js";
+import { withKyberSwapLock } from "./txlock.js";
 import { logger } from "../util/log.js";
 
 const log = logger("kyber");
@@ -76,12 +77,26 @@ export class KyberBroadcastRevertedError extends Error {
   }
 }
 
+/** A local gas/balance gate stopped the swap before it was submitted. */
+export class KyberPreflightError extends Error {
+  readonly kyberPreflight = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "KyberPreflightError";
+  }
+}
+
 export function isKyberBroadcastUnknown(error: unknown): boolean {
   return error instanceof KyberBroadcastUnknownError || (error as { kyberBroadcasted?: unknown } | null)?.kyberBroadcasted === true;
 }
 
 export function isKyberBroadcastReverted(error: unknown): boolean {
   return error instanceof KyberBroadcastRevertedError || (error as { kyberReverted?: unknown } | null)?.kyberReverted === true;
+}
+
+export function isKyberPreflight(error: unknown): boolean {
+  return error instanceof KyberPreflightError || (error as { kyberPreflight?: unknown } | null)?.kyberPreflight === true;
 }
 
 /** Kyber has returned both a flat `data` field and transaction-shaped data across API versions. */
@@ -197,6 +212,11 @@ async function ensureKyberAllowance(tokenIn: string, amountIn: bigint, w: ethers
  */
 export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<KyberSwapResult | null> {
   if (!kyberEnabled() || amountIn <= 0n) return null;
+  return withKyberSwapLock(() => kyberSwapUnlocked(tokenIn, tokenOut, amountIn));
+}
+
+async function kyberSwapUnlocked(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<KyberSwapResult | null> {
+  if (!kyberEnabled() || amountIn <= 0n) return null;
   const w = wallet();
   if (!isKyberAsset(tokenIn) || !isKyberAsset(tokenOut) || tokenIn.toLowerCase() === tokenOut.toLowerCase()) {
     throw new Error("Kyber swap has an invalid or identical asset pair");
@@ -273,12 +293,14 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
       const nativeBalance = await provider.getBalance(w.address);
       const maxCost = value + gasLimit * feePerGas;
       if (nativeBalance < maxCost) {
-        throw new Error(`Kyber native balance insufficient for value + gas: need up to ${ethers.formatEther(maxCost)} ETH, have ${ethers.formatEther(nativeBalance)} ETH`);
+        throw new KyberPreflightError(
+          `Kyber gas preflight blocked before broadcast: need up to ${ethers.formatEther(maxCost)} native ETH for value + gas, have ${ethers.formatEther(nativeBalance)}; add ${ethers.formatEther(maxCost - nativeBalance)} ETH. WETH cannot pay gas`,
+        );
       }
       prepared = { calldata, value, gasLimit, txOverrides };
     } catch (e) {
       const msg = shortError(e);
-      if (msg.includes("Kyber native balance insufficient")) throw e;
+      if (msg.includes("Kyber gas preflight blocked before broadcast")) throw e;
       if (attempt === 2) throw new Error(`Kyber preflight reverted after 3 fresh attempts: ${msg}`);
       log.warn(`Kyber preflight failed (attempt ${attempt + 1}/3): ${msg} — refreshing route`);
       await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));

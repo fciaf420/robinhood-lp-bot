@@ -27,17 +27,16 @@ export function isNonceConflict(error: unknown): boolean {
 }
 
 /**
- * Some Robinhood RPC responses report a nonce/provider rejection as a generic
- * `sendTransaction` revert with an empty transaction payload. Once calldata has
- * been validated by the caller, that shape is safe to retry with a fresh nonce.
+ * Only an explicit nonce-conflict response is safe to retry automatically.
+ *
+ * A generic `sendTransaction` / `transaction execution reverted` response with an
+ * empty payload is ambiguous on Robinhood: the node may have accepted the raw
+ * transaction and failed while returning its response. Retrying the same calldata
+ * with a fresh nonce can execute a swap twice (the first one succeeds, the second
+ * one then fails because the input balance/allowance was already spent).
  */
 export function isRetryableSendError(error: unknown): boolean {
-  if (isNonceConflict(error)) return true;
-  const e = error as { action?: unknown; message?: unknown; transaction?: { data?: unknown } } | null;
-  const action = String(e?.action ?? "").toLowerCase();
-  const message = String(e?.message ?? error ?? "").toLowerCase();
-  const data = e?.transaction?.data;
-  return action === "sendtransaction" && message.includes("transaction execution reverted") && (data === "" || data == null);
+  return isNonceConflict(error);
 }
 
 /** A contract transaction must contain at least a valid function selector. */

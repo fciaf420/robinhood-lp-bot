@@ -44,6 +44,8 @@ const LpSchema = z.object({
   slippagePct: z.number().min(0).max(50).default(5),
   autoWrap: z.boolean().default(true),
   rangeBufferSpacings: z.number().int().default(2),
+  // Native ETH kept available for gas. The same target is used as a preflight reserve for
+  // multi-step opens so a WETH-funded LP cannot start and then strand a half-completed swap.
   nativeTargetEth: z.number().min(0).default(0.015),
   autoSwapOnClose: z.boolean().default(true), // legacy compatibility; all closes now always attempt the ETH sweep
   // Pair-level v2 zaps cannot enforce amountOutMinimum. Keep them disabled until
@@ -204,6 +206,11 @@ function load(): Config {
 /** Mutable in-memory config. /set mutates this and calls persist(). */
 export const cfg: Config = load();
 export const C = cfg.contracts;
+
+/** Minimum native ETH reserve used by wallet UX and multi-transaction LP preflight. */
+export function gasReserveEth(): number {
+  return Math.max(0.0004, cfg.lp.nativeTargetEth);
+}
 
 /**
  * Persist current config back to disk. MERGE with what's on disk so a concurrent edit

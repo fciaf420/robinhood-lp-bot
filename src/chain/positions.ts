@@ -8,8 +8,8 @@
  */
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
-import { cfg, C } from "../config.js";
-import { wallet, readProvider, overrides, waitTx, sendCheckedTransaction } from "./client.js";
+import { cfg, C, gasReserveEth } from "../config.js";
+import { wallet, provider, readProvider, overrides, waitTx, sendCheckedTransaction } from "./client.js";
 import { NPM_ABI, FACTORY_ABI, POOL_ABI, ERC20_ABI } from "./abis.js";
 import { tokenMeta } from "./tokens.js";
 import { getPoolState, computeRange, mcapAtTick, widthInTicks, USDG, type PoolState } from "./pools.js";
@@ -20,7 +20,7 @@ import {
   tokenBalanceRaw,
   unwrapAllWeth,
 } from "./swaps.js";
-import { kyberSwap, kyberEnabled, KYBER_NATIVE } from "./kyber.js";
+import { kyberSwap, kyberEnabled, KYBER_NATIVE, isKyberBroadcastUnknown } from "./kyber.js";
 import { ethUsd } from "./price.js";
 import { appendLedger } from "./ledger.js";
 import { bsFetch } from "./blockscout.js";
@@ -70,6 +70,63 @@ function deleteDeposit(tokenId: string): void {
 // ── mint deadline (10 min) ──
 const deadline = () => Math.floor(Date.now() / 1000) + 600;
 
+const V3_WRAP_GAS_BUFFER = ethers.parseEther("0.0003");
+
+/**
+ * Check native ETH before a v3 flow can wrap funds or start a Kyber sequence.
+ *
+ * WETH pays for the swap input, but it cannot pay transaction gas. Starting with only enough
+ * native ETH for the first leg used to leave a token in the wallet when the second leg was blocked.
+ * The configured gas target is now a real preflight reserve, so the failure happens before any
+ * funding swap or wrap is submitted.
+ */
+async function ensureV3NativeBudget(label: string, wrapWei = 0n, surplusWeth = 0n): Promise<void> {
+  const w = wallet();
+  let native = await provider.getBalance(w.address);
+  const reserve = ethers.parseEther(String(gasReserveEth()));
+  const required = wrapWei + reserve + (wrapWei > 0n ? V3_WRAP_GAS_BUFFER : 0n);
+  if (native >= required) return;
+  // If the flow already has all required WETH, surplus WETH can safely become native gas. Do not
+  // unwrap when a wrap is still required: that would trade away the exact WETH needed for funding
+  // and leave the same shortfall after an unnecessary round trip.
+  if (wrapWei === 0n && surplusWeth > 0n && native >= V3_WRAP_GAS_BUFFER) {
+    const need = required - native;
+    const unwrapWei = need + V3_WRAP_GAS_BUFFER <= surplusWeth ? need + V3_WRAP_GAS_BUFFER : surplusWeth;
+    if (unwrapWei > 0n) {
+      const wc = new ethers.Contract(C.weth, [...ERC20_ABI, "function withdraw(uint256)"], w);
+      await waitTx(await wc.withdraw!(unwrapWei, await overrides()), "v3-gas-unwrap");
+      native = await provider.getBalance(w.address);
+      if (native >= required) return;
+    }
+  }
+  const short = required - native;
+  throw new Error(
+    `${label} blocked before broadcast: need ${ethers.formatEther(required)} native ETH (including ${ethers.formatEther(reserve)} gas reserve), have ${ethers.formatEther(native)}; add ${ethers.formatEther(short)} ETH. WETH cannot pay gas unless it is surplus and can be unwrapped safely.`,
+  );
+}
+
+/**
+ * Return only balances acquired by this attempted v3 USDG open back to ETH after a partial
+ * funding failure. Pre-existing wallet inventory is excluded, so a failed retry cannot sell the
+ * user's older tokens. Recovery is best-effort and the caller still reports anything left behind.
+ */
+async function recoverV3FundingDelta(addr: string, before: bigint, decimals: number): Promise<string | null> {
+  const erc = new ethers.Contract(addr, ["function balanceOf(address) view returns (uint256)"], readProvider);
+  const after: bigint = await erc.balanceOf!(wallet().address).catch(() => 0n);
+  const delta = after > before ? after - before : 0n;
+  if (delta <= 0n) return null;
+  if (addr.toLowerCase() === USDG_L && delta < 300_000n) {
+    return `${ethers.formatUnits(delta, decimals)} USDG dust remains`;
+  }
+  try {
+    const k = await kyberSwap(addr, KYBER_NATIVE, delta);
+    if (k && k.amountOut > 0n) return `recovered ${ethers.formatUnits(delta, decimals)} → ${ethers.formatEther(k.amountOut)} ETH`;
+    return `${ethers.formatUnits(delta, decimals)} remains (Kyber found no recovery route)`;
+  } catch (e) {
+    return `${ethers.formatUnits(delta, decimals)} remains (${errShort(e)})`;
+  }
+}
+
 /** Non-WETH token address + its meta for a pool state. */
 async function tokenSide(st: PoolState) {
   const addr = st.wethIsToken0 ? st.token1 : st.token0;
@@ -113,8 +170,13 @@ export async function openPosition(
   // 1. wrap ETH → WETH if needed
   let wrapHash: string | undefined;
   const wbal: bigint = await wc.balanceOf!(w.address);
-  if (wbal < amount && cfg.lp.autoWrap) {
-    const wrapTx = await wc.deposit!({ value: amount - wbal, ...(await overrides()) });
+  const wrapWei = wbal < amount ? amount - wbal : 0n;
+  if (wrapWei > 0n && !cfg.lp.autoWrap) {
+    throw new Error(`v3 LP needs ${ethers.formatEther(wrapWei)} more WETH, but auto-wrap is off`);
+  }
+  await ensureV3NativeBudget("v3 LP", wrapWei, wrapWei === 0n ? wbal - amount : 0n);
+  if (wrapWei > 0n) {
+    const wrapTx = await wc.deposit!({ value: wrapWei, ...(await overrides()) });
     await wrapTx.wait();
     wrapHash = wrapTx.hash;
   }
@@ -353,8 +415,15 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string, op
   const wc = new ethers.Contract(C.weth, [...ERC20_ABI, "function deposit() payable"], w);
   let wrapHash: string | undefined;
   const wbal: bigint = await wc.balanceOf!(w.address);
-  if (wbal < total && cfg.lp.autoWrap) {
-    const wtx = await wc.deposit!({ value: total - wbal, ...(await overrides()) });
+  const wrapWei = wbal < total ? total - wbal : 0n;
+  if (wrapWei > 0n && !cfg.lp.autoWrap) {
+    throw new Error(`v3 USDG both-sided needs ${ethers.formatEther(wrapWei)} more WETH, but auto-wrap is off`);
+  }
+  // Do this before wrapping or swapping. A two-sided USDG open can need two Kyber transactions;
+  // native ETH is the gas rail even though WETH funds the swap input.
+  await ensureV3NativeBudget("v3 USDG both-sided mint", wrapWei, wrapWei === 0n ? wbal - total : 0n);
+  if (wrapWei > 0n) {
+    const wtx = await wc.deposit!({ value: wrapWei, ...(await overrides()) });
     await wtx.wait();
     wrapHash = wtx.hash;
   }
@@ -383,10 +452,23 @@ export async function openV3UsdgInRange(pool: PoolInfo, amountEthStr: string, op
   const tokAddr = usdgIsC0 ? c1 : c0;
   const wethForUsdg = usdgIsC0 ? wethForC0 : wethForC1;
   const wethForTok = usdgIsC0 ? wethForC1 : wethForC0;
-  const heldUsdgWethWei = px > 0 ? ethers.parseEther((Number(ethers.formatUnits(await bal(usdgAddr), 6)) / px).toFixed(9)) : 0n;
+  const tokenBefore = await bal(tokAddr);
+  const usdgBefore = await bal(usdgAddr);
+  const heldUsdgWethWei = px > 0 ? ethers.parseEther((Number(ethers.formatUnits(usdgBefore, 6)) / px).toFixed(9)) : 0n;
   const buyUsdgWei = wethForUsdg > heldUsdgWethWei ? wethForUsdg - heldUsdgWethWei : 0n;
-  await acquire(tokAddr, wethForTok);
-  await acquire(usdgAddr, buyUsdgWei); // 0 if we already hold enough USDG
+  try {
+    await acquire(tokAddr, wethForTok);
+    await acquire(usdgAddr, buyUsdgWei); // 0 if we already hold enough USDG
+  } catch (e) {
+    // If one leg landed and the next leg failed, unwind only this attempt's new balances. This
+    // prevents the common "token bought, mint never started" failure from creating stranded dust.
+    const recovered = (await Promise.all([
+      recoverV3FundingDelta(tokAddr, tokenBefore, usdgIsC0 ? st.token1Sdk.decimals : st.token0Sdk.decimals),
+      recoverV3FundingDelta(usdgAddr, usdgBefore, 6),
+    ])).filter(Boolean) as string[];
+    const recovery = recovered.length ? ` Recovery: ${recovered.join("; ")}.` : "";
+    throw new Error(`Funding stopped before the v3 mint: ${errShort(e)}.${recovery}`);
+  }
 
   const [bal0, bal1] = await Promise.all([bal(c0), bal(c1)]);
   if (bal0 <= 0n || bal1 <= 0n) throw new Error("One side has a zero balance after the swap (is the pool illiquid?)");
@@ -484,14 +566,26 @@ export async function openV3UsdgSingleSide(pool: PoolInfo, amountEthStr: string,
   if (buyWethWei >= ethers.parseEther("0.00002")) {
     const wc = new ethers.Contract(C.weth, [...ERC20_ABI, "function deposit() payable"], w);
     const wbal: bigint = await wc.balanceOf!(w.address);
-    if (wbal < buyWethWei && cfg.lp.autoWrap) {
-      const wtx = await wc.deposit!({ value: buyWethWei - wbal, ...(await overrides()) });
+    const wrapWei = wbal < buyWethWei ? buyWethWei - wbal : 0n;
+    if (wrapWei > 0n && !cfg.lp.autoWrap) {
+      throw new Error(`v3 USDG single-side needs ${ethers.formatEther(wrapWei)} more WETH, but auto-wrap is off`);
+    }
+    await ensureV3NativeBudget("v3 USDG single-side mint", wrapWei, wrapWei === 0n ? wbal - buyWethWei : 0n);
+    if (wrapWei > 0n) {
+      const wtx = await wc.deposit!({ value: wrapWei, ...(await overrides()) });
       await wtx.wait();
       wrapHash = wtx.hash;
     }
     const k = await kyberSwap(C.weth, ethers.getAddress(usdgAddr), buyWethWei);
     if (!k || k.amountOut <= 0n) throw new Error("Failed to buy USDG via Kyber");
     swapHash = k.tx;
+  }
+  // Even when the wallet already has enough USDG and no buy is needed, the mint still needs
+  // native gas. Use any WETH inventory as a safe gas top-up before approvals/minting.
+  if (buyWethWei < ethers.parseEther("0.00002")) {
+    const wc = new ethers.Contract(C.weth, [...ERC20_ABI, "function balanceOf(address) view returns (uint256)"], w);
+    const wbal: bigint = await wc.balanceOf!(w.address).catch(() => 0n);
+    await ensureV3NativeBudget("v3 USDG single-side mint", 0n, wbal);
   }
   const heldNow: bigint = await usdgC.balanceOf!(w.address).catch(() => 0n);
   // Price KNOWN → cap to target (reuse held USDG). Price UNKNOWN (px=0) → deposit ONLY what this open

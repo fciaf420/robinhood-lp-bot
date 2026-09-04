@@ -1,5 +1,5 @@
 /** Command + callback handlers. Each renders through tg.send/edit (owner chat only). */
-import { cfg, env, C, persist } from "../config.js";
+import { cfg, env, C, persist, gasReserveEth } from "../config.js";
 import { tokenMeta } from "../chain/tokens.js";
 import { findPools, findUsdgPools, USDG } from "../chain/pools.js";
 import { dexPairs, type DexPair } from "../chain/dexscreener.js";
@@ -207,9 +207,9 @@ let pendingSettingsInput: SettingsInput | null = null;
 let pendingAdd: { tokenId: string; version: "v3" | "v4" } | null = null;
 let pendingPositionRule: { tokenId: string; version: "v3" | "v4"; kind: PositionRuleKind } | null = null;
 
-const GAS_RESERVE = 0.0004; // native ETH kept for gas (~4-5 tx at ~0.0001 each)
+const GAS_RESERVE = (): number => gasReserveEth(); // native ETH kept for gas / multi-step LP preflight
 const usableEth = (b: { weth: string; eth: string }): number =>
-  Number(b.weth) + Math.max(0, Number(b.eth) - GAS_RESERVE);
+  Math.max(0, Number(b.weth) + Number(b.eth) - GAS_RESERVE());
 
 /**
  * All bot wallet actions share one signer and many are multi-transaction sequences. Keep manual
@@ -539,18 +539,13 @@ export async function onUseWalletUsdg(mid: number): Promise<void> {
     await send("This pool is not a USDG pair — use the regular ETH input.");
     return;
   }
-  const [usdgRaw, b, px] = await Promise.all([
+  const [usdgRaw, px] = await Promise.all([
     tokenBalanceRaw(USDG).catch(() => 0n),
-    balances().catch(() => null),
     ethUsd().catch(() => 0),
   ]);
   const usdgUi = Number(ethers.formatUnits(usdgRaw, 6));
   if (usdgUi < 1) {
     await send(`Wallet USDG is only $${usdgUi.toFixed(2)} — not enough for single-side. Enter an ETH amount manually.`);
-    return;
-  }
-  if (b && Number(b.eth) < GAS_RESERVE) {
-    await send(`⚠️ Native ETH ${Number(b.eth).toFixed(5)} < gas reserve ${GAS_RESERVE} — mint still needs gas. Add some native ETH first.`);
     return;
   }
   if (!(px > 0)) {
@@ -743,12 +738,6 @@ export async function onAmount(text: string): Promise<void> {
     );
     return;
   }
-  if (b && Number(b.eth) < GAS_RESERVE) {
-    await send(
-      `⚠️ Native ETH is only ${Number(b.eth).toFixed(5)} — below the gas reserve (minimum ${GAS_RESERVE}). Add native ETH, or unwrap some WETH → ETH.`,
-    );
-    return;
-  }
   pending.ethAmt = toEthStr(eth) ?? String(eth);
   pending.awaitingAmount = false;
   await renderPendingConfirmation();
@@ -792,6 +781,10 @@ async function onMintUnlocked(mid: number, action = "single"): Promise<void> {
       r.tokenId ? { reply_markup: { inline_keyboard: [[positionRulesButton(r.tokenId, "v3")], [{ text: "📋 Check positions", callback_data: "refresh" }]] } } : undefined,
     );
   } catch (e) {
+    // Do not leave the old CA/pool/amount callback armed after a failed multi-step open. A stale
+    // button can otherwise repeat funding after a partial broadcast. The chain layer reconciles
+    // and recovers any newly acquired USDG/token where possible; the user must start fresh.
+    cancelPending();
     await send(`❌ Mint failed: ${short(e, 160)}`);
   }
 }
@@ -822,6 +815,9 @@ async function onMintV3UsdgUnlocked(mid: number, single = false): Promise<void> 
       r.tokenId ? { reply_markup: { inline_keyboard: [[positionRulesButton(r.tokenId, "v3")], [{ text: "📋 Check positions", callback_data: "refresh" }]] } } : undefined,
     );
   } catch (e) {
+    // Clear the multi-step prompt after any funding or mint failure so the same inline button
+    // cannot replay a swap with an already-consumed allowance/balance.
+    cancelPending();
     await send(`❌ Mint failed: ${short(e, 160)}`);
   }
 }
@@ -3493,10 +3489,6 @@ export async function onAddAmount(text: string): Promise<void> {
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
     await send(`⚠️ Amount too large. Only ${usableEth(b).toFixed(5)} ETH is available for LP.`);
-    return;
-  }
-  if (b && Number(b.eth) < GAS_RESERVE) {
-    await send(`⚠️ Native ETH is only ${Number(b.eth).toFixed(5)} — below the gas reserve (minimum ${GAS_RESERVE}).`);
     return;
   }
   if (!acquireWallet()) {

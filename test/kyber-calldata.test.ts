@@ -4,8 +4,10 @@ import {
   extractKyberCalldata,
   isKyberBroadcastReverted,
   isKyberBroadcastUnknown,
+  isKyberPreflight,
   KyberBroadcastRevertedError,
   KyberBroadcastUnknownError,
+  KyberPreflightError,
 } from "../src/chain/kyber.ts";
 
 test("Kyber build accepts the documented data field", () => {
@@ -32,4 +34,9 @@ test("a receipt-confirmed Kyber revert is distinguished from an unknown receipt"
   assert.equal(isKyberBroadcastReverted(error), true);
   assert.equal(isKyberBroadcastUnknown(error), true); // still blocks unsafe fallback/resubmission
   assert.equal(isKyberBroadcastReverted(new KyberBroadcastUnknownError("confirmation unavailable", "0xabc")), false);
+});
+
+test("a Kyber gas preflight failure blocks direct-swap fallback", () => {
+  assert.equal(isKyberPreflight(new KyberPreflightError("blocked before broadcast")), true);
+  assert.equal(isKyberPreflight(new Error("blocked before broadcast")), false);
 });

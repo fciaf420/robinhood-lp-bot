@@ -11,12 +11,12 @@
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
 import v4sdk from "@uniswap/v4-sdk";
-import { C, cfg } from "../../config.js";
+import { C, cfg, gasReserveEth } from "../../config.js";
 import { wallet, provider, overrides, waitTx, requireCalldata } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { discoverV4Pools, pickV4Pool, USDG, type V4Pool } from "./discover.js";
 import { swapEthToTokenV4, quoteV4 } from "./swap.js";
-import { kyberSwap, kyberEnabled, KYBER_NATIVE, isKyberBroadcastUnknown } from "../kyber.js";
+import { kyberSwap, kyberEnabled, KYBER_NATIVE, isKyberBroadcastUnknown, isKyberPreflight } from "../kyber.js";
 import { NATIVE, computePoolId, type PoolKey } from "./poolkey.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
 import { mapLimit } from "../blockscout.js";
@@ -57,7 +57,7 @@ export function loadV4Deposit(tokenId: string): V4Dep | null {
   return readJson<Record<string, V4Dep>>(POS_FILE, {})[tokenId] ?? null;
 }
 
-const NATIVE_GAS_BUFFER = ethers.parseEther("0.0003"); // keep some native for tx gas
+const NATIVE_GAS_BUFFER = ethers.parseEther("0.0003"); // buffer for the WETH→ETH top-up transaction
 
 /**
  * v4 native-ETH mints settle the ETH side as NATIVE ETH (not WETH). If the wallet is mostly
@@ -67,18 +67,32 @@ const NATIVE_GAS_BUFFER = ethers.parseEther("0.0003"); // keep some native for t
  */
 async function ensureNativeEth(needWei: bigint): Promise<void> {
   const w = wallet();
-  const bal = await provider.getBalance(w.address);
-  if (bal >= needWei) return;
-  const short = needWei - bal;
+  const reserve = ethers.parseEther(String(gasReserveEth()));
+  const required = needWei + reserve;
+  let bal = await provider.getBalance(w.address);
+  if (bal >= required) return;
+  const short = required - bal;
   const weth = new ethers.Contract(C.weth, WETH_ABI, w);
   const wbal: bigint = await weth.balanceOf!(w.address).catch(() => 0n);
-  if (wbal < short) {
+  if (bal < NATIVE_GAS_BUFFER) {
     throw new Error(
-      `Not enough native ETH for v4 mint: need ${ethers.formatEther(needWei)}Ξ, have ${ethers.formatEther(bal)}Ξ native + ${ethers.formatEther(wbal)} WETH`,
+      `v4 gas preflight blocked before broadcast: need ${ethers.formatEther(required)} native ETH (including ${ethers.formatEther(reserve)} gas reserve), have ${ethers.formatEther(bal)} and not enough native ETH to unwrap WETH; add native ETH first`,
     );
   }
-  log.info(`Unwrapping ${ethers.formatEther(short)} WETH → native ETH (v4 requires native ETH)`);
-  await waitTx(await weth.withdraw!(short, await overrides()), "v4-unwrap");
+  if (wbal < short) {
+    throw new Error(
+      `v4 gas preflight blocked before broadcast: need ${ethers.formatEther(required)} native ETH (including ${ethers.formatEther(reserve)} gas reserve), have ${ethers.formatEther(bal)} native + ${ethers.formatEther(wbal)} WETH; add native ETH or more WETH`,
+    );
+  }
+  const unwrap = short + NATIVE_GAS_BUFFER <= wbal ? short + NATIVE_GAS_BUFFER : wbal;
+  log.info(`Unwrapping ${ethers.formatEther(unwrap)} WETH → native ETH (v4 gas preflight)`);
+  await waitTx(await weth.withdraw!(unwrap, await overrides()), "v4-unwrap");
+  bal = await provider.getBalance(w.address);
+  if (bal < required) {
+    throw new Error(
+      `v4 gas preflight stopped before mint: native ETH after safe WETH unwrap is ${ethers.formatEther(bal)}, below required ${ethers.formatEther(required)}; add ${ethers.formatEther(required - bal)} ETH`,
+    );
+  }
 }
 
 function buildSdkPool(token: string, decimals: number, symbol: string, pool: V4Pool) {
@@ -120,7 +134,7 @@ export async function openV4SingleSide(
   const tickUpper = tickLower + width * sp;
   const amountWei = ethers.parseEther(amountEthStr);
   // single-side parks NATIVE ETH — unwrap WETH if native is short
-  await ensureNativeEth(amountWei + NATIVE_GAS_BUFFER);
+  await ensureNativeEth(amountWei);
 
   const position = Position.fromAmount0({
     pool: sdkPool,
@@ -222,7 +236,7 @@ export async function openV4InRange(
 
   const total = ethers.parseEther(amountEthStr);
   // v4 needs NATIVE ETH for both the swap and the mint value — unwrap WETH if native is short
-  await ensureNativeEth(total + NATIVE_GAS_BUFFER);
+  await ensureNativeEth(total);
   let sdkPool = buildSdkPool(token, meta.decimals, meta.symbol, { ...pool });
   const isC0Native = pool.poolKey.currency0.toLowerCase().startsWith("0x000000000000000000");
   const tokCur = isC0Native ? sdkPool.currency1 : sdkPool.currency0;
@@ -269,7 +283,7 @@ export async function openV4InRange(
     let out = 0n;
     if (kyberEnabled()) {
       const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(token), ethToSwap).catch((e) => {
-        if (isKyberBroadcastUnknown(e)) throw e;
+        if (isKyberBroadcastUnknown(e) || isKyberPreflight(e)) throw e;
         log.warn(`Kyber failed (${(e as Error).message.slice(0, 80)}) → falling back to direct v4`);
         return null;
       });
@@ -447,7 +461,7 @@ export async function openV4UsdgInRange(
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const w = wallet();
   const total = ethers.parseEther(amountEthStr);
-  await ensureNativeEth(total + NATIVE_GAS_BUFFER);
+  await ensureNativeEth(total);
 
   const c0 = pool.poolKey.currency0;
   const c1 = pool.poolKey.currency1;
@@ -653,8 +667,9 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string, o
         : 0n
       : total; // no ETH price → fall back to buying the full budget
   let swapHash: string | undefined;
+  // A wallet-funded USDG position still needs approval/mint gas even when no Kyber buy is needed.
+  await ensureNativeEth(buyWei >= ethers.parseEther("0.00002") ? buyWei : 0n);
   if (buyWei >= ethers.parseEther("0.00002")) {
-    await ensureNativeEth(buyWei + NATIVE_GAS_BUFFER);
     const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(usdgAddr), buyWei);
     if (!k || k.amountOut <= 0n) throw new Error("Failed to buy USDG via Kyber");
     swapHash = k.tx;

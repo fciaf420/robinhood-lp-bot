@@ -9,14 +9,14 @@ test("nonce conflict detection recognizes retryable provider errors", () => {
   assert.equal(isNonceConflict(new Error("execution reverted")), false);
 });
 
-test("empty-calldata send rejections are retryable nonce/provider errors", () => {
+test("generic empty-calldata send rejections are not retried", () => {
   assert.equal(
     isRetryableSendError({
       action: "sendTransaction",
       message: "transaction execution reverted",
       transaction: { data: "", from: "0x0000000000000000000000000000000000000001" },
     }),
-    true,
+    false,
   );
   assert.equal(isRetryableSendError(new Error("execution reverted by token")), false);
 });

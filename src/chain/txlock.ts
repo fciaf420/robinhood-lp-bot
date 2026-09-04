@@ -9,6 +9,7 @@
  * contention and needs infra-level coordination. This only fixes THIS bot's internal races.
  */
 let busy = false;
+let kyberTail: Promise<void> = Promise.resolve();
 
 /** True while a wallet-tx sequence is in flight. */
 export const walletBusy = (): boolean => busy;
@@ -32,5 +33,26 @@ export async function withWalletLock<T>(work: () => Promise<T>): Promise<T | fal
     return await work();
   } finally {
     releaseWallet();
+  }
+}
+
+/**
+ * Serialize Kyber calls even when a caller is not holding the broader wallet lock.
+ *
+ * The wallet lock protects the bot's complete open/close sequences. This narrower queue is an
+ * additional guard for shared helpers such as wallet swaps and leftover sweeps: only one Kyber
+ * quote → approval → broadcast sequence may re-check and spend a balance at a time.
+ */
+export async function withKyberSwapLock<T>(work: () => Promise<T>): Promise<T> {
+  const previous = kyberTail;
+  let release!: () => void;
+  kyberTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
   }
 }

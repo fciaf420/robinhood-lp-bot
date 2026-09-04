@@ -179,6 +179,8 @@ Open your bot in Telegram, send `/start`. If it replies, you're set.
    Fees accrue immediately, but you hold the token now (rug = 51% instant loss).
 ```
 
+**Fast safe path:** after choosing a pool and entering the amount, tap `🛡 Single-side · Auto range 50%` (the button shows the live configured width). The bot checks the native-ETH gas budget before it wraps, swaps, or mints; if the wallet has surplus WETH it can unwrap just enough for gas automatically. It never retries an ambiguous broadcast, so one tap cannot spend the same swap twice. If the combined wallet balance cannot cover the position plus the configured gas reserve, it stops before broadcast with the exact amount needed.
+
 **The difference matters — read this:**
 
 | | 🛡 Single-side | 🎯 In-range |
