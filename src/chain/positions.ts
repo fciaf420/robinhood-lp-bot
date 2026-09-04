@@ -20,7 +20,7 @@ import {
   tokenBalanceRaw,
   unwrapAllWeth,
 } from "./swaps.js";
-import { kyberSwap, kyberEnabled, KYBER_NATIVE, isKyberBroadcastUnknown } from "./kyber.js";
+import { kyberSwap, kyberEnabled, KYBER_NATIVE } from "./kyber.js";
 import { ethUsd } from "./price.js";
 import { appendLedger } from "./ledger.js";
 import { bsFetch } from "./blockscout.js";

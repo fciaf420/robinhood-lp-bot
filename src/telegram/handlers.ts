@@ -1,9 +1,9 @@
 /** Command + callback handlers. Each renders through tg.send/edit (owner chat only). */
 import { cfg, env, C, persist, gasReserveEth } from "../config.js";
 import { tokenMeta } from "../chain/tokens.js";
-import { findPools, findUsdgPools, USDG } from "../chain/pools.js";
+import { findPools, findUsdgPools, inspectV3Pool, USDG } from "../chain/pools.js";
 import { dexPairs, type DexPair } from "../chain/dexscreener.js";
-import { discoverV4Pools, type V4Pool } from "../chain/v4/discover.js";
+import { discoverV4Pools, findV4PoolById, v4PoolTokenAddress, type V4Pool } from "../chain/v4/discover.js";
 import { type V2Pool } from "../chain/v2/pair.js";
 import { previewRange, openPosition, openV3UsdgInRange, openV3UsdgSingleSide, listPositions, closePosition } from "../chain/positions.js";
 import { readLedger, ledgerSummary, backfillLedger, winRateText } from "../chain/ledger.js";
@@ -30,6 +30,8 @@ import { feedPanelKeyboard, feedAutoCloseConfirmKeyboard } from "./feedPanel.js"
 import { screenDisplayCount } from "./screenDisplay.js";
 import { closeAllConfirmationKeyboard, totalCloseAllPositions } from "./positionPanel.js";
 import { walletBalanceText, walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
+import { fastMintCallback, fastSingleSideButtons, isFastPresetAmount } from "./fastPresets.js";
+import { classifyPoolInput } from "./poolInput.js";
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 import { clearPositionExitRule, getPositionExitRule, setPositionExitRule, type PositionRuleKind } from "../radar/positionRules.js";
 import { MANUAL_RANGE_PRESETS, normalizeManualRangePct, MAX_MANUAL_RANGE_PCT } from "./manualRange.js";
@@ -162,6 +164,8 @@ interface Pending {
   heldTokenUi?: number; // token already in wallet (reused for dual-side)
   balancedEth?: number; // ETH that balances the held token for a dual-side mint
   tokenFunding?: "fresh" | "held"; // v4 ETH-pair two-sided funding choice
+  directInput?: "v3-pool" | "v4-pool-id";
+  fastSingleSide?: boolean;
 }
 let pending: Pending | null = null;
 type AutoInput =
@@ -259,6 +263,100 @@ export async function onCA(addr: string): Promise<void> {
   let timedOut = false; // a source hit its cap → the "no pool" result may be a false negative (RPC slow)
   const to = <T>(p: Promise<T>, ms: number, fb: T): Promise<T> =>
     Promise.race([p, new Promise<T>((r) => setTimeout(() => { timedOut = true; r(fb); }, ms))]);
+
+  // A v4 pool is identified by its 32-byte poolId, while a v3 pool has a normal contract address.
+  // Resolve direct pool input before treating the value as a token CA so the user can skip the
+  // numbered pool picker when they already know the exact pool they want.
+  const inputKind = classifyPoolInput(addr);
+  if (inputKind === "v4-pool-id") {
+    const direct = await to(findV4PoolById(addr).catch(() => null), 35_000, null);
+    if (!direct) {
+      if (progressTimer) clearTimeout(progressTimer);
+      await edit(
+        statusId,
+        timedOut
+          ? "⌛ RPC is slow — this v4 pool ID could not be resolved yet. Paste it again shortly."
+          : "⚠️ v4 pool ID not found, inactive, or unsupported. Paste the 64-hex pool ID from Uniswap, not the v4 PoolManager address.",
+      );
+      return;
+    }
+    const token = v4PoolTokenAddress(direct);
+    if (!token) {
+      if (progressTimer) clearTimeout(progressTimer);
+      await edit(statusId, "⚠️ This v4 pool is not a supported token/ETH or token/USDG LP pair.");
+      return;
+    }
+    const m = await to(tokenMeta(token).catch(() => null), 8000, null);
+    if (!m) {
+      if (progressTimer) clearTimeout(progressTimer);
+      await edit(statusId, "⌛ RPC is slow — token metadata is not available yet. Paste the pool ID again in a moment.");
+      return;
+    }
+    const [px, dex] = await Promise.all([
+      to(ethUsd().catch(() => 0), 8000, 0),
+      to(dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()), 8000, new Map<string, DexPair>()),
+    ]);
+    const d = dex.get(direct.poolId.toLowerCase());
+    const est = v4TvlUsd(direct, px);
+    const liq = d && d.liqUsd > 0 ? d.liqUsd : est;
+    const vol = d?.vol24h ?? 0;
+    const asset = direct.quote === "usd" ? "USDG" : "ETH";
+    const candidate: UPool = {
+      version: "v4",
+      fee: direct.fee,
+      asset,
+      tvl: Math.max(est, d?.liqUsd ?? 0),
+      vol,
+      liqLabel: vol > 0 ? `${asset} · liq ${fmtUsdShort(liq)} · vol ${fmtUsdShort(vol)}` : `${asset} · liq ${fmtUsdShort(liq)}`,
+      v4: direct,
+    };
+    pending = { token, meta: m, pools: [candidate], directInput: "v4-pool-id" };
+    if (progressTimer) clearTimeout(progressTimer);
+    if (statusId) await onPick(0, statusId);
+    else await send(`✅ ${esc(m.symbol)}/${asset} v4 pool recognized. Choose a fast preset or enter an ETH amount.`);
+    return;
+  }
+
+  if (inputKind === "address") {
+    const direct = await to(inspectV3Pool(addr).catch(() => null), 5000, null);
+    if (direct) {
+      const m = await to(tokenMeta(direct.token).catch(() => null), 8000, null);
+      if (!m) {
+        if (progressTimer) clearTimeout(progressTimer);
+        await edit(statusId, "⌛ RPC is slow — token metadata is not available yet. Paste the pool address again in a moment.");
+        return;
+      }
+      const [px, dex] = await Promise.all([
+        to(ethUsd().catch(() => 0), 8000, 0),
+        to(dexPairs(direct.token, Date.now()).catch(() => new Map<string, DexPair>()), 8000, new Map<string, DexPair>()),
+      ]);
+      const d = dex.get(direct.pool.pool.toLowerCase());
+      const asset = direct.pool.quote === "usd" ? "USDG" : "WETH";
+      const est = direct.pool.quote === "usd" ? 2 * (direct.pool.usdgInPool ?? 0) : 2 * direct.pool.wethInPool * px;
+      const liq = d && d.liqUsd > 0 ? d.liqUsd : est;
+      const vol = d?.vol24h ?? 0;
+      const candidate: UPool = {
+        version: "v3",
+        fee: direct.pool.fee,
+        asset,
+        tvl: Math.max(est, d?.liqUsd ?? 0),
+        vol,
+        liqLabel: vol > 0 ? `${asset} · liq ${fmtUsdShort(liq)} · vol ${fmtUsdShort(vol)}` : `${asset} · liq ${fmtUsdShort(liq)}`,
+        v3: direct.pool,
+      };
+      pending = { token: direct.token, meta: m, pools: [candidate], directInput: "v3-pool" };
+      if (progressTimer) clearTimeout(progressTimer);
+      if (statusId) await onPick(0, statusId);
+      else await send(`✅ ${esc(m.symbol)}/${asset} v3 pool recognized. Choose a fast preset or enter an ETH amount.`);
+      return;
+    }
+    if (C.v4PoolManager?.toLowerCase() === addr.toLowerCase()) {
+      if (progressTimer) clearTimeout(progressTimer);
+      await edit(statusId, "⚠️ That is the v4 PoolManager address, not a specific pool. Paste the pool's 64-hex pool ID or its token CA.");
+      return;
+    }
+  }
+
   try {
     // tokenMeta drives token decimals for LP math, so we can't proceed on a guess. It was previously
     // awaited UNGUARDED here — a stalled RPC read froze the flow right after the "Cari pool" message
@@ -454,15 +552,32 @@ export async function onPick(idx: number, mid: number): Promise<void> {
     ? `💵 <b>$${usdgUi.toFixed(2)} USDG</b> is already in the wallet — tap the button for <b>single-side without a swap or amount input</b>.`
     : "";
   const canChooseFunding = p.version === "v4" && p.v4?.quote !== "usd";
-  const kbRows: { text: string; callback_data: string }[][] = canChooseFunding
-    ? manualFundingButtons({ heldTokenUi: tokUi, balancedEth: balanced })
+  const fastRows = p.version === "v3" || p.version === "v4"
+    ? fastSingleSideButtons({
+        quote: isUsdPool ? "usd" : "eth",
+        availableEth: b ? usableEth(b) : undefined,
+        widthPct: cfg.lp.widthPct,
+      })
     : [];
+  const kbRows: { text: string; callback_data: string }[][] = [
+    ...fastRows,
+    ...(canChooseFunding ? manualFundingButtons({ heldTokenUi: tokUi, balancedEth: balanced }) : []),
+  ];
   if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side using wallet USDG ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
   const extra = kbRows.length ? { reply_markup: { inline_keyboard: kbRows } } : {};
+  const fastLine = fastRows.length
+    ? `⚡ <b>Fast single-side</b> — choose a preset below; it uses auto range ${cfg.lp.widthPct}% and still shows a final confirmation.`
+    : b && (p.version === "v3" || p.version === "v4")
+      ? `⚠️ No fixed fast preset fits the current gas-safe balance of ${usableEth(b).toFixed(5)} ETH.`
+      : "";
+  const directLine = pending.directInput
+    ? `🎯 Direct ${pending.directInput === "v4-pool-id" ? "v4 pool ID" : "v3 pool"}: <code>${p.v4?.poolId ?? p.v3?.pool ?? "?"}</code>`
+    : "";
   await edit(
     mid,
     [
-      `<b>${esc(pending.meta.symbol)}</b> · <b>${p.version.toUpperCase()}</b> fee ${(p.fee / 10000).toFixed(2)}% selected.`,
+      `<b>${esc(pending.meta.symbol)}/${esc(p.asset)}</b> · <b>${p.version.toUpperCase()}</b> fee ${(p.fee / 10000).toFixed(2)}% selected.`,
+      directLine,
       b
         ? `Available for LP: <b>${usableEth(b).toFixed(5)} ETH</b>  <i>(WETH ${Number(b.weth).toFixed(4)} + ETH ${Number(b.eth).toFixed(4)})</i>`
         : "",
@@ -470,8 +585,11 @@ export async function onPick(idx: number, mid: number): Promise<void> {
       balLine,
       usdgLine,
       ``,
+      fastLine,
       canChooseFunding
-        ? `💬 <b>Choose how to fund the two-sided position</b> below, or enter a custom ETH amount.`
+        ? fastRows.length
+          ? `💬 <b>Choose a fast single-side preset</b>, or choose how to fund the two-sided position below.`
+          : `💬 <b>Choose how to fund the two-sided position</b> below, or enter a custom ETH amount.`
         : `💬 <b>Enter the ETH amount</b> to LP (example: <code>0.005</code>)${kbRows.length ? " — or tap a button below." : ""}`,
     ]
       .filter(Boolean)
@@ -480,9 +598,28 @@ export async function onPick(idx: number, mid: number): Promise<void> {
   );
 }
 
+/** Select a fixed gas-safe single-side preset without requiring an amount to be typed. */
+export async function onFastPreset(amount: string, mid: number): Promise<void> {
+  if (!pending?.chosen || !isFastPresetAmount(amount) || pending.chosen.version === "v2") return;
+  const b = await balances().catch(() => null);
+  const eth = Number(amount);
+  if (b && eth > usableEth(b) + 1e-9) {
+    const idx = pending.pools.indexOf(pending.chosen);
+    if (idx >= 0) await onPick(idx, mid);
+    return;
+  }
+  pending.ethAmt = amount;
+  pending.awaitingAmount = false;
+  pending.rangeWidthPct = undefined;
+  pending.tokenFunding = undefined;
+  pending.fastSingleSide = true;
+  await renderPendingConfirmation(mid);
+}
+
 /** One-tap: dual-side v4 mint with the ETH amount that balances the held token. */
 export async function onBalancedLp(mid: number): Promise<void> {
   if (!pending?.chosen?.v4 || !pending.balancedEth) return;
+  pending.fastSingleSide = false;
   pending.tokenFunding = "held";
   const amt = toEthStr(pending.balancedEth);
   const b = await balances().catch(() => null);
@@ -504,6 +641,7 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
   const heldRaw = await tokenBalanceRaw(pending.token).catch(() => 0n);
   pending.heldTokenUi = heldRaw > 0n ? Number(heldRaw) / 10 ** pending.meta.decimals : 0;
   if (data === "fund:fresh") {
+    pending.fastSingleSide = false;
     pending.tokenFunding = "fresh";
     pending.ethAmt = undefined;
     pending.awaitingAmount = true;
@@ -511,6 +649,7 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
     return;
   }
   if (data === "fund:held") {
+    pending.fastSingleSide = false;
     pending.tokenFunding = "held";
     if (pending.balancedEth) return onBalancedLp(mid);
     pending.ethAmt = undefined;
@@ -519,6 +658,7 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
     return;
   }
   if (data === "amount:custom") {
+    pending.fastSingleSide = false;
     pending.awaitingAmount = true;
     pending.ethAmt = undefined;
     await edit(mid, `⌨️ <b>Custom two-sided amount</b>\n\n${manualFundingPrompt({ symbol: pending.meta.symbol, availableEth: b ? usableEth(b) : undefined, weth: b ? Number(b.weth) : 0, eth: b ? Number(b.eth) : 0, heldTokenUi: pending.heldTokenUi, choice: "custom" })}\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
@@ -555,6 +695,7 @@ export async function onUseWalletUsdg(mid: number): Promise<void> {
   // USD → ETH-equivalent budget so the mint fn's target ≈ held USDG → reuse buys nothing (no swap).
   pending.ethAmt = toEthStr(usdgUi / px) ?? String(usdgUi / px);
   pending.awaitingAmount = false;
+  pending.fastSingleSide = false;
   const feePct = (pending.chosen.fee / 10000).toFixed(2);
   await edit(mid, `⏳ <b>Single-side USDG using $${usdgUi.toFixed(2)} from the wallet…</b> (no swap · fee ${feePct}%)`);
   if (pending.chosen.version === "v4") return onMintV4(mid, "v4us");
@@ -600,6 +741,9 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
   const chosen = p.chosen;
   if (!chosen) return;
   const eth = p.ethAmt;
+  const fastPresetLine = p.fastSingleSide
+    ? `⚡ <b>Fast preset selected</b>: ${eth} ETH · single-side · auto range ${cfg.lp.widthPct}%`
+    : "";
 
   // v2 has no concentrated range; it is always a full-range both-sided zap.
   if (chosen.version === "v2") {
@@ -620,8 +764,9 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
     const isUsd = chosen.v4?.quote === "usd";
     const text = isUsd
       ? [
-          `<b>Confirm LP · Uniswap v4 · USDG</b> 🦄`,
+      `<b>Confirm LP · Uniswap v4 · USDG</b> 🦄`,
           `${esc(p.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
+          fastPresetLine,
           manualRangeLabel(),
           ``,
           `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided using <b>${manualRangeActionLabel()}</b>. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
@@ -631,6 +776,7 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
       : [
           `<b>Confirm mint · Uniswap v4</b> 🦄`,
           `${esc(p.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b> · pair native ETH`,
+          fastPresetLine,
           manualRangeLabel(),
           `💱 Funding: <b>${manualFundingActionLabel()}</b>`,
           ``,
@@ -638,9 +784,11 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
           ``,
           `🛡 <b>Single-side ETH</b> — park ETH with the range above the current price using <b>${manualRangeActionLabel()}</b>. Fees start only when price rises into range. Protected from token rugs.`,
         ].join("\n");
-    const buttons: InlineButton[][] = isUsd
-      ? [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v4us" }]]
-      : [[{ text: `🎯 In-range · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4" }]];
+    const buttons: InlineButton[][] = p.fastSingleSide
+      ? [[{ text: `✅ Confirm fast single-side ${isUsd ? "USDG" : "ETH"} · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastMintCallback("v4", isUsd ? "usd" : "eth") }]]
+      : isUsd
+        ? [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v4us" }]]
+        : [[{ text: `🎯 In-range · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4" }]];
     buttons.push(manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]);
     const opts = { reply_markup: { inline_keyboard: buttons } };
     if (mid) await edit(mid, text, opts); else await send(text, opts);
@@ -652,13 +800,25 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
     const text = [
       `<b>Confirm LP · Uniswap v3 · USDG</b>`,
       `${esc(p.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
+      fastPresetLine,
       manualRangeLabel(),
       ``,
       `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(p.meta.symbol)} with ETH (Kyber), then mint both-sided using <b>${manualRangeActionLabel()}</b>. <b>${feePct}% fees start immediately.</b> You hold the token directly (rug risk).`,
       ``,
       `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b> using <b>${manualRangeActionLabel()}</b>, with the range on the USDG side. Fees start only when ${esc(p.meta.symbol)} <b>pumps</b> into range. Rug-safe: if the token dumps, your USDG remains intact.`,
     ].join("\n");
-    const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v3u" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v3us" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+    const opts = {
+      reply_markup: {
+        inline_keyboard: [
+          ...(p.fastSingleSide
+            ? [[{ text: `✅ Confirm fast single-side USDG · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastMintCallback("v3", "usd") }]]
+            : [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v3u" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v3us" }]]),
+          manualRangeButton(),
+          [chartButton(chosen, p.token)],
+          [{ text: "❌ Cancel", callback_data: "cancel" }],
+        ],
+      },
+    };
     if (mid) await edit(mid, text, opts); else await send(text, opts);
     return;
   }
@@ -673,6 +833,7 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
   const text = [
     `<b>Confirm mint · Uniswap v3</b>`,
     `${esc(p.meta.symbol)} · fee ${(chosen.fee / 10000).toFixed(2)}% · deposit <b>${eth} ETH</b> · width ${widthPct}%`,
+    fastPresetLine,
     pS ? `📊 MCAP now: <b>${fmtMcap(pS.mcapNow)}</b>` : "",
     ``,
     `🛡 <b>Single-side ETH</b> — range ${rng(pS)}`,
@@ -682,7 +843,18 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
     `   swap ~<b>${pI?.swapPct ?? "?"}%</b> of the capital into ${esc(p.meta.symbol)} first. Fees start immediately,`,
     `   but you hold the token directly (a rug can immediately lose ~${pI?.swapPct ?? "?"}%).`,
   ].filter(Boolean).join("\n");
-  const opts = { reply_markup: { inline_keyboard: [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · swap ~${pI?.swapPct ?? "?"}%`, callback_data: "mint:inrange" }], [{ text: `🛡 Single-side ETH · ${manualRangeActionLabel()}`, callback_data: "mint:single" }], manualRangeButton(), [chartButton(chosen, p.token)], [{ text: "❌ Cancel", callback_data: "cancel" }]] } };
+  const opts = {
+    reply_markup: {
+      inline_keyboard: [
+        ...(p.fastSingleSide
+          ? [[{ text: `✅ Confirm fast single-side ETH · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastMintCallback("v3", "eth") }]]
+          : [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · swap ~${pI?.swapPct ?? "?"}%`, callback_data: "mint:inrange" }], [{ text: `🛡 Single-side ETH · ${manualRangeActionLabel()}`, callback_data: "mint:single" }]]),
+        manualRangeButton(),
+        [chartButton(chosen, p.token)],
+        [{ text: "❌ Cancel", callback_data: "cancel" }],
+      ],
+    },
+  };
   if (mid) await edit(mid, text, opts); else await send(text, opts);
 }
 
@@ -698,6 +870,7 @@ export async function onRangeButton(data: string, mid: number): Promise<void> {
     return renderPendingConfirmation(mid);
   }
   if (data === "range:custom") {
+    pending.fastSingleSide = false;
     pending.awaitingRangeWidth = true;
     pending.rangeMessageId = mid;
     await edit(mid, `<b>📐 Type a custom range width</b>\n\nEnter a positive percentage from <b>1% to ${MAX_MANUAL_RANGE_PCT}%</b>.\nExample: <code>75</code>`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
@@ -705,6 +878,7 @@ export async function onRangeButton(data: string, mid: number): Promise<void> {
   }
   const preset = data.match(/^range:preset:(\d+(?:\.\d+)?)$/);
   if (preset) {
+    pending.fastSingleSide = false;
     pending.rangeWidthPct = normalizeManualRangePct(preset[1]! ) ?? undefined;
     return renderPendingConfirmation(mid);
   }
@@ -740,6 +914,7 @@ export async function onAmount(text: string): Promise<void> {
   }
   pending.ethAmt = toEthStr(eth) ?? String(eth);
   pending.awaitingAmount = false;
+  pending.fastSingleSide = false;
   await renderPendingConfirmation();
 }
 
@@ -842,8 +1017,8 @@ async function onMintV4Unlocked(mid: number, action: string): Promise<void> {
       : isUsd
         ? await openV4UsdgInRange(v4pool, pending.ethAmt, { widthPct: pending.rangeWidthPct })
         : inR
-          ? await openV4InRange(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct, useHeldToken: pending.tokenFunding !== "fresh" })
-          : await openV4SingleSide(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct });
+          ? await openV4InRange(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct, useHeldToken: pending.tokenFunding !== "fresh", pool: v4pool })
+          : await openV4SingleSide(pending.token, pending.ethAmt, { fee, widthPct: pending.rangeWidthPct, pool: v4pool });
     const market = v4MarketLine(v4pool, pending.meta, pending.token, r.tickLower, r.tickUpper, await ethUsd().catch(() => 0));
     const sym = pending.meta.symbol;
     pending = null;
@@ -3416,7 +3591,7 @@ export async function onSet(text: string): Promise<void> {
 export async function onHelp(): Promise<void> {
   const body = [
     `🤖 <b>Robinhood LP Bot</b>  <i>optimized · Uniswap v3+v4</i>`,
-    `Paste a <b>token CA</b> (0x…) → choose a pool (v3/v4) → enter ETH → LP.`,
+    `Paste a <b>token CA</b>, a v3 pool address, or a v4 pool ID → use fast presets or choose manually.`,
     ``,
     `<b>━━━ 📊 POSITIONS ━━━</b>`,
     `📋 /list — open positions + PnL + close`,

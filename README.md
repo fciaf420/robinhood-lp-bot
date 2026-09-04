@@ -16,7 +16,7 @@
 
 The optimized fork keeps v2 position discovery/withdrawal for legacy positions, but disables new v2 zap execution by default because direct pair swaps cannot enforce a minimum output.
 
-Paste a CA → pick a v3/v4 pool → type an ETH amount → position opened. Right now.
+Paste a token CA, v3 pool address, or v4 pool ID → use a fast preset → confirm → position opened.
 
 
 </div>
@@ -165,10 +165,10 @@ Open your bot in Telegram, send `/start`. If it replies, you're set.
 
 ### Open an LP position
 
-1. **Paste the token CA** (`0x…`) into the chat
-2. The bot finds pools across **v2 / v3 / v4** (labeled `ETH ✅` / `USDG ✅`) → pick one
-3. Type the ETH amount (e.g. `0.05`)
-4. Pick a mode:
+1. **Paste a token CA** (`0x…`) into the chat, or paste an exact **v3 pool address** (`0x…40 hex`) / **v4 pool ID** (`0x…64 hex`)
+2. For a token CA, the bot finds pools across **v3 / v4** (labeled `ETH ✅` / `USDG ✅`) → pick one. An exact pool skips this picker.
+3. Tap a fast preset (`0.1`, `0.05`, or `0.01 ETH · Single-side · Auto range`) or enter a custom amount
+4. Confirm the single-side or in-range mode:
 
 ```
 🛡 Single-side ETH — range $2.64M → $3.94M
@@ -179,7 +179,9 @@ Open your bot in Telegram, send `/start`. If it replies, you're set.
    Fees accrue immediately, but you hold the token now (rug = 51% instant loss).
 ```
 
-**Fast safe path:** after choosing a pool and entering the amount, tap `🛡 Single-side · Auto range 50%` (the button shows the live configured width). The bot checks the native-ETH gas budget before it wraps, swaps, or mints; if the wallet has surplus WETH it can unwrap just enough for gas automatically. It never retries an ambiguous broadcast, so one tap cannot spend the same swap twice. If the combined wallet balance cannot cover the position plus the configured gas reserve, it stops before broadcast with the exact amount needed.
+**Fast safe path:** paste a token CA or exact pool, then tap `⚡ 0.1 ETH · Single-side ETH · Auto 50%` (or the smaller preset). The label shows whether the route is ETH/token or ETH→USDG for a token/USDG pool. The preset selects the amount and mode; the final confirmation is still required. The bot checks the native-ETH gas budget before it wraps, swaps, or mints; if the wallet has surplus WETH it can unwrap just enough for gas automatically. It never retries an ambiguous broadcast, so one tap cannot spend the same swap twice. If the combined wallet balance cannot cover the position plus the configured gas reserve, it stops before broadcast with the exact amount needed.
+
+For v4, paste the **pool ID** from the Uniswap pool URL or explorer—not the shared v4 PoolManager address. The bot resolves the exact PoolKey and carries that exact pool through minting, including pools that share the same fee tier.
 
 **The difference matters — read this:**
 
@@ -337,7 +339,7 @@ The top layer: the bot **finds, opens, and closes positions on its own** — you
 
 | Command | Function |
 |---|---|
-| paste `0x…` | Open an LP position (v2/v3/v4, auto pool detection) |
+| paste `0x…` | Open an LP position (token CA, v3 pool address, or v4 pool ID; fast presets available) |
 | `/list` | Open positions (v3+v4+v2) + PnL + TOTAL + close buttons |
 | `/ledger` | Closed-position history (realized vs stuck) + per-position cards |
 | `/pnl` | Lifetime wallet-level PnL |

@@ -59,6 +59,15 @@ export function loadV4Deposit(tokenId: string): V4Dep | null {
 
 const NATIVE_GAS_BUFFER = ethers.parseEther("0.0003"); // buffer for the WETH→ETH top-up transaction
 
+/** Prefer an explicitly selected pool; otherwise preserve the normal fee/high-liquidity picker. */
+export function selectV4Pool(
+  pools: V4Pool[],
+  opts: { fee?: number; pool?: V4Pool } = {},
+): V4Pool | null {
+  if (opts.pool) return opts.pool;
+  return opts.fee != null ? pools.find((p) => p.fee === opts.fee) ?? null : pickV4Pool(pools);
+}
+
 /**
  * v4 native-ETH mints settle the ETH side as NATIVE ETH (not WETH). If the wallet is mostly
  * WETH (common — v3 wraps, closes unwrap-partially), the mint's native `value` exceeds the
@@ -117,11 +126,11 @@ function buildSdkPool(token: string, decimals: number, symbol: string, pool: V4P
 export async function openV4SingleSide(
   token: string,
   amountEthStr: string,
-  opts: { fee?: number; widthSpacings?: number; widthPct?: number } = {},
+  opts: { fee?: number; widthSpacings?: number; widthPct?: number; pool?: V4Pool } = {},
 ): Promise<V4OpenResult> {
   const w = wallet();
-  const pools = await discoverV4Pools(token);
-  const pool = opts.fee ? pools.find((p) => p.fee === opts.fee) ?? null : pickV4Pool(pools);
+  const pools = opts.pool ? [] : await discoverV4Pools(token);
+  const pool = selectV4Pool(pools, opts);
   if (!pool) throw new Error("No liquid v4/ETH pool found");
 
   const meta = await tokenMeta(token);
@@ -219,11 +228,11 @@ async function sweepLeftoverToEth(sides: Array<{ addr: string; dec: number; maxR
 export async function openV4InRange(
   token: string,
   amountEthStr: string,
-  opts: { fee?: number; widthSpacings?: number; widthPct?: number; useHeldToken?: boolean } = {},
+  opts: { fee?: number; widthSpacings?: number; widthPct?: number; useHeldToken?: boolean; pool?: V4Pool } = {},
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const w = wallet();
-  const pools = await discoverV4Pools(token);
-  const pool = opts.fee ? pools.find((p) => p.fee === opts.fee) ?? null : pickV4Pool(pools);
+  const pools = opts.pool ? [] : await discoverV4Pools(token);
+  const pool = selectV4Pool(pools, opts);
   if (!pool) throw new Error("No liquid v4/ETH pool found");
   const meta = await tokenMeta(token);
   const sp = pool.tickSpacing;

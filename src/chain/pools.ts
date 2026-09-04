@@ -152,6 +152,43 @@ export async function getPoolState(poolAddr: string): Promise<PoolState> {
   };
 }
 
+export interface DirectV3Pool {
+  token: string;
+  pool: PoolInfo;
+}
+
+/**
+ * Inspect a pasted v3 pool address and return the token side when the pair is token/WETH or
+ * token/USDG. A v3 pool address is otherwise indistinguishable from a token address at the
+ * Telegram input boundary, so non-matching contracts deliberately return null and continue through
+ * the normal token-discovery path.
+ */
+export async function inspectV3Pool(poolAddr: string): Promise<DirectV3Pool | null> {
+  const pool = ethers.getAddress(poolAddr);
+  const st = await getPoolState(pool);
+  const weth = C.weth.toLowerCase();
+  const usdg = USDG.toLowerCase();
+  const t0 = st.token0.toLowerCase();
+  const t1 = st.token1.toLowerCase();
+  const hasWeth = t0 === weth || t1 === weth;
+  const hasUsdg = t0 === usdg || t1 === usdg;
+  if (hasWeth === hasUsdg) return null; // neither quote, or an unsupported WETH/USDG pair
+
+  const token = ethers.getAddress(t0 === (hasWeth ? weth : usdg) ? st.token1 : st.token0);
+  const quoteAddr = ethers.getAddress(hasWeth ? C.weth : USDG);
+  const quoteContract = new ethers.Contract(quoteAddr, ERC20_ABI, readProvider);
+  const quoteBalance: bigint = await quoteContract.balanceOf!(pool).catch(() => 0n);
+  const info: PoolInfo = {
+    pool,
+    fee: st.fee,
+    liquidity: st.liquidity,
+    token0: st.token0,
+    wethInPool: hasWeth ? Number(ethers.formatEther(quoteBalance)) : 0,
+    ...(hasUsdg ? { quote: "usd" as const, usdgInPool: Number(ethers.formatUnits(quoteBalance, USDG_DECIMALS)) } : { quote: "eth" as const }),
+  };
+  return { token, pool: info };
+}
+
 /** MCAP (USD) of the non-WETH token at a given tick. Uses SDK price math. */
 export function mcapAtTick(st: PoolState, tick: number, ethUsd: number, supplyUi: number): number {
   const tokenSdk = st.wethIsToken0 ? st.token1Sdk : st.token0Sdk;

@@ -34,8 +34,8 @@ const ContractsSchema = z.object({
 const LpSchema = z.object({
   widthPct: z.number().positive().default(50),
   depositUsd: z.number().default(20),
-  // feeTiers = ALL tiers, used for quoting/sell-routing (keep complete). On Robinhood v3
-  // only 100/500/3000/10000 are enabled; 3-25% tiers live on v4 (not yet supported).
+  // feeTiers = ALL v3 tiers, used for quoting/sell-routing (keep complete). v4 fees are
+  // discovered from Initialize events because Robinhood v4 supports arbitrary fee tiers.
   feeTiers: z.array(z.number().int()).nonempty().default([10000, 3000, 500, 100]),
   // minFeePpm = LP fee floor (hundredths of a bip). Memecoin fees are thin at low tiers,
   // so LP (manual pick prefers, auto-LP requires) targets fee >= this. 3000 = 0.3%.

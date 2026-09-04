@@ -12,11 +12,12 @@ import { wallet } from "../chain/client.js";
 import { cfg } from "../config.js";
 import { logger } from "../util/log.js";
 import * as H from "./handlers.js";
+import { ADDRESS_RE, V4_POOL_ID_RE } from "./poolInput.js";
 
 const log = logger("bot");
 let running = true;
 
-const CA_RE = /^0x[a-fA-F0-9]{40}$/;
+const CA_RE = ADDRESS_RE;
 const NUM_RE = /^[0-9]*\.?[0-9]+$/;
 
 async function routeCallback(cq: any): Promise<void> {
@@ -57,6 +58,7 @@ async function routeCallback(cq: any): Promise<void> {
   if (d === "lgrb") return H.onLedgerRebuild(mid);
   if (d.startsWith("lg:")) return H.onLedger(Number(d.split(":")[1]), mid);
   if (d.startsWith("pool:")) return H.onPick(Number(d.split(":")[1]), mid);
+  if (d.startsWith("fast:")) return H.onFastPreset(d.slice(5), mid);
   if (d.startsWith("range:")) return H.onRangeButton(d, mid);
   if (d === "ballp") return H.onBalancedLp(mid);
   if (d === "usdgw") return H.onUseWalletUsdg(mid); // single-side pakai USDG di wallet (no swap/input)
@@ -144,12 +146,12 @@ async function routeMessage(m: any): Promise<void> {
   if (t === "/revoke") return H.onRevoke();
   if (t === "/settings") return H.onSettings();
   if (t.startsWith("/set ")) return H.onSet(t);
-  if (CA_RE.test(t)) return H.onCA(t);
+  if (CA_RE.test(t) || V4_POOL_ID_RE.test(t)) return H.onCA(t);
   if (H.isAwaitingAdd() && NUM_RE.test(t)) return H.onAddAmount(t); // ➕ add-liq amount
   if (H.isAwaitingRangeWidth()) return H.onRangeWidth(t);
   if (H.isAwaitingAmount() && NUM_RE.test(t)) return H.onAmount(t);
   if (t.startsWith("/")) return; // unknown command
-  await send("Paste a token contract address (0x… 40 hex) to open an LP.");
+  await send("Paste a token CA, a v3 pool address (0x… 40 hex), or a v4 pool ID (0x… 64 hex) to open an LP.");
 }
 
 async function handle(u: any): Promise<void> {

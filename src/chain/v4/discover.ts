@@ -29,6 +29,22 @@ export interface V4Pool {
   quote: "eth" | "usd"; // what the token is paired against (native ETH vs USDG stable)
 }
 
+/** Return the LP token in a supported token/native-ETH or token/USDG v4 pool. */
+export function v4PoolTokenAddress(pool: { poolKey: Pick<PoolKey, "currency0" | "currency1"> }): string | null {
+  const c0 = pool.poolKey.currency0.toLowerCase();
+  const c1 = pool.poolKey.currency1.toLowerCase();
+  const usdgL = USDG.toLowerCase();
+  if (c0 === NATIVE || c1 === NATIVE) {
+    const token = c0 === NATIVE ? c1 : c0;
+    return token === usdgL ? null : ethers.getAddress(token);
+  }
+  if (c0 === usdgL || c1 === usdgL) {
+    const token = c0 === usdgL ? c1 : c0;
+    return token === NATIVE ? null : ethers.getAddress(token);
+  }
+  return null;
+}
+
 function stateView(): ethers.Contract {
   if (!C.v4StateView) throw new Error("v4StateView is not set in config.contracts");
   return new ethers.Contract(C.v4StateView, STATEVIEW_ABI, readProvider);
@@ -173,6 +189,43 @@ async function verifyIndividual(sv: ethers.Contract, keys: Array<{ pk: PoolKey; 
     }
   });
   return out.filter((p): p is V4Pool => p !== null);
+}
+
+/**
+ * Resolve a pasted v4 poolId. Unlike v3, v4 pools do not have one contract address per pool: the
+ * pool identity is the hash of its PoolKey. The Initialize event is the authoritative reversible
+ * lookup for that key, after which StateView verifies the live price/liquidity.
+ */
+export async function findV4PoolById(poolId: string): Promise<V4Pool | null> {
+  if (!/^0x[a-fA-F0-9]{64}$/.test(poolId) || !C.v4PoolManager || !C.v4StateView) return null;
+  const wanted = poolId.toLowerCase();
+  const items = await rpcInitLogs([INITIALIZE_TOPIC, wanted]);
+  const item = items.find((lg) => lg.topics[1]?.toLowerCase() === wanted);
+  if (!item?.topics[2] || !item.topics[3]) return null;
+  try {
+    const c0 = ("0x" + item.topics[2].slice(26)).toLowerCase();
+    const c1 = ("0x" + item.topics[3].slice(26)).toLowerCase();
+    const tokenLike = { poolKey: { currency0: c0, currency1: c1 } };
+    const token = v4PoolTokenAddress(tokenLike);
+    if (!token) return null; // token/token and native/USDG pools are not supported by the LP flow
+    const d = item.data.slice(2);
+    const fee = parseInt(d.slice(0, 64), 16);
+    if (fee >= DYNAMIC_FEE_FLAG) return null;
+    const tickSpacing = parseInt(d.slice(64, 128), 16);
+    const hooks = ethers.getAddress("0x" + d.slice(152, 192));
+    const poolKey: PoolKey = {
+      currency0: ethers.getAddress(c0),
+      currency1: ethers.getAddress(c1),
+      fee,
+      tickSpacing,
+      hooks,
+    };
+    const quote: "eth" | "usd" = c0 === NATIVE || c1 === NATIVE ? "eth" : "usd";
+    const [pool] = await verify(stateView(), [{ pk: poolKey, poolId: item.topics[1]! }], quote);
+    return pool ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** All live token/native-ETH v4 pools for a token (via Initialize events). */
