@@ -69,6 +69,22 @@ export function selectV4Pool(
 }
 
 /**
+ * Load the full ETH-pool set for a fallback swap while preserving the explicitly selected LP pool.
+ * Direct pool entry deliberately skips discovery on the happy path, but a pre-broadcast Kyber
+ * failure still needs every available pool so it does not buy through a thin/high-fee farm pool.
+ */
+export async function loadV4SwapPools(
+  token: string,
+  selected: V4Pool,
+  discover: (token: string) => Promise<V4Pool[]> = discoverV4Pools,
+): Promise<V4Pool[]> {
+  const pools = await discover(token);
+  return pools.some((p) => p.poolId.toLowerCase() === selected.poolId.toLowerCase())
+    ? pools
+    : [...pools, selected];
+}
+
+/**
  * v4 native-ETH mints settle the ETH side as NATIVE ETH (not WETH). If the wallet is mostly
  * WETH (common — v3 wraps, closes unwrap-partially), the mint's native `value` exceeds the
  * native balance and the sim reverts with empty data ("missing revert data"). Unwrap the
@@ -303,7 +319,10 @@ export async function openV4InRange(
       }
     }
     if (out <= 0n) {
-      const via = (await bestSwapPool(pools, ethToSwap)) ?? pool;
+      // An explicitly supplied LP pool skips discovery above to keep direct single-side entry fast.
+      // Discover lazily only on this fallback path so routing can still compare every ETH pool.
+      const swapPools = pools.length ? pools : await loadV4SwapPools(token, pool);
+      const via = (await bestSwapPool(swapPools, ethToSwap)) ?? pool;
       const sw = await swapEthToTokenV4(via.poolKey, ethToSwap);
       if (sw.amountOut <= 0n) throw new Error("ETH→token swap failed (is the pool illiquid?)");
       swapHash = sw.tx;

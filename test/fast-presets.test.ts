@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fastMintCallback, fastSingleSideButtons, isFastPresetAmount } from "../src/telegram/fastPresets.ts";
 import { classifyPoolInput } from "../src/telegram/poolInput.ts";
 import { v4PoolTokenAddress } from "../src/chain/v4/discover.ts";
-import { selectV4Pool } from "../src/chain/v4/mint.ts";
+import { loadV4SwapPools, selectV4Pool } from "../src/chain/v4/mint.ts";
 
 test("fast single-side presets show the amount, quote route, and configured auto range", () => {
   const rows = fastSingleSideButtons({ quote: "eth", availableEth: 0.2, widthPct: 50 });
@@ -73,4 +73,23 @@ test("v4 pool selection preserves a valid zero-fee tier", () => {
   const higherFee = { ...zeroFee, fee: 30000, lpFee: 30000, poolId: "0x" + "44".repeat(32) };
 
   assert.equal(selectV4Pool([higherFee, zeroFee], { fee: 0 }), zeroFee);
+});
+
+test("direct v4 entry reloads alternate pools before a fallback swap", async () => {
+  const key = { currency0: "0x0000000000000000000000000000000000000000", currency1: "0x2222222222222222222222222222222222222222", fee: 30000, tickSpacing: 600, hooks: "0x0000000000000000000000000000000000000000" };
+  const selected = { poolKey: key, poolId: "0x" + "55".repeat(32), fee: 30000, tickSpacing: 600, sqrtPriceX96: 1n, tick: 0, liquidity: 1n, lpFee: 30000, quote: "eth" as const };
+  const alternate = { ...selected, poolId: "0x" + "66".repeat(32), fee: 500, lpFee: 500 };
+  let discoveredToken = "";
+
+  const pools = await loadV4SwapPools(
+    key.currency1,
+    selected,
+    async (token) => {
+      discoveredToken = token;
+      return [alternate];
+    },
+  );
+
+  assert.equal(discoveredToken, key.currency1);
+  assert.deepEqual(pools.map((pool) => pool.poolId), [alternate.poolId, selected.poolId]);
 });
