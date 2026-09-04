@@ -10,6 +10,7 @@ import { readLedger, ledgerSummary, backfillLedger, winRateText } from "../chain
 import { lifetimePnl } from "../chain/analytics.js";
 import { balances, walletTokens, type WalletToken } from "../chain/holdings.js";
 import { tokenBalanceRaw, unwrapAllWeth } from "../chain/swaps.js";
+import { isKyberBroadcastReverted, isKyberBroadcastUnknown } from "../chain/kyber.js";
 import { acquireWallet, releaseWallet, withWalletLock } from "../chain/txlock.js";
 import { revokeKnownApprovals } from "../chain/approvals.js";
 import { ethUsd } from "../chain/price.js";
@@ -2528,7 +2529,33 @@ export async function onSwapDo(mid: number): Promise<void> {
       `✅ <b>Swap successful</b> → +${Number(ethers.formatUnits(r.amountOut, s.toDec)).toPrecision(6)} ${esc(s.toSym)}\ntx: <a href="${explorerTx(r.tx)}">tx</a>`,
     );
   } catch (e) {
-    await edit(mid, `❌ Swap failed: ${short(e, 150)}`);
+    const hash = typeof (e as { txHash?: unknown } | null)?.txHash === "string" ? (e as { txHash: string }).txHash : null;
+    if (isKyberBroadcastReverted(e)) {
+      await edit(
+        mid,
+        [
+          `❌ <b>Swap reverted on-chain</b>`,
+          `No swap output was delivered; the input should remain in the wallet. Gas was consumed.`,
+          hash ? `<a href="${explorerTx(hash)}">View reverted transaction</a>` : "",
+          `Send /swap again for a fresh route.`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } else if (isKyberBroadcastUnknown(e)) {
+      await edit(
+        mid,
+        [
+          `⚠️ <b>Swap submitted, but confirmation is still unknown</b>`,
+          `Do not retry yet—the transaction may have succeeded. Check the receipt and wallet balance first.`,
+          hash ? `<a href="${explorerTx(hash)}">Check transaction</a>` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } else {
+      await edit(mid, `❌ Swap failed: ${short(e, 150)}`);
+    }
   } finally {
     releaseWallet();
   }

@@ -14,7 +14,7 @@
  */
 import { ethers } from "ethers";
 import { env, cfg } from "../config.js";
-import { hasUsableCalldata, wallet, provider, overrides, waitTx, requireCalldata } from "./client.js";
+import { hasUsableCalldata, wallet, provider, overrides, waitTx, reconcileTransactionReceipt, requireCalldata } from "./client.js";
 import { logger } from "../util/log.js";
 
 const log = logger("kyber");
@@ -63,8 +63,25 @@ export class KyberBroadcastUnknownError extends Error {
   }
 }
 
+/** The transaction was mined and the receipt definitively reports status 0. */
+export class KyberBroadcastRevertedError extends Error {
+  readonly kyberBroadcasted = true;
+  readonly kyberReverted = true;
+  readonly txHash: string;
+
+  constructor(message: string, txHash: string) {
+    super(`${message} — tx ${txHash}`);
+    this.name = "KyberBroadcastRevertedError";
+    this.txHash = txHash;
+  }
+}
+
 export function isKyberBroadcastUnknown(error: unknown): boolean {
   return error instanceof KyberBroadcastUnknownError || (error as { kyberBroadcasted?: unknown } | null)?.kyberBroadcasted === true;
+}
+
+export function isKyberBroadcastReverted(error: unknown): boolean {
+  return error instanceof KyberBroadcastRevertedError || (error as { kyberReverted?: unknown } | null)?.kyberReverted === true;
 }
 
 /** Kyber has returned both a flat `data` field and transaction-shaped data across API versions. */
@@ -279,12 +296,25 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
     throw e;
   }
   let receipt: ethers.TransactionReceipt | null = null;
+  let waitError: unknown;
   try {
     receipt = await waitTx(tx, "kyber-swap");
-    if (!receipt) throw new Error("receipt was not returned");
-    if (receipt.status !== 1) throw new Error("swap transaction reverted");
   } catch (e) {
-    throw new KyberBroadcastUnknownError(`Kyber swap was broadcast but ${receiptErrorText(e)}`, tx.hash);
+    waitError = e;
+    // A Robinhood RPC can reject tx.wait() with an empty "execution reverted" error even
+    // though the transaction was mined successfully. Resolve the receipt by hash before
+    // classifying the result; this prevents a successful swap from being reported as failed.
+    receipt = receiptFromError(e);
+  }
+  if (!receipt) receipt = await reconcileTransactionReceipt(tx.hash);
+  if (!receipt) {
+    throw new KyberBroadcastUnknownError(
+      `Kyber swap was broadcast but the receipt could not be confirmed${waitError ? ` (${receiptErrorText(waitError)})` : ""}`,
+      tx.hash,
+    );
+  }
+  if (receipt.status !== 1) {
+    throw new KyberBroadcastRevertedError("Kyber swap was broadcast but the transaction reverted on-chain", tx.hash);
   }
   let after: bigint;
   try {
@@ -302,6 +332,11 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
 
 function receiptErrorText(error: unknown): string {
   return String((error as any)?.message || error || "confirmation failed").slice(0, 140);
+}
+
+function receiptFromError(error: unknown): ethers.TransactionReceipt | null {
+  const receipt = (error as { receipt?: unknown } | null)?.receipt;
+  return receipt && typeof receipt === "object" && "status" in receipt ? receipt as ethers.TransactionReceipt : null;
 }
 
 /** Human route breakdown: "60% uniswapv3 · 40% up-v3". */

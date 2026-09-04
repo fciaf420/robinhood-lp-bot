@@ -247,6 +247,45 @@ export async function waitTx(tx: ethers.TransactionResponse, label = "tx"): Prom
   }
 }
 
+/**
+ * Reconcile a transaction after a provider reports an ambiguous send/wait failure.
+ *
+ * Robinhood RPCs have returned `transaction execution reverted` from `tx.wait()` for
+ * transactions that were actually mined successfully. A receipt lookup by hash is the
+ * authoritative answer, so callers must reconcile before telling the user to retry.
+ * Reads try the private provider first and then the configured read fallback; this helper
+ * never submits or resubmits a transaction.
+ */
+const TX_RECONCILE_MS = Number(process.env.RH_TX_RECONCILE_MS) || 15_000;
+const TX_RECONCILE_POLL_MS = Number(process.env.RH_TX_RECONCILE_POLL_MS) || 350;
+
+export async function reconcileTransactionReceipt(
+  hash: string,
+  timeoutMs = TX_RECONCILE_MS,
+): Promise<ethers.TransactionReceipt | null> {
+  if (!/^0x[0-9a-f]{64}$/i.test(hash)) return null;
+  const readers: ethers.AbstractProvider[] = [provider];
+  if (readProvider !== provider) readers.push(readProvider);
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastError: unknown;
+
+  do {
+    for (const reader of readers) {
+      try {
+        const receipt = await reader.getTransactionReceipt(hash);
+        if (receipt) return receipt;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(TX_RECONCILE_POLL_MS, Math.max(1, deadline - Date.now()))));
+  } while (Date.now() < deadline);
+
+  if (lastError) log.warn(`receipt reconciliation failed for ${hash}: ${checkedTxError(lastError)}`);
+  return null;
+}
+
 export async function overrides(): Promise<ethers.Overrides> {
   if (Number(cfg.gasPriceGwei) > 0) {
     return { gasPrice: ethers.parseUnits(String(cfg.gasPriceGwei), "gwei") };
