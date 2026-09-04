@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fastMintCallback, fastSingleSideButtons, isFastPresetAmount } from "../src/telegram/fastPresets.ts";
+import {
+  fastMintCallback,
+  fastSingleSideButtons,
+  fastTwoSidedButtons,
+  fastTwoSidedMintCallback,
+  isFastPresetAmount,
+} from "../src/telegram/fastPresets.ts";
 import { classifyPoolInput } from "../src/telegram/poolInput.ts";
 import { v4PoolTokenAddress } from "../src/chain/v4/discover.ts";
 import { loadV4SwapPools, selectV4Pool } from "../src/chain/v4/mint.ts";
@@ -30,6 +36,31 @@ test("fast presets hide amounts that exceed the gas-safe balance", () => {
   assert.deepEqual(rows.map((row) => row[0]?.callback_data), ["fast:0.01"]);
 });
 
+test("fast two-sided presets show the fresh route and configured auto range", () => {
+  const rows = fastTwoSidedButtons({ quote: "eth", availableEth: 0.2, widthPct: 50 });
+
+  assert.deepEqual(
+    rows.map((row) => row[0]?.callback_data),
+    ["fast2:0.1", "fast2:0.05", "fast2:0.01"],
+  );
+  assert.match(rows[0]![0]!.text, /0\.1 ETH/);
+  assert.match(rows[0]![0]!.text, /Two-sided fresh/);
+  assert.match(rows[0]![0]!.text, /Auto 50%/);
+});
+
+test("fast two-sided presets label USDG pools with both acquisition legs", () => {
+  const rows = fastTwoSidedButtons({ quote: "usd", availableEth: 0.2, widthPct: 35 });
+
+  assert.match(rows[0]![0]!.text, /Two-sided · buy USDG \+ token/);
+  assert.match(rows[0]![0]!.text, /Auto 35%/);
+});
+
+test("fast two-sided presets hide amounts that exceed the gas-safe balance", () => {
+  const rows = fastTwoSidedButtons({ quote: "eth", availableEth: 0.04, widthPct: 50 });
+
+  assert.deepEqual(rows.map((row) => row[0]?.callback_data), ["fast2:0.01"]);
+});
+
 test("fast preset callbacks accept only the fixed amounts shown to the user", () => {
   assert.equal(isFastPresetAmount("0.1"), true);
   assert.equal(isFastPresetAmount("0.05"), true);
@@ -41,6 +72,13 @@ test("fast confirmation maps to the correct single-side mint for each quote", ()
   assert.equal(fastMintCallback("v3", "usd"), "mint:v3us");
   assert.equal(fastMintCallback("v4", "eth"), "mint:v4");
   assert.equal(fastMintCallback("v4", "usd"), "mint:v4us");
+});
+
+test("fast two-sided confirmation maps to the in-range mint for each version", () => {
+  assert.equal(fastTwoSidedMintCallback("v3", "eth"), "mint:inrange");
+  assert.equal(fastTwoSidedMintCallback("v3", "usd"), "mint:v3u");
+  assert.equal(fastTwoSidedMintCallback("v4", "eth"), "mint:v4r");
+  assert.equal(fastTwoSidedMintCallback("v4", "usd"), "mint:v4r");
 });
 
 test("pool input accepts a v3 address or a v4 pool id", () => {

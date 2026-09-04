@@ -30,7 +30,7 @@ import { feedPanelKeyboard, feedAutoCloseConfirmKeyboard } from "./feedPanel.js"
 import { screenDisplayCount } from "./screenDisplay.js";
 import { closeAllConfirmationKeyboard, totalCloseAllPositions } from "./positionPanel.js";
 import { walletBalanceText, walletKeyboard, unwrapConfirmationKeyboard } from "./walletPanel.js";
-import { fastMintCallback, fastSingleSideButtons, isFastPresetAmount } from "./fastPresets.js";
+import { fastMintCallback, fastSingleSideButtons, fastTwoSidedButtons, fastTwoSidedMintCallback, isFastPresetAmount } from "./fastPresets.js";
 import { classifyPoolInput } from "./poolInput.js";
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 import { clearPositionExitRule, getPositionExitRule, setPositionExitRule, type PositionRuleKind } from "../radar/positionRules.js";
@@ -166,6 +166,7 @@ interface Pending {
   tokenFunding?: "fresh" | "held"; // v4 ETH-pair two-sided funding choice
   directInput?: "v3-pool" | "v4-pool-id";
   fastSingleSide?: boolean;
+  fastTwoSided?: boolean;
 }
 let pending: Pending | null = null;
 type AutoInput =
@@ -552,13 +553,21 @@ export async function onPick(idx: number, mid: number): Promise<void> {
     ? `💵 <b>$${usdgUi.toFixed(2)} USDG</b> is already in the wallet — tap the button for <b>single-side without a swap or amount input</b>.`
     : "";
   const canChooseFunding = p.version === "v4" && p.v4?.quote !== "usd";
-  const fastRows = p.version === "v3" || p.version === "v4"
+  const fastSingleRows = p.version === "v3" || p.version === "v4"
     ? fastSingleSideButtons({
         quote: isUsdPool ? "usd" : "eth",
         availableEth: b ? usableEth(b) : undefined,
         widthPct: cfg.lp.widthPct,
       })
     : [];
+  const fastTwoRows = p.version === "v3" || p.version === "v4"
+    ? fastTwoSidedButtons({
+        quote: isUsdPool ? "usd" : "eth",
+        availableEth: b ? usableEth(b) : undefined,
+        widthPct: cfg.lp.widthPct,
+      })
+    : [];
+  const fastRows = [...fastSingleRows, ...fastTwoRows];
   const kbRows: { text: string; callback_data: string }[][] = [
     ...fastRows,
     ...(canChooseFunding ? manualFundingButtons({ heldTokenUi: tokUi, balancedEth: balanced }) : []),
@@ -566,7 +575,7 @@ export async function onPick(idx: number, mid: number): Promise<void> {
   if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side using wallet USDG ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
   const extra = kbRows.length ? { reply_markup: { inline_keyboard: kbRows } } : {};
   const fastLine = fastRows.length
-    ? `⚡ <b>Fast single-side</b> — choose a preset below; it uses auto range ${cfg.lp.widthPct}% and still shows a final confirmation.`
+    ? `⚡ <b>Fast presets</b> — single-side and two-sided options use auto range ${cfg.lp.widthPct}% and still show a final confirmation.`
     : b && (p.version === "v3" || p.version === "v4")
       ? `⚠️ No fixed fast preset fits the current gas-safe balance of ${usableEth(b).toFixed(5)} ETH.`
       : "";
@@ -588,7 +597,7 @@ export async function onPick(idx: number, mid: number): Promise<void> {
       fastLine,
       canChooseFunding
         ? fastRows.length
-          ? `💬 <b>Choose a fast single-side preset</b>, or choose how to fund the two-sided position below.`
+          ? `💬 <b>Choose a fast preset</b>, or choose a custom/held-token two-sided option below.`
           : `💬 <b>Choose how to fund the two-sided position</b> below, or enter a custom ETH amount.`
         : `💬 <b>Enter the ETH amount</b> to LP (example: <code>0.005</code>)${kbRows.length ? " — or tap a button below." : ""}`,
     ]
@@ -613,6 +622,27 @@ export async function onFastPreset(amount: string, mid: number): Promise<void> {
   pending.rangeWidthPct = undefined;
   pending.tokenFunding = undefined;
   pending.fastSingleSide = true;
+  pending.fastTwoSided = false;
+  await renderPendingConfirmation(mid);
+}
+
+/** Select a fixed gas-safe fresh two-sided preset without requiring an amount to be typed. */
+export async function onFastTwoSidedPreset(amount: string, mid: number): Promise<void> {
+  if (!pending?.chosen || !isFastPresetAmount(amount) || pending.chosen.version === "v2") return;
+  const b = await balances().catch(() => null);
+  const eth = Number(amount);
+  if (b && eth > usableEth(b) + 1e-9) {
+    const idx = pending.pools.indexOf(pending.chosen);
+    if (idx >= 0) await onPick(idx, mid);
+    return;
+  }
+  pending.ethAmt = amount;
+  pending.awaitingAmount = false;
+  pending.rangeWidthPct = undefined;
+  pending.fastSingleSide = false;
+  pending.fastTwoSided = true;
+  // Fresh mode buys the token side even if an earlier failed attempt left inventory in the wallet.
+  pending.tokenFunding = "fresh";
   await renderPendingConfirmation(mid);
 }
 
@@ -620,6 +650,7 @@ export async function onFastPreset(amount: string, mid: number): Promise<void> {
 export async function onBalancedLp(mid: number): Promise<void> {
   if (!pending?.chosen?.v4 || !pending.balancedEth) return;
   pending.fastSingleSide = false;
+  pending.fastTwoSided = false;
   pending.tokenFunding = "held";
   const amt = toEthStr(pending.balancedEth);
   const b = await balances().catch(() => null);
@@ -642,6 +673,7 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
   pending.heldTokenUi = heldRaw > 0n ? Number(heldRaw) / 10 ** pending.meta.decimals : 0;
   if (data === "fund:fresh") {
     pending.fastSingleSide = false;
+    pending.fastTwoSided = false;
     pending.tokenFunding = "fresh";
     pending.ethAmt = undefined;
     pending.awaitingAmount = true;
@@ -650,6 +682,7 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
   }
   if (data === "fund:held") {
     pending.fastSingleSide = false;
+    pending.fastTwoSided = false;
     pending.tokenFunding = "held";
     if (pending.balancedEth) return onBalancedLp(mid);
     pending.ethAmt = undefined;
@@ -659,6 +692,7 @@ export async function onFundingButton(data: string, mid: number): Promise<void> 
   }
   if (data === "amount:custom") {
     pending.fastSingleSide = false;
+    pending.fastTwoSided = false;
     pending.awaitingAmount = true;
     pending.ethAmt = undefined;
     await edit(mid, `⌨️ <b>Custom two-sided amount</b>\n\n${manualFundingPrompt({ symbol: pending.meta.symbol, availableEth: b ? usableEth(b) : undefined, weth: b ? Number(b.weth) : 0, eth: b ? Number(b.eth) : 0, heldTokenUi: pending.heldTokenUi, choice: "custom" })}\n\nEnter the ETH amount to deploy (example: <code>0.005</code>).`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
@@ -696,6 +730,7 @@ export async function onUseWalletUsdg(mid: number): Promise<void> {
   pending.ethAmt = toEthStr(usdgUi / px) ?? String(usdgUi / px);
   pending.awaitingAmount = false;
   pending.fastSingleSide = false;
+  pending.fastTwoSided = false;
   const feePct = (pending.chosen.fee / 10000).toFixed(2);
   await edit(mid, `⏳ <b>Single-side USDG using $${usdgUi.toFixed(2)} from the wallet…</b> (no swap · fee ${feePct}%)`);
   if (pending.chosen.version === "v4") return onMintV4(mid, "v4us");
@@ -743,7 +778,9 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
   const eth = p.ethAmt;
   const fastPresetLine = p.fastSingleSide
     ? `⚡ <b>Fast preset selected</b>: ${eth} ETH · single-side · auto range ${cfg.lp.widthPct}%`
-    : "";
+    : p.fastTwoSided
+      ? `⚡ <b>Fast preset selected</b>: ${eth} ETH · two-sided · auto range ${cfg.lp.widthPct}%`
+      : "";
 
   // v2 has no concentrated range; it is always a full-range both-sided zap.
   if (chosen.version === "v2") {
@@ -786,6 +823,8 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
         ].join("\n");
     const buttons: InlineButton[][] = p.fastSingleSide
       ? [[{ text: `✅ Confirm fast single-side ${isUsd ? "USDG" : "ETH"} · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastMintCallback("v4", isUsd ? "usd" : "eth") }]]
+      : p.fastTwoSided
+        ? [[{ text: `✅ Confirm fast two-sided ${isUsd ? "USDG + token" : "fresh token"} · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastTwoSidedMintCallback("v4", isUsd ? "usd" : "eth") }]]
       : isUsd
         ? [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v4us" }]]
         : [[{ text: `🎯 In-range · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4r" }], [{ text: `🛡 Single-side · ${manualFundingActionLabel()} · ${manualRangeActionLabel()}`, callback_data: "mint:v4" }]];
@@ -812,6 +851,8 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
         inline_keyboard: [
           ...(p.fastSingleSide
             ? [[{ text: `✅ Confirm fast single-side USDG · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastMintCallback("v3", "usd") }]]
+            : p.fastTwoSided
+              ? [[{ text: `✅ Confirm fast two-sided USDG + token · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastTwoSidedMintCallback("v3", "usd") }]]
             : [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · ${eth}Ξ`, callback_data: "mint:v3u" }], [{ text: `🛡 Single-side · ${manualRangeActionLabel()}`, callback_data: "mint:v3us" }]]),
           manualRangeButton(),
           [chartButton(chosen, p.token)],
@@ -848,6 +889,8 @@ async function renderPendingConfirmation(mid?: number): Promise<void> {
       inline_keyboard: [
         ...(p.fastSingleSide
           ? [[{ text: `✅ Confirm fast single-side ETH · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastMintCallback("v3", "eth") }]]
+          : p.fastTwoSided
+            ? [[{ text: `✅ Confirm fast two-sided fresh token · ${eth}Ξ · auto ${cfg.lp.widthPct}%`, callback_data: fastTwoSidedMintCallback("v3", "eth") }]]
           : [[{ text: `🎯 In-range · ${manualRangeActionLabel()} · swap ~${pI?.swapPct ?? "?"}%`, callback_data: "mint:inrange" }], [{ text: `🛡 Single-side ETH · ${manualRangeActionLabel()}`, callback_data: "mint:single" }]]),
         manualRangeButton(),
         [chartButton(chosen, p.token)],
@@ -871,6 +914,7 @@ export async function onRangeButton(data: string, mid: number): Promise<void> {
   }
   if (data === "range:custom") {
     pending.fastSingleSide = false;
+    pending.fastTwoSided = false;
     pending.awaitingRangeWidth = true;
     pending.rangeMessageId = mid;
     await edit(mid, `<b>📐 Type a custom range width</b>\n\nEnter a positive percentage from <b>1% to ${MAX_MANUAL_RANGE_PCT}%</b>.\nExample: <code>75</code>`, { reply_markup: { inline_keyboard: [[{ text: "❌ Cancel", callback_data: "cancel" }]] } });
@@ -879,6 +923,7 @@ export async function onRangeButton(data: string, mid: number): Promise<void> {
   const preset = data.match(/^range:preset:(\d+(?:\.\d+)?)$/);
   if (preset) {
     pending.fastSingleSide = false;
+    pending.fastTwoSided = false;
     pending.rangeWidthPct = normalizeManualRangePct(preset[1]! ) ?? undefined;
     return renderPendingConfirmation(mid);
   }
@@ -915,6 +960,7 @@ export async function onAmount(text: string): Promise<void> {
   pending.ethAmt = toEthStr(eth) ?? String(eth);
   pending.awaitingAmount = false;
   pending.fastSingleSide = false;
+  pending.fastTwoSided = false;
   await renderPendingConfirmation();
 }
 

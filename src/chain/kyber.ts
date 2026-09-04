@@ -10,7 +10,8 @@
  *   3. built amountIn == requested amountIn (spend integrity)
  *   4. built amountOut >= fresh quote − slippage (no execution drift)
  *   5. calldata is present, the input balance/allowance is sufficient, and eth_call + estimateGas pass
- *   6. after a hash exists, failures are reported with that hash and are never silently resubmitted
+ *   6. after a hash exists, ambiguous/successful transactions are never resubmitted; only a
+ *      confirmed atomic output/slippage revert may refresh the route a bounded number of times
  */
 import { ethers } from "ethers";
 import { env, cfg } from "../config.js";
@@ -69,11 +70,14 @@ export class KyberBroadcastRevertedError extends Error {
   readonly kyberBroadcasted = true;
   readonly kyberReverted = true;
   readonly txHash: string;
+  readonly revertReason?: string;
 
-  constructor(message: string, txHash: string) {
-    super(`${message} — tx ${txHash}`);
+  constructor(message: string, txHash: string, revertReason?: string) {
+    const reason = revertReason?.trim();
+    super(`${message}${reason ? ` (${reason})` : ""} — tx ${txHash}`);
     this.name = "KyberBroadcastRevertedError";
     this.txHash = txHash;
+    this.revertReason = reason || undefined;
   }
 }
 
@@ -93,6 +97,29 @@ export function isKyberBroadcastUnknown(error: unknown): boolean {
 
 export function isKyberBroadcastReverted(error: unknown): boolean {
   return error instanceof KyberBroadcastRevertedError || (error as { kyberReverted?: unknown } | null)?.kyberReverted === true;
+}
+
+const ROUTE_RETRY_REASONS = [
+  "return amount is not enough",
+  "insufficient output amount",
+  "insufficient amount out",
+  "too little received",
+  "amountoutminimum",
+  "amount out minimum",
+  "slippage",
+  "price impact",
+];
+
+/**
+ * A confirmed status-0 receipt is safe to retry only when the route's minimum-output guard was
+ * overtaken by market movement. Transfer/allowance/token errors need user intervention; retrying
+ * those would just burn gas three more times.
+ */
+export function isRetryableKyberRevert(error: unknown): boolean {
+  if (!isKyberBroadcastReverted(error)) return false;
+  const e = error as { revertReason?: unknown; message?: unknown } | null;
+  const text = String(e?.revertReason ?? e?.message ?? error).toLowerCase();
+  return ROUTE_RETRY_REASONS.some((reason) => text.includes(reason));
 }
 
 export function isKyberPreflight(error: unknown): boolean {
@@ -167,6 +194,8 @@ export interface KyberSwapResult {
   amountOut: bigint; // actual tokenOut received (balance delta)
 }
 
+const MAX_CONFIRMED_REVERT_RETRIES = 2;
+
 /** Approve the Kyber router and verify the allowance before simulating the swap. */
 async function ensureKyberAllowance(tokenIn: string, amountIn: bigint, w: ethers.Wallet): Promise<void> {
   const erc = new ethers.Contract(tokenIn, [
@@ -212,7 +241,20 @@ async function ensureKyberAllowance(tokenIn: string, amountIn: bigint, w: ethers
  */
 export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<KyberSwapResult | null> {
   if (!kyberEnabled() || amountIn <= 0n) return null;
-  return withKyberSwapLock(() => kyberSwapUnlocked(tokenIn, tokenOut, amountIn));
+  return withKyberSwapLock(async () => {
+    for (let attempt = 0; attempt <= MAX_CONFIRMED_REVERT_RETRIES; attempt++) {
+      try {
+        return await kyberSwapUnlocked(tokenIn, tokenOut, amountIn);
+      } catch (e) {
+        if (attempt >= MAX_CONFIRMED_REVERT_RETRIES || !isRetryableKyberRevert(e)) throw e;
+        log.warn(
+          `Kyber swap hit a confirmed route/slippage revert — refreshing quote and retrying (${attempt + 1}/${MAX_CONFIRMED_REVERT_RETRIES})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+    }
+    return null;
+  });
 }
 
 async function kyberSwapUnlocked(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<KyberSwapResult | null> {
@@ -336,7 +378,8 @@ async function kyberSwapUnlocked(tokenIn: string, tokenOut: string, amountIn: bi
     );
   }
   if (receipt.status !== 1) {
-    throw new KyberBroadcastRevertedError("Kyber swap was broadcast but the transaction reverted on-chain", tx.hash);
+    const reason = await transactionRevertReason(tx, receipt.blockNumber);
+    throw new KyberBroadcastRevertedError("Kyber swap was broadcast but the transaction reverted on-chain", tx.hash, reason);
   }
   let after: bigint;
   try {
@@ -359,6 +402,28 @@ function receiptErrorText(error: unknown): string {
 function receiptFromError(error: unknown): ethers.TransactionReceipt | null {
   const receipt = (error as { receipt?: unknown } | null)?.receipt;
   return receipt && typeof receipt === "object" && "status" in receipt ? receipt as ethers.TransactionReceipt : null;
+}
+
+/** Best-effort decode of the router's revert at the state immediately before the failed tx. */
+async function transactionRevertReason(tx: ethers.TransactionResponse, blockNumber: number): Promise<string | undefined> {
+  if (!tx.to || blockNumber <= 0) return undefined;
+  try {
+    await provider.call(
+      {
+        to: tx.to,
+        from: tx.from,
+        data: tx.data,
+        value: tx.value,
+        gasLimit: tx.gasLimit,
+        blockTag: blockNumber - 1,
+      },
+    );
+    return undefined;
+  } catch (e) {
+    const x = e as { reason?: unknown; shortMessage?: unknown; message?: unknown } | null;
+    const reason = String(x?.reason ?? x?.shortMessage ?? x?.message ?? "").replace(/\s+/g, " ").trim();
+    return reason ? reason.slice(0, 140) : undefined;
+  }
 }
 
 /** Human route breakdown: "60% uniswapv3 · 40% up-v3". */

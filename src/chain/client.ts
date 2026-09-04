@@ -20,8 +20,12 @@ export function isNonceConflict(error: unknown): boolean {
   const message = String(e?.message ?? error ?? "").toLowerCase();
   return (
     code === "nonce_expired" ||
+    code === "nonce_too_low" ||
     message.includes("nonce has already been used") ||
     message.includes("nonce too low") ||
+    message.includes("nonce is too low") ||
+    message.includes("invalid transaction nonce") ||
+    message.includes("invalid nonce") ||
     message.includes("already used")
   );
 }
@@ -169,37 +173,64 @@ if (usingOwnWatchRpc || usingOwnLogsRpc) log.info(`RPC split — watch:${usingOw
  * normal case, and resync/retry up to three times when the node explicitly reports a consumed nonce.
  * A rejected send never gets a response/hash, so retrying with a fresh nonce is safe here.
  */
+const MAX_NONCE_RETRIES = 3;
+
 class ResilientWallet extends ethers.Wallet {
   private nextNonce: number | null = null;
   private nonceLoad: Promise<number> | null = null;
+  private nonceGeneration = 0;
+  private nonceFloor = 0;
 
-  private resetNonce(): void {
+  private resetNonce(minNextNonce?: number): void {
     this.nextNonce = null;
     this.nonceLoad = null;
+    this.nonceGeneration++;
+    if (minNextNonce != null && Number.isSafeInteger(minNextNonce) && minNextNonce >= 0) {
+      this.nonceFloor = Math.max(this.nonceFloor, minNextNonce);
+    }
   }
 
   private async reserveNonce(): Promise<number> {
-    if (this.nextNonce == null) {
-      const load = this.nonceLoad ?? (this.nonceLoad = this.getNonce("pending"));
-      const base = await load;
-      if (this.nextNonce == null) this.nextNonce = base;
-      if (this.nonceLoad === load) this.nonceLoad = null;
+    while (true) {
+      if (this.nextNonce == null) {
+        const generation = this.nonceGeneration;
+        const load = this.nonceLoad ?? (this.nonceLoad = this.loadNetworkNonce());
+        const base = await load;
+        // A nonce conflict may invalidate a read that was already in flight. Never seed the
+        // coordinator from that stale response after a reset.
+        if (generation !== this.nonceGeneration) continue;
+        if (this.nextNonce == null) this.nextNonce = Math.max(base, this.nonceFloor);
+        if (this.nonceLoad === load) this.nonceLoad = null;
+      }
+      const nonce = this.nextNonce;
+      this.nextNonce++;
+      return nonce;
     }
-    const nonce = this.nextNonce;
-    this.nextNonce++;
-    return nonce;
+  }
+
+  private async loadNetworkNonce(): Promise<number> {
+    // `pending` is normally authoritative, while `latest` catches a private RPC that has not
+    // yet indexed a just-mined transaction. Taking the greater value avoids reusing a nonce
+    // after an external signer advanced the same wallet.
+    const [pending, latest] = await Promise.all([this.getNonce("pending"), this.getNonce("latest")]);
+    return Math.max(pending, latest);
   }
 
   override async sendTransaction(tx: ethers.TransactionRequest): Promise<ethers.TransactionResponse> {
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt <= MAX_NONCE_RETRIES; attempt++) {
       const nonce = tx.nonce == null || attempt > 0 ? await this.reserveNonce() : tx.nonce;
       try {
-        return await super.sendTransaction({ ...tx, nonce });
+        const sent = await super.sendTransaction({ ...tx, nonce });
+        const sentNext = sent.nonce + 1;
+        this.nonceFloor = Math.max(this.nonceFloor, sentNext);
+        if (this.nextNonce != null) this.nextNonce = Math.max(this.nextNonce, sentNext);
+        return sent;
       } catch (e) {
         // Any rejected send did not consume the reserved nonce; resync before the next operation.
-        this.resetNonce();
-        if (attempt < 3 && tx.nonce == null && isRetryableSendError(e)) {
-          log.warn(`nonce/provider conflict — resyncing pending nonce and retrying transaction (${attempt + 1}/3)`);
+        const selectedNonce = Number(nonce);
+        this.resetNonce(isRetryableSendError(e) && Number.isSafeInteger(selectedNonce) ? selectedNonce + 1 : undefined);
+        if (attempt < MAX_NONCE_RETRIES && isRetryableSendError(e)) {
+          log.warn(`nonce/provider conflict — resyncing pending nonce and retrying transaction (${attempt + 1}/${MAX_NONCE_RETRIES})`);
           await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
           continue;
         }

@@ -58,6 +58,7 @@ async function routeCallback(cq: any): Promise<void> {
   if (d === "lgrb") return H.onLedgerRebuild(mid);
   if (d.startsWith("lg:")) return H.onLedger(Number(d.split(":")[1]), mid);
   if (d.startsWith("pool:")) return H.onPick(Number(d.split(":")[1]), mid);
+  if (d.startsWith("fast2:")) return H.onFastTwoSidedPreset(d.slice(6), mid);
   if (d.startsWith("fast:")) return H.onFastPreset(d.slice(5), mid);
   if (d.startsWith("range:")) return H.onRangeButton(d, mid);
   if (d === "ballp") return H.onBalancedLp(mid);
