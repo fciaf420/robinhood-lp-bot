@@ -728,12 +728,25 @@ export async function mintTimestamp(tokenId: string): Promise<number | null> {
   return ts;
 }
 
+/**
+ * Try every configured V3 factory (canonical + forks like Lunya on Arc) to find the pool
+ * for a given token pair + fee. Returns ZeroAddress when no factory has a pool deployed.
+ */
+async function resolveV3Pool(token0: string, token1: string, fee: number): Promise<string> {
+  const factories = [C.factory, ...C.extraV3Factories];
+  for (const addr of factories) {
+    const f = new ethers.Contract(addr, FACTORY_ABI, provider);
+    const pool: string = await f.getPool!(token0, token1, fee).catch(() => ethers.ZeroAddress);
+    if (pool !== ethers.ZeroAddress) return pool;
+  }
+  return ethers.ZeroAddress;
+}
+
 /** All open positions with live PnL, valued exactly as a close would settle. */
 export async function listPositions(): Promise<PositionRow[]> {
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, provider);
   const npmW = new ethers.Contract(C.positionManager, NPM_ABI, w);
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
   const n = Number(await npm.balanceOf!(w.address).catch(() => 0n));
   const px = await nativeUsd().catch(() => 0);
   const { mapLimit } = await import("./blockscout.js");
@@ -748,7 +761,9 @@ export async function listPositions(): Promise<PositionRow[]> {
         const id: bigint = await npm.tokenOfOwnerByIndex!(w.address, i);
         const p = await npm.positions!(id);
         if (p.liquidity === 0n) return null;
-      const pool: string = await factory.getPool!(p.token0, p.token1, p.fee);
+      // Try all V3 factories (canonical + forks like Lunya) to resolve the pool address.
+      const pool: string = await resolveV3Pool(p.token0, p.token1, Number(p.fee));
+      if (pool === ethers.ZeroAddress) return null;
       const st = await getPoolState(pool);
       const tl = Number(p.tickLower);
       const tu = Number(p.tickUpper);
@@ -1126,8 +1141,7 @@ export async function closeV3StablePosition(tokenId: string, opts: { swapToken?:
   const w = wallet();
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   const p = await npm.positions!(tokenId);
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
-  const pool: string = await factory.getPool!(p.token0, p.token1, p.fee);
+  const pool: string = await resolveV3Pool(p.token0, p.token1, Number(p.fee));
   const st = await getPoolState(pool);
   const [m0, m1] = await Promise.all([tokenMeta(p.token0), tokenMeta(p.token1)]);
   const usdgIs0 = isStableQuote(st.token0);

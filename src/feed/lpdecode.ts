@@ -15,7 +15,8 @@ import { C } from "../config.js";
 import type { FeedTx } from "./decode.js";
 
 const NPM_L = C.positionManager.toLowerCase();
-const FACTORY_L = C.factory.toLowerCase();
+// All V3 factories (canonical + forks like Lunya on Arc).
+const ALL_FACTORIES_L = new Set([C.factory, ...C.extraV3Factories].map((a) => a.toLowerCase()));
 // null on a chain with no wrapped native (Arc): config.ts fills C.weth with the ZERO address
 // there, which is also v4's native-currency sentinel — comparing pool sides against it would
 // start matching real 0x0 currencies. null makes every WETH-pair test below fail closed instead.
@@ -42,7 +43,7 @@ export interface PoolEvent {
 /** Extract WETH-pool creation/mint events from a feed tx. */
 export function extractPoolEvents(ftx: FeedTx): PoolEvent[] {
   const to = ftx.tx.to?.toLowerCase();
-  if ((to !== NPM_L && to !== FACTORY_L) || !ftx.tx.data || ftx.tx.data === "0x") return [];
+  if ((to !== NPM_L && !ALL_FACTORIES_L.has(to ?? "")) || !ftx.tx.data || ftx.tx.data === "0x") return [];
   const out: PoolEvent[] = [];
   decode(ftx.tx.data, ftx.tx.hash ?? "", ftx.tx.from, out);
   return out;

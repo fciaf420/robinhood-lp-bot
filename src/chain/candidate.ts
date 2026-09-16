@@ -250,10 +250,19 @@ export async function scanNewPools(opts: NewPoolOpts = {}): Promise<PoolSighting
   if (from > latest) return [];
 
   const none: readonly ethers.Log[] = [];
-  const [v4Logs, v3Logs] = await Promise.all([
+  // Query all V3 factories (canonical + forks like Lunya on Arc) for PoolCreated events.
+  const v3Factories = CHAIN.venues.v3 && C.factory ? [C.factory, ...C.extraV3Factories] : [];
+  const [v4Logs, ...v3LogSets] = await Promise.all([
     CHAIN.venues.v4 && C.v4PoolManager ? windowLogs(C.v4PoolManager, INITIALIZE_TOPIC, Math.max(from, CHAIN.discovery.v4FromBlock), latest) : Promise.resolve(none),
-    CHAIN.venues.v3 && C.factory ? windowLogs(C.factory, POOL_CREATED_TOPIC, from, latest) : Promise.resolve(none),
+    ...v3Factories.map((f) => windowLogs(f, POOL_CREATED_TOPIC, from, latest)),
   ]);
+  // Merge all V3 log sets; null (RPC failure) poisons the whole v3 result so the cursor is not
+  // advanced past a window we only partially read.
+  const v3Logs: readonly ethers.Log[] | null = v3LogSets.length === 0
+    ? none
+    : v3LogSets.some((s) => s === null)
+      ? null
+      : (v3LogSets as (readonly ethers.Log[])[]).flat();
 
   const now = Date.now();
   // Block → wall-clock, from the profile's real block cadence. One getBlock per log would be

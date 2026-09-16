@@ -59,6 +59,7 @@ const ContractsSchema = ProfileContractsSchema.extend({
   weth: z.string(),
   permit2: z.string(),
   multicall: z.string(),
+  extraV3Factories: z.array(z.string()).default([]),
 });
 
 const LpSchema = z.object({
@@ -264,6 +265,7 @@ function load(): Config {
       weth: CHAIN.contracts.weth ?? CHAIN.native.wrapped ?? NO_WETH,
       permit2: CHAIN.contracts.permit2 ?? CANONICAL_PERMIT2,
       multicall: CHAIN.contracts.multicall ?? CANONICAL_MULTICALL3,
+      extraV3Factories: CHAIN.contracts.extraV3Factories ?? [],
     },
   };
   const parsed = ConfigSchema.safeParse(merged);

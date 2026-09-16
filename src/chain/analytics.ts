@@ -36,7 +36,7 @@ const log = logger("analytics");
 // The zero address is filtered because C.weth IS 0x0 on a chain with no wrapped native, and 0x0 is
 // not a counterparty: keeping it would silently classify mints/burns as "internal".
 const INTERNAL = new Set(
-  [C.positionManager, C.swapRouter02, C.factory, C.quoter, C.weth]
+  [C.positionManager, C.swapRouter02, C.factory, C.quoter, C.weth, ...C.extraV3Factories]
     .map((a) => (a || "").toLowerCase())
     .filter((a) => a && !/^0x0{40}$/.test(a)),
 );

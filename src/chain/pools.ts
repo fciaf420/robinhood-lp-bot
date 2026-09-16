@@ -44,24 +44,31 @@ export async function findPools(tokenAddr: string): Promise<PoolInfo[]> {
   if (!hasWrapped()) return [];
   const token = ethers.getAddress(tokenAddr);
   const weth = ethers.getAddress(C.weth);
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
+  const factories = [C.factory, ...C.extraV3Factories];
   const wc = new ethers.Contract(weth, ERC20_ABI, provider);
   const out: PoolInfo[] = [];
+  const seen = new Set<string>(); // dedupe across factories
 
-  for (const fee of cfg.lp.feeTiers) {
-    const pool: string = await factory.getPool!(token, weth, fee).catch(() => ethers.ZeroAddress);
-    if (pool === ethers.ZeroAddress) continue;
-    const pc = new ethers.Contract(pool, POOL_ABI, provider);
-    const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
-    if (liq === 0n) continue;
-    const wbal: bigint = await wc.balanceOf!(pool).catch(() => 0n);
-    out.push({
-      pool,
-      fee,
-      liquidity: liq,
-      token0: ethers.getAddress(t0),
-      wethInPool: Number(ethers.formatEther(wbal)),
-    });
+  for (const factoryAddr of factories) {
+    const factory = new ethers.Contract(factoryAddr, FACTORY_ABI, provider);
+    for (const fee of cfg.lp.feeTiers) {
+      const pool: string = await factory.getPool!(token, weth, fee).catch(() => ethers.ZeroAddress);
+      if (pool === ethers.ZeroAddress) continue;
+      const poolLower = pool.toLowerCase();
+      if (seen.has(poolLower)) continue;
+      seen.add(poolLower);
+      const pc = new ethers.Contract(pool, POOL_ABI, provider);
+      const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
+      if (liq === 0n) continue;
+      const wbal: bigint = await wc.balanceOf!(pool).catch(() => 0n);
+      out.push({
+        pool,
+        fee,
+        liquidity: liq,
+        token0: ethers.getAddress(t0),
+        wethInPool: Number(ethers.formatEther(wbal)),
+      });
+    }
   }
   out.sort((a, b) => b.wethInPool - a.wethInPool);
   return out;
@@ -77,27 +84,34 @@ export async function findStableQuotePools(tokenAddr: string): Promise<PoolInfo[
   const token = ethers.getAddress(tokenAddr);
   const stable = ethers.getAddress(STABLE_QUOTE);
   if (token.toLowerCase() === stable.toLowerCase()) return [];
-  const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
+  const factories = [C.factory, ...C.extraV3Factories];
   const uc = new ethers.Contract(stable, ERC20_ABI, provider);
   const out: PoolInfo[] = [];
-  for (const fee of cfg.lp.feeTiers) {
-    const pool: string = await factory.getPool!(token, stable, fee).catch(() => ethers.ZeroAddress);
-    if (pool === ethers.ZeroAddress) continue;
-    const pc = new ethers.Contract(pool, POOL_ABI, provider);
-    const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
-    if (liq === 0n) continue;
-    const ubal: bigint = await uc.balanceOf!(pool).catch(() => 0n);
-    out.push({
-      pool,
-      fee,
-      liquidity: liq,
-      token0: ethers.getAddress(t0),
-      wethInPool: 0,
-      quote: "usd",
-      // field name kept (data files + telegram read it); the VALUE is the profile stable's
-      // balance at the profile stable's decimals — 6 on both chains today, but read, not assumed.
-      usdgInPool: Number(ethers.formatUnits(ubal, STABLE_DECIMALS)),
-    });
+  const seen = new Set<string>(); // dedupe across factories
+  for (const factoryAddr of factories) {
+    const factory = new ethers.Contract(factoryAddr, FACTORY_ABI, provider);
+    for (const fee of cfg.lp.feeTiers) {
+      const pool: string = await factory.getPool!(token, stable, fee).catch(() => ethers.ZeroAddress);
+      if (pool === ethers.ZeroAddress) continue;
+      const poolLower = pool.toLowerCase();
+      if (seen.has(poolLower)) continue;
+      seen.add(poolLower);
+      const pc = new ethers.Contract(pool, POOL_ABI, provider);
+      const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
+      if (liq === 0n) continue;
+      const ubal: bigint = await uc.balanceOf!(pool).catch(() => 0n);
+      out.push({
+        pool,
+        fee,
+        liquidity: liq,
+        token0: ethers.getAddress(t0),
+        wethInPool: 0,
+        quote: "usd",
+        // field name kept (data files + telegram read it); the VALUE is the profile stable's
+        // balance at the profile stable's decimals — 6 on both chains today, but read, not assumed.
+        usdgInPool: Number(ethers.formatUnits(ubal, STABLE_DECIMALS)),
+      });
+    }
   }
   out.sort((a, b) => (b.usdgInPool ?? 0) - (a.usdgInPool ?? 0));
   return out;

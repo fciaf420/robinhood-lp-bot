@@ -91,6 +91,9 @@ export const ProfileContractsSchema = z.object({
   multicall: Addr.optional(),
   tickLens: Addr.optional(),
   cctpTokenMessenger: Addr.optional(), // Arc funding/drain path (CCTP v2, domain 26)
+  // Additional V3 factory contracts (forks like Lunya on Arc). Pool lookups, event scans and
+  // position resolution query EVERY factory — the canonical one (factory) and these.
+  extraV3Factories: z.array(Addr).optional(),
 });
 
 const GasSchema = z.object({
