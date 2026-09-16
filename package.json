@@ -10,7 +10,8 @@
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "dev": "node --env-file-if-exists=.env --watch --import tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "probe:arc": "node --env-file-if-exists=.env --import tsx src/scripts/probe-arc.ts"
   },
   "keywords": [
     "uniswap",
