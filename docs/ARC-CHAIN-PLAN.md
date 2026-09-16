@@ -24,7 +24,10 @@ Arc is a **Layer-1** (not an L2), EVM, opened mainnet 2026-09-16.
 | RPC | rpc.mainnet.chain.robinhood.com | **rpc.mainnet.arc.io** (archival: explorer.arc.io/api/eth-rpc) |
 | native gas | ETH (18 dec) | **USDC — 18-dec native repr, 6-dec ERC-20 predeploy `0x3600…0000`** |
 | wrapped native | WETH `0x0bd7…ad73` | **none — no WETH9 exists** |
-| stable quote | USDG (6 dec) | USDC ERC-20 (6 dec) — same asset as gas |
+| stable quote | USDG (6 dec) | USDC ERC-20 `0x3600…0000` (6 dec) — same asset as gas |
+| second stable | — | EURC `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1` (6 dec); no USDT |
+| explorer | Blockscout | explorer.arc.io (`/tx/{hash}`) |
+| funding | bridge in | **CCTP v2, domain 26, 1 conf** (see §2b) |
 | block time | sub-second (sequencer) | ~500ms, Malachite BFT, 1 conf = final |
 | gas price | floating base fee | **constant 20 gwei base fee**, EIP-1559 type-2, ~5 gwei priority |
 | fast submit | sequencer endpoint | none (validator set, no sequencer) |
@@ -47,13 +50,22 @@ Three consequences drive the whole design:
 
 ## 2. Address book (verify before use)
 
-Sourced from the Uniswap sdk-core Arc config, Uniswap's Arc playbook and DefiLlama's Arc
-adapter. Several are truncated in public sources and **must be resolved + code-checked by
-the probe script (§3) before any money moves**.
+Chain-level values are **confirmed first-party**: `@circle-fin/bridge-kit` (npm) ships the
+canonical Arc chain definition — chainId 5042, RPC `https://rpc.mainnet.arc.io/`, explorer
+`https://explorer.arc.io/tx/{hash}`, native USDC at 18 decimals with the 6-decimal ERC-20
+predeploy, EURC, no USDT, CCTP domain 26. That registry is a better source than any
+third-party page and should be the probe script's cross-check.
+
+The **Uniswap** addresses below come from the Uniswap sdk-core Arc config, Uniswap's Arc
+playbook and DefiLlama's Arc adapter. Several are truncated in public sources and **must be
+resolved + code-checked by the probe script (§3) before any money moves**.
 
 | contract | address | status |
 |---|---|---|
-| USDC ERC-20 predeploy | `0x3600000000000000000000000000000000000000` | verify decimals()==6 |
+| USDC ERC-20 predeploy | `0x3600000000000000000000000000000000000000` | **confirmed** (Circle SDK) — decimals 6 |
+| EURC | `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1` | **confirmed** (Circle SDK) |
+| CCTP v2 TokenMessenger | `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d` | **confirmed** (Circle SDK) |
+| CCTP v2 MessageTransmitter | `0x81D40F21F12A8F0E3252Bccb954D722d4c464B64` | **confirmed** (Circle SDK) |
 | Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | canonical |
 | Multicall3 | `0xcA11bde05977b3631167028862be2a173976ca11` | canonical |
 | v2 factory | `0x89e5db8b5aa49aa85ac63f691524311aeb649eba` | verify |
@@ -67,16 +79,42 @@ the probe script (§3) before any money moves**.
 | v4 Quoter | `0x8dc1…8f94` | **truncated — resolve** |
 | UniversalRouter | `0x0A122717…` | **truncated — resolve** |
 
+Note: Circle's docs live at **docs.arc.network** (the SDK's own doc links point there), with
+the contract reference at `/arc/references/contract-addresses` — that page and `arc.io` are
+blocked by this session's egress policy, so nothing in this plan depends on them.
+
 Resolution order: (a) bump/side-install `@uniswap/sdk-core` to a version shipping
 `ChainId.ARC = 5042` and read `CHAIN_TO_ADDRESSES_MAP[5042]`; (b) else read them off the
 explorer; (c) confirm each with `eth_getCode` + one live call. Uniswap deploys on Arc date
 from ~2026-05-28 — that block is the `fromBlock` floor for v4 log discovery.
 
+## 2b. Funding the Arc wallet (CCTP) + what Circle's App Kits are good for
+
+Arc has no faucet path for mainnet and the wallet needs native USDC before anything else
+works. Circle's **App Kits** (`@circle-fin/app-kit` and the individual kits on npm) cover
+that:
+
+- **Bridge Kit** (`@circle-fin/bridge-kit`) — CCTP v2 USDC from Ethereum/Base/etc. into Arc
+  (domain 26, 1 confirmation, fast path). This is the funding and the drain-back path, and
+  its chain registry doubles as the address source of truth above.
+- **Swap Kit** (`@circle-fin/swap-kit`) — routes **registered** tokens only (USDC, USDT,
+  EURC and other listed tokens) through Circle's stablecoin swap service, and needs a Circle
+  API key. It is **not** a KyberSwap substitute: the LP flow has to buy arbitrary
+  memecoin-tier ERC-20s, which this will not route. Useful for USDC↔EURC FX if we ever open
+  EURC-quoted pools, nothing more.
+- **`@circle-fin/adapter-ethers-v6`** exists, so if we do adopt a kit it drops into this
+  bot's ethers v6 wallet without a viem migration.
+
+Verdict for the plan: adopt Bridge Kit **optionally**, as a `/fund` and `/drain` convenience
+later (P6). The token-acquisition leg for LP stays Kyber-or-Uniswap as in §6 — App Kits do
+not change it.
+
 ## 3. P0 — probe script (read-only, run on the VPS)
 
 `scripts/probe-chain.ts` — no keys spent, prints a go/no-go report:
 
-- `eth_chainId == 5042`, block time sample, `getFeeData()`
+- `eth_chainId == 5042`, block time sample, `getFeeData()` (cross-check every chain-level
+  value against `@circle-fin/bridge-kit`'s Arc definition rather than a web page)
 - `getCode()` non-empty for every address in §2
 - USDC predeploy: `decimals()==6`, and the parity assertion
   **`balanceOf(me) * 1e12 == getBalance(me)`** — proves native and ERC-20 are one balance
