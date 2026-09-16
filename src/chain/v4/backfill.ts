@@ -6,7 +6,8 @@
  * the pool's sqrtPrice at the mint block and the close block, then value the deposit at the
  * mint-time price and the withdrawal (principal + fees) at the close-time price — both from the
  * pool's OWN price, so no external historical oracle is needed. This yields true realized PnL
- * (impermanent loss + fees), denominated in ETH via the current ETH/USD for stablecoin sides.
+ * (impermanent loss + fees), denominated in NATIVE units via nativeUsd() for stablecoin sides
+ * (which is the constant 1 on a chain whose native currency IS a dollar stable).
  */
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
@@ -14,10 +15,10 @@ import v4sdk from "@uniswap/v4-sdk";
 import { C, cfg } from "../../config.js";
 import { wallet, provider } from "../client.js";
 import { tokenMeta } from "../tokens.js";
-import { ethUsd } from "../price.js";
-import { blockscout, mapLimit } from "../blockscout.js";
+import { nativeUsd, natSym, natDecimals, chainId, isWrappedNative, isStableQuote } from "../currency.js";
+import { blockscout, blockscoutEnabled, mapLimit } from "../blockscout.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
-import { NATIVE } from "./poolkey.js";
+import { isNativeCurrency } from "./poolkey.js";
 import { readLedger, writeLedger } from "../ledger.js";
 import { logger } from "../../util/log.js";
 import type { LedgerEntry } from "../../types.js";
@@ -25,11 +26,20 @@ import type { LedgerEntry } from "../../types.js";
 const { Ether, Token, CurrencyAmount } = sdkCore as any;
 const { Pool, Position } = v4sdk as any;
 const log = logger("v4backfill");
-const STABLES = new Set(["0x5fc5360d0400a0fd4f2af552add042d716f1d168"]); // USDG
 const MASK = (1n << 256n) - 1n;
-const WETH_L = C.weth.toLowerCase();
+/** Native-side meta for a pool currency slot holding the 0x0 sentinel. */
+const nativeMeta = () => ({ symbol: natSym(), decimals: natDecimals() });
 const sg24 = (v: number): number => (v >= 0x800000 ? v - 0x1000000 : v);
-const j = (u: string): Promise<any> => fetch(u, { signal: AbortSignal.timeout(20_000) }).then((x) => x.json()).catch(() => null);
+/**
+ * Raw Blockscout GET. Guarded on blockscoutEnabled(), which the rest of the bot gets for free by
+ * going through bsFetch() — this file predates that helper and builds its own URLs, so without the
+ * check it would POST v2 REST paths at Arc's `/api/eth-rpc` endpoint: not a call that comes back
+ * empty, a call in the WRONG PROTOCOL whose error body parses to null and reads as "no history".
+ * Returning null here lands on the same `?? []` every caller already has, so an indexer-less chain
+ * reconstructs NOTHING rather than reconstructing a zero-basis ledger entry.
+ */
+const j = (u: string): Promise<any> =>
+  blockscoutEnabled() ? fetch(u, { signal: AbortSignal.timeout(20_000) }).then((x) => x.json()).catch(() => null) : Promise.resolve(null);
 
 async function txMeta(hash: string): Promise<{ block: number; ts: number } | null> {
   const t = await j(`${blockscout}/api/v2/transactions/${hash}`);
@@ -75,8 +85,8 @@ export async function reconstructV4Pnl(tokenId: string, posmTxs: any[]): Promise
   const poolId = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "uint24", "int24", "address"], [c0, c1, fee, tickSpacing, pk.hooks]));
 
   const [m0, m1] = await Promise.all([
-    c0.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
-    c1.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
+    isNativeCurrency(c0) ? Promise.resolve(nativeMeta()) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
+    isNativeCurrency(c1) ? Promise.resolve(nativeMeta()) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
   ]);
 
   const L: bigint = await posm.getPositionLiquidity!(tokenId, { blockTag: mintMeta.block + 1 }).catch(() => 0n);
@@ -86,8 +96,8 @@ export async function reconstructV4Pnl(tokenId: string, posmTxs: any[]): Promise
     sv.getSlot0!(poolId, { blockTag: mintMeta.block + 1 }),
     sv.getSlot0!(poolId, { blockTag: closeReadBlk }),
   ]);
-  const cur0 = c0.toLowerCase() === NATIVE ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(c0), m0.decimals, m0.symbol);
-  const cur1 = c1.toLowerCase() === NATIVE ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(c1), m1.decimals, m1.symbol);
+  const cur0 = isNativeCurrency(c0) ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(c0), m0.decimals, m0.symbol);
+  const cur1 = isNativeCurrency(c1) ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(c1), m1.decimals, m1.symbol);
   const poolM = new Pool(cur0, cur1, fee, tickSpacing, pk.hooks, s0m.sqrtPriceX96.toString(), "0", Number(s0m.tick));
   const poolC = new Pool(cur0, cur1, fee, tickSpacing, pk.hooks, s0c.sqrtPriceX96.toString(), "0", Number(s0c.tick));
   const posM = new Position({ pool: poolM, liquidity: L.toString(), tickLower, tickUpper });
@@ -102,29 +112,28 @@ export async function reconstructV4Pnl(tokenId: string, posmTxs: any[]): Promise
   const fee0 = (((BigInt(fgC[0]) - BigInt(piM[1])) & MASK) * L) >> 128n;
   const fee1 = (((BigInt(fgC[1]) - BigInt(piM[2])) & MASK) * L) >> 128n;
 
-  const px = await ethUsd().catch(() => 0);
-  // USD value of a raw amount of a currency, using the pool's price at that snapshot
+  const px = await nativeUsd().catch(() => 0);
+  // USD value of a raw amount of a currency, using the pool's price at that snapshot.
+  // px = USD per ONE NATIVE unit, so the native branch is right on both chains.
   const usd = (addr: string, sym: string, dec: number, raw: bigint, pool: any, cur: any, otherAddr: string, otherSym: string): number => {
     if (raw <= 0n) return 0;
-    const a = addr.toLowerCase();
     const ui = Number(ethers.formatUnits(raw, dec));
-    if (a === NATIVE || a === WETH_L) return ui * px;
-    if (STABLES.has(a) || /usd/i.test(sym)) return ui;
+    if (isNativeCurrency(addr) || isWrappedNative(addr)) return ui * px;
+    if (isStableQuote(addr) || /usd/i.test(sym)) return ui;
     try {
       const inOther = Number(pool.priceOf(cur).quote(CurrencyAmount.fromRawAmount(cur, raw.toString())).toExact());
-      const oa = otherAddr.toLowerCase();
-      if (oa === NATIVE || oa === WETH_L) return inOther * px;
-      if (STABLES.has(oa) || /usd/i.test(otherSym)) return inOther;
+      if (isNativeCurrency(otherAddr) || isWrappedNative(otherAddr)) return inOther * px;
+      if (isStableQuote(otherAddr) || /usd/i.test(otherSym)) return inOther;
     } catch {
       /* price edge */
     }
     return 0;
   };
-  // Is this a stable (USDG) pair with NO ETH leg? Then PnL is naturally USD-denominated, and
+  // Is this a stable pair with NO native leg? Then PnL is naturally USD-denominated, and
   // we measure LP-vs-HODL: value the DEPOSIT at the CLOSE price too, so a single-sided position
   // that hands back the same tokens reads as break-even (fees), not a "loss" from the token's
   // own price drop (that drop is the operator's token bet, not the LP's performance).
-  const ethLeg = [c0, c1].some((a) => a.toLowerCase() === NATIVE || a.toLowerCase() === WETH_L);
+  const ethLeg = [c0, c1].some((a) => isNativeCurrency(a) || isWrappedNative(a));
   const isUsdPair = !ethLeg;
   const depPool = isUsdPair ? poolC : poolM; // HODL baseline @ close for USD pairs; realized @ mint for ETH pairs
   const depUsd =
@@ -140,7 +149,7 @@ export async function reconstructV4Pnl(tokenId: string, posmTxs: any[]): Promise
   const depEth = depUsd / px;
   const outEth = outUsd / px;
   const pnlEth = outEth - depEth;
-  const primary = STABLES.has(c0.toLowerCase()) || /usd/i.test(m0.symbol) ? m1.symbol : m0.symbol;
+  const primary = isStableQuote(c0) || /usd/i.test(m0.symbol) ? m1.symbol : m0.symbol;
   return {
     tokenId: String(tokenId),
     sym: primary,
@@ -158,6 +167,8 @@ export async function reconstructV4Pnl(tokenId: string, posmTxs: any[]): Promise
     pnlPct: depEth > 0 ? (pnlEth / depEth) * 100 : null,
     pnlUsd: pnlEth * px,
     ethUsdAtClose: px,
+    nat: natSym(),
+    chainId: chainId(),
     tokenKept: 0,
     tokenRug: 0,
     unsoldEth: 0,
@@ -180,7 +191,7 @@ export async function backfillLedgerV4(onProgress: (msg: string) => void = () =>
   const existing = readLedger();
   // Skip re-reconstructing bot-closed ETH pairs — their recorded realized PnL already matches what
   // reconstruction would produce (deposit was ETH-funded, valued @ mint = archive realized).
-  // But USDG (no-ETH-leg) bot pairs closed BEFORE the LP-vs-HODL fix carry a stale realized basis
+  // But stable (no-native-leg) bot pairs closed BEFORE the LP-vs-HODL fix carry a stale basis
   // (contaminated by the token's directional price move), so let reconstruction overwrite those.
   const hasEthLeg = (e: LedgerEntry): boolean => /(^|\/)(ETH|WETH)(\/|$)/i.test(e.pair || "");
   const botClosed = new Set(

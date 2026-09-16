@@ -8,6 +8,7 @@
  */
 import { ethers, type JsonRpcPayload, type JsonRpcResult } from "ethers";
 import { cfg, env } from "../config.js";
+import { CHAIN } from "./profile.js";
 import { seqCall } from "./sequencer.js";
 import { logger } from "../util/log.js";
 
@@ -54,14 +55,18 @@ function rpcReq(url: string): ethers.FetchRequest {
   return req;
 }
 
-export const provider: ethers.JsonRpcProvider = env.fastSubmit
-  ? new SequencerRoutingProvider(rpcReq(env.rpcUrl), cfg.chainId)
-  : new ethers.JsonRpcProvider(rpcReq(env.rpcUrl), cfg.chainId);
+// The routing provider only makes sense where a sequencer endpoint exists. Arc is a validator L1
+// (Malachite BFT, no sequencer) → profile.sequencer is null and every tx goes out over the RPC.
+export const provider: ethers.JsonRpcProvider =
+  env.fastSubmit && CHAIN.sequencer
+    ? new SequencerRoutingProvider(rpcReq(env.rpcUrl), cfg.chainId)
+    : new ethers.JsonRpcProvider(rpcReq(env.rpcUrl), cfg.chainId);
 
-// Robinhood blocks are SUB-SECOND, but ethers' default pollingInterval is 4s → tx.wait() only
-// notices a mined receipt on the next 4s poll. A multi-tx close/add/swap (5 txs) then wastes up to
-// ~20s just polling, even though each tx lands instantly. Poll fast so tx.wait() returns quickly.
-provider.pollingInterval = Number(process.env.RH_POLL_MS) || 350;
+// Blocks here are SUB-SECOND, but ethers' default pollingInterval is 4s → tx.wait() only notices a
+// mined receipt on the next 4s poll. A multi-tx close/add/swap (5 txs) then wastes up to ~20s just
+// polling, even though each tx lands instantly. Poll fast so tx.wait() returns quickly. The cadence
+// is per chain (profile.pollMs ≈ half a block): 350ms on Robinhood, 250ms on Arc's ~500ms blocks.
+provider.pollingInterval = Number(process.env.RH_POLL_MS) || CHAIN.pollMs;
 
 if (env.fastSubmit) log.info(`fast-submit ON → ${env.sequencerUrl}${env.sequencerIp ? ` @${env.sequencerIp}` : ""} · poll ${provider.pollingInterval}ms`);
 
@@ -89,10 +94,6 @@ export function wallet(): ethers.Wallet {
 }
 
 /**
- * Gas overrides. Robinhood base fee moves per block; if maxFee is too tight the tx is
- * rejected ("max fee < base fee") and hangs → close/mint never lands. Buffer 3×.
- */
-/**
  * Await a tx receipt with a HARD TIMEOUT. ethers' tx.wait() hangs forever if the RPC flaps (503 /
  * dropped connection / rate-limit) mid-confirmation. Every open/close holds the shared wallet lock
  * while waiting, so ONE hung confirmation deadlocks the WHOLE bot — no further opens/closes — until a
@@ -115,13 +116,44 @@ export async function waitTx(tx: ethers.TransactionResponse, label = "tx"): Prom
   }
 }
 
+const gweiWei = (g: number): bigint => ethers.parseUnits(g.toFixed(9), "gwei");
+/** multiply a wei amount by a fractional factor without leaving bigint math (3 → ×3 exactly). */
+const scale = (v: bigint, m: number): bigint => (v * BigInt(Math.round(m * 1000))) / 1000n;
+
+/**
+ * Gas overrides, per the chain profile's gas policy.
+ *
+ * legacy (Robinhood): the base fee moves per block; if maxFee is too tight the tx is rejected
+ *   ("max fee < base fee") and hangs → a close/mint never lands. Buffer 3× (gas.multiplier).
+ * eip1559 (Arc): type-2 with an explicit tip. Arc's base fee is a CONSTANT 20 gwei, so
+ *   base × 1.5 + 5 gwei priority is a real number rather than a guess — and gas there is paid in
+ *   USDC, i.e. a gas over-estimate is a direct dollar cost, which is why it isn't blanket-3×'d.
+ *
+ * Every branch falls back to the legacy read rather than to `{}` (node default): an under-priced
+ * tx is the failure mode that strands a position, so a too-generous fee is always preferred.
+ */
 export async function overrides(): Promise<ethers.Overrides> {
+  // Explicit manual override wins on every chain (`/set gasPriceGwei`).
   if (Number(cfg.gasPriceGwei) > 0) {
     return { gasPrice: ethers.parseUnits(String(cfg.gasPriceGwei), "gwei") };
   }
+  const gas = CHAIN.gas;
+  if (gas.mode === "eip1559") {
+    try {
+      // Read the base fee from the head block instead of deriving it from getFeeData(), whose
+      // maxFeePerGas is ethers' own base×2+tip formula — an internal we shouldn't math against.
+      const base = (await provider.getBlock("latest"))?.baseFeePerGas ?? (gas.fixedGwei > 0 ? gweiWei(gas.fixedGwei) : null);
+      if (base != null) {
+        const prio = gweiWei(gas.priorityGwei);
+        return { maxFeePerGas: scale(base, gas.multiplier) + prio, maxPriorityFeePerGas: prio };
+      }
+    } catch {
+      /* pre-1559 node or a flaky RPC → legacy read below */
+    }
+  }
   try {
     const gp = (await provider.getFeeData()).gasPrice;
-    if (gp) return { gasPrice: gp * 3n };
+    if (gp) return { gasPrice: scale(gp, gas.multiplier) };
   } catch {
     /* fall through to node default */
   }

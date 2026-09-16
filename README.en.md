@@ -6,15 +6,16 @@
 ![Node](https://img.shields.io/badge/Node-20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)
 ![ethers](https://img.shields.io/badge/ethers-v6-2535A0?style=for-the-badge&logo=ethereum&logoColor=white)
 ![Robinhood Chain](https://img.shields.io/badge/Robinhood_Chain-MAINNET-00C805?style=for-the-badge)
+![Arc](https://img.shields.io/badge/Arc-MAINNET-2775CA?style=for-the-badge)
 <br>
 ![Uniswap](https://img.shields.io/badge/Uniswap-v2_·_v3_·_v4-FF007A?style=for-the-badge&logo=uniswap&logoColor=white)
 ![Kyber](https://img.shields.io/badge/Kyber-AGGREGATOR-31CB9E?style=for-the-badge)
 ![Control](https://img.shields.io/badge/Control-TELEGRAM-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-EAB308?style=for-the-badge)
 
-**Automated liquidity provision on Uniswap v2 · v3 · v4 (Robinhood Chain) — fully controlled from Telegram.**
+**Automated liquidity provision on Uniswap v2 · v3 · v4 (Robinhood Chain · Arc) — fully controlled from Telegram.**
 
-Paste a CA → pick a pool → type an ETH amount → position opened. Right now.
+Paste a CA → pick a pool → type an amount (ETH on Robinhood, USDC on Arc) → position opened. Right now.
 
 [![Bahasa Indonesia](https://img.shields.io/badge/Bahasa_Indonesia-2b3137?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzIDIiPjxyZWN0IHdpZHRoPSIzIiBoZWlnaHQ9IjIiIGZpbGw9IiNmZmYiLz48cmVjdCB3aWR0aD0iMyIgaGVpZ2h0PSIxIiBmaWxsPSIjY2UxMTI2Ii8%2BPC9zdmc%2B&logoColor=white)](README.md) [![English](https://img.shields.io/badge/English-012169?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2MCAzMCI%2BPGNsaXBQYXRoIGlkPSJ0Ij48cGF0aCBkPSJNMzAsMTVoMzB2MTV6djE1aC0zMHpoLTMwdi0xNXp2LTE1aDMweiIvPjwvY2xpcFBhdGg%2BPHBhdGggZD0iTTAsMHYzMGg2MHYtMzB6IiBmaWxsPSIjMDEyMTY5Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIGNsaXAtcGF0aD0idXJsKCN0KSIgc3Ryb2tlPSIjYzgxMDJlIiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMTAiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNjODEwMmUiIHN0cm9rZS13aWR0aD0iNiIvPjwvc3ZnPg==)](README.en.md)
 
@@ -388,7 +389,98 @@ Check: `pm2 logs robinhood-lp`
 
 > Profit cards need fonts: `sudo apt install -y fonts-dejavu-core fonts-dejavu-extra` (canvas renders blank text without them).
 
-> ⚠️ **Don't run it in two places at once.** Two processes polling the same Telegram token will collide (`409 Conflict`). v2 has a **single-instance lock** (`data/bot.lock`). If you share a wallet with another bot → **don't run them together** (nonce collision).
+> ⚠️ **Never run two processes on the same TELEGRAM TOKEN.** They will collide over `getUpdates` (`409 Conflict`). v2 has a **single-instance lock**, and it is **per chain** (`data/bot.lock` vs `data/arc/bot.lock`) — so the Robinhood bot and the Arc bot may run side by side **as long as their bot tokens differ**. Sharing a wallet with another bot **on the same chain** → don't run them together (nonce collision); a different chain is safe, nonces are per-chain.
+
+---
+
+## 🔵 Arc — the second chain (a second process)
+
+This bot also runs on **Arc** (Circle's EVM L1, chainId `5042`, mainnet opened 2026-09-16) **without touching the Robinhood bot at all**. One env var picks the chain: `RH_CHAIN`. Leave it unset and everything is exactly as it is today (`config.json`, the `data/` directory, identical behaviour).
+
+### What is different
+
+| | Robinhood Chain | Arc |
+|---|---|---|
+| chainId | 4663 | **5042** |
+| gas is paid in | ETH | **USDC** (native, 18 decimals) |
+| LP quote asset | USDG (6 dec) | **USDC ERC-20** `0x3600…0000` (6 dec) |
+| wrapped native | WETH | **none** — no WETH9 exists on Arc |
+| sequencer / fast-submit | yes | **no** (validator L1, Malachite BFT, 1 confirmation = final) |
+| swap aggregator | KyberSwap | **Uniswap** (Kyber's Arc support is unverified) |
+| GMGN | yes | **no** → the honeypot/tax/holder gates are **never evaluated** |
+| gas price | floating | **constant 20 gwei base fee** (EIP-1559) |
+
+> ### ⚠️ On Arc, gas money and LP capital are the SAME balance
+> Gas on Arc is paid in USDC — the exact asset you LP with. If the bot deployed 100% of the balance into a position, **there would be nothing left to pay for closing it**. That is why `chains/arc.json` holds back `native.gasReserve = 2.0` USDC that is never available to LP.
+>
+> It is a **FLOOR, not a position-size limit.** There are no `maxOpen` / `maxPerHour` / `dailyCapEth` caps on Arc (all three ship as `0` = unlimited) — the only limits are **your deposit** and this reserve. Both numbers are visible any time in `/wallet` and `/settings`.
+
+### 1. Fund the wallet with USDC over CCTP
+
+Arc has no mainnet faucet, and the wallet **needs USDC before anything works at all** — gas, approvals and mints are all paid in it.
+
+- **Route**: CCTP v2 from Ethereum / Base / Arbitrum → Arc. Arc's domain is **26**, `TokenMessenger` is `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d`, fast path is **1 confirmation**.
+- **Easiest**: Circle's CCTP UI, or `@circle-fin/bridge-kit` from your own machine. The bot does **not** bridge — deliberately: it should only ever sign LP transactions.
+- **Same wallet** as the Robinhood bot (one private key, two chains — nonces are per-chain, so they cannot collide).
+- **Send more than the gas reserve.** `2.0` USDC is what gets held back for gas; depositing exactly `2.0` leaves `0` LP capital.
+
+Check it arrived with `/wallet` on the Arc bot.
+
+### 2. Probe first, start the bot second
+
+```bash
+RH_CHAIN=arc npm run probe:arc
+```
+
+Read-only — **no transaction is ever sent and the private key never signs anything**. The full report lands in `data/arc/arc-probe.json`.
+
+What it answers, and which flag in `chains/arc.json` each result flips:
+
+| Probe result | Flag to change | Effect |
+|---|---|---|
+| `native/ERC-20 parity` ✅ | — (a design assumption) | native == ERC-20 × 1e12 → an LP deposit needs no wrap and no stable swap. **If ❌, stop** — the sizing model in the plan's §6 changes |
+| `getCode()` on every address ✅ | — | the contracts really are deployed (an SDK map can list an address before it exists) |
+| `v3Pools` / `v4` sample | `discovery.v4FromBlock` = earliest `Initialize` block | keeps every getLogs scan off genesis |
+| `DexScreener indexes Arc` ✅ | `data.volumeSource` → `"dexscreener"` | 1h/24h volume from an indexer (faster). Default `"onchain"` derives it from Swap events |
+| `KyberSwap routes Arc` ✅ | `data.kyberChain` → `"arc"` **and** `data.router` → `"kyber"` | the venue order becomes `kyber → uniswap` by itself, zero code change. Setting only `kyberChain` leaves Kyber as a fallback **behind** Uniswap |
+| `Blockscout v1/v2 API` ✅ | `explorer.kind` → `"blockscout"` | enables `/pnl` wallet capital flow (in/out/net), ledger rebuild and holdings history. Default `"rpc"` makes those print `n/a` rather than a fabricated 0 |
+
+**Every flag defaults to the CONSERVATIVE setting** (assume the third party is absent until proven otherwise). A missing one degrades exactly one signal — it never breaks the bot.
+
+### 3. Run the second process
+
+```bash
+cp .env.arc.example .env.arc
+# fill in: RH_CHAIN=arc · RH_TG_TOKEN (a NEW bot) · RH_TG_CHAT (same) · RH_WALLET_KEY (same)
+
+node --env-file=.env.arc --import tsx src/index.ts
+```
+
+Both under pm2:
+```bash
+pm2 start npm --name robinhood-lp -- start                                   # Robinhood Chain
+pm2 start node --name arc-lp -- --env-file=.env.arc --import tsx src/index.ts # Arc
+pm2 save
+```
+
+**Why a second process rather than one bot on two chains:**
+- **The Telegram token MUST be different.** One token may only be polled by one process — sharing it makes both fight over `getUpdates` (409 Conflict) and commands can land on the wrong chain. Create a second bot with @BotFather.
+- **State is isolated**: `data/arc/` (positions, ledger, autolp-state, lock). v3/v4 NFT tokenIds are per-chain counters — mixed together, positions from two chains can be confused for each other.
+- **The lock file is per-chain**, which is precisely what lets the two run side by side.
+- The owner chat is the same, so both message you. Every screen carries its chain name (`/start`, `/list`, `/wallet`, `/pnl`, the profit cards) so they can't be mistaken for one another.
+
+Arc-specific tunables (`lp` / `autoLp` / `scan`) go in **`config.arc.json`** — an optional file that overlays `config.json` **only** for the Arc process. The Robinhood bot's `config.json` is untouched.
+
+### 4. What feels different on Arc
+
+- **The amount prompt reads "Ketik jumlah USDC"**, the confirm screens say USDC, and the profit cards render the right symbol. One code path, two chains.
+- **The single-side "park the stable" flow is still there** — it's USDG on Robinhood and USDC on Arc, from the same code.
+- **`/feed` is off** — there is no sequencer to tap. Use `/watch` + `/hunt`.
+- **`/screen` is off** — it *is* the GMGN screener, and GMGN doesn't cover Arc.
+- **`/hunt` uses different sources**: `onchain-new` (v4 `Initialize` + v3 `PoolCreated` logs) + `volume-spike`, instead of GMGN trending.
+- **Candidate scores top out at 70, not 100.** That asymmetry is deliberate: a gate that didn't run earns no points. Every alert carries a `⚠️ belum dicek: …` line naming the specific gates. **Unknown is not a pass.**
+- **Manual `/swap` is unavailable** until Kyber is proven on Arc (LP itself works fine through the internal Uniswap router; to exit a token, close the position from `/list`).
+- **`/pnl`**: "LP realized" is accurate; the wallet capital-flow rows (in/out/net) print `n/a` until `explorer.kind` becomes `blockscout` — native transfers emit no log, so without an indexer those figures genuinely cannot be read. `n/a` beats a confident `0.00000`.
 
 ---
 
@@ -400,21 +492,27 @@ src/
 ├── config.ts             load + validate config (zod) + secrets from .env
 ├── types.ts              shared domain types
 ├── chain/                everything blockchain
+│   ├── profile.ts        ⭐ CHAIN PROFILE (zod) — loads chains/<key>.json, selected by RH_CHAIN
+│   ├── currency.ts       ⭐ native vs quote asset — natSym, fmtNat, nativeUsd, gas reserve
+│   ├── router.ts         ⭐ swap-venue selection (kyber | v3 | v4) per profile, best-of quoting
+│   ├── indexer.ts        ⭐ indexer abstraction — Blockscout REST | bounded getLogs (fallback)
+│   ├── volume.ts         ⭐ 1h/24h pool volume — DexScreener or on-chain Swap events
 │   ├── client.ts         providers (LP + watch), wallet, gas, fast-submit routing
+│   ├── sequencer.ts      direct sequencer broadcast (refuses cleanly where a chain has none)
 │   ├── kyber.ts          KyberSwap aggregator (quote + build, 4 security gates)
-│   ├── positions.ts      v3 open / list / close + USDG single-side & in-range (Uniswap SDK math)
+│   ├── positions.ts      v3 open / list / close + stable single-side & in-range (Uniswap SDK math)
 │   ├── pools.ts          findPools, poolState, range math (SDK)
-│   ├── swaps.ts          quote + swap v3 (slippage floor)
+│   ├── swaps.ts          quote + swap v3 (slippage floor) + quote-parameterised sell
 │   ├── candidate.ts      qualifyCandidate — 3-5% pool + fee-yield gate (hunter)
 │   ├── dexscreener.ts    pool volume/liquidity (cached) — fee-farming signal
 │   ├── txlock.ts         wallet-tx serializer (no nonce collisions)
 │   ├── ledger.ts         permanent ledger + on-chain rebuild
-│   ├── analytics.ts      lifetime PnL
+│   ├── analytics.ts      lifetime PnL (capKnown=false on an indexer-less chain)
 │   ├── tokens.ts         token metadata (cached) + SDK Token
 │   ├── price.ts          ETH/USD multi-source
 │   ├── blockscout.ts     Blockscout REST helper + mapLimit
 │   ├── v2/               Uniswap v2 — pair.ts · mint.ts (zap) · list.ts · close.ts
-│   └── v4/               Uniswap v4 — discover · mint (single/in-range + reuse USDG) · list (LP-vs-HODL PnL) · close (sweep→ETH) · backfill
+│   └── v4/               Uniswap v4 — discover · mint (single/in-range + reuse stable) · list (LP-vs-HODL PnL) · close (sweep→native) · backfill · swap
 ├── telegram/
 │   ├── tg.ts             transport + AUTH boundary (owner-only)
 │   ├── bot.ts            long-poll loop + routing + setMyCommands
@@ -425,7 +523,7 @@ src/
 │   ├── notify.ts         spike / new-token / out-of-range alerts
 │   ├── watchLoop.ts      scanner timer
 │   ├── feedLoop.ts       feed monitor lifecycle
-│   └── format.ts         escape, padding, per-token emoji
+│   └── format.ts         escape, padding, per-token emoji + chain/currency labels (NAT_TAG etc.)
 ├── feed/                 real-time sequencer monitor (Nitro)
 │   ├── decode · listener (WS + IP-pin) · swapdecode · lpdecode · monitor
 ├── radar/                screening + auto-farming
@@ -434,16 +532,24 @@ src/
 │   ├── autolp.ts         auto-add: gate chain + open (1 token/position dedup + txlock)
 │   ├── automanage.ts     auto-close TP/SL/OOR (restart-proof grace)
 │   └── oorcool.ts        OOR cooldown (blacklist tokens that never enter range)
+├── scripts/probe-arc.ts  ⭐ READ-ONLY Arc preflight (npm run probe:arc) — never sends a tx
 ├── watch/scanner.ts      volume scan + on-chain honeypot test
-└── util/                 log, atomic file write + lock, formatters
+└── util/                 log, atomic file write + lock, formatters (+ per-chain CHAIN_KEY, DATA_DIR)
 ```
+
+⭐ = new files for multi-chain (Arc) support.
 
 | Other file | What's in it |
 |---|---|
-| `config.json` | Settings (zod-validated at start) |
+| `chains/robinhood.json` | ⭐ The default chain profile — chainId, RPC, explorer, contracts, gas policy, data flags. **Byte-for-byte the values the old config.json carried** |
+| `chains/arc.json` | ⭐ The Arc profile — Arc's Uniswap addresses + capability flags (conservative by default, flipped after the probe) |
+| `config.json` | Strategy settings (zod-validated at start) — chain-agnostic |
+| `config.arc.json` | ⭐ Optional. Overlays `config.json` **only** for the Arc process (`config.<chainKey>.json`) |
 | `.env` | **The keys. Secret.** (gitignored) |
+| `.env.arc` | ⭐ The Arc process's env — `RH_CHAIN=arc` + the second bot token. **Also secret** (gitignored) |
 | `assets/card-bg.jpg` | Profit-card background (optional) |
-| `data/` | Runtime state — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `bot.lock`. **Don't delete** — your PnL history lives here. (gitignored) |
+| `data/` | Default chain's runtime state — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `bot.lock`. **Don't delete** — your PnL history lives here. (gitignored) |
+| `data/arc/` | ⭐ The same state for Arc, fully isolated (`data/<chainKey>/` for every non-default chain) |
 
 Writes are atomic (temp + rename), so a crash mid-write won't corrupt the ledger.
 
@@ -460,6 +566,10 @@ Writes are atomic (temp + rename), so a crash mid-write won't corrupt the ledger
 **Auto-farming spends REAL funds, no questions asked.** `/auto on` lets the bot open + close positions with your money. OFF by default, conservative caps — but you set them, so raise them deliberately.
 
 **PnL in `/list` = LP-vs-HODL** (fees + impermanent loss), not your absolute wallet change. It measures how the LP itself performs (fees vs IL), consistent with what you realize at close. The token's directional price move is separate market risk.
+
+**On Arc, gas and LP capital are the same balance.** The gas reserve (`native.gasReserve`, default 2.0 USDC) is the only thing keeping a position **closable**. Don't set it to 0.
+
+**On a chain without GMGN (Arc), the honeypot/tax/holder gates never run.** Alerts say `⚠️ belum dicek: …` and scores top out at 70. That is **unknown, not a pass** — don't read it as "clean".
 
 **Use a burner wallet.** The private key sits in `.env` in plaintext. Don't put in money you're not ready to lose.
 

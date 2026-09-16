@@ -22,3 +22,22 @@ export const V4_POSM_ABI = [
   "function getPositionLiquidity(uint256 tokenId) view returns (uint128 liquidity)",
   "function modifyLiquidities(bytes unlockData, uint256 deadline) payable",
 ] as const;
+
+/**
+ * Permit2 (canonical 0x0000…78BA3 on every chain). The v4 UniversalRouter NEVER pulls an ERC-20
+ * with a plain allowance — it settles through Permit2, so an ERC-20 input needs TWO approvals:
+ * token→Permit2 (a normal ERC-20 allowance) and Permit2→spender (this contract's own allowance).
+ *
+ * `allowance` is read, not assumed: a Permit2 grant carries a uint48 EXPIRATION, so re-approving
+ * blindly costs a tx per swap while trusting a stale one reverts inside settle with an opaque
+ * error. Reading it is the only way to tell those two apart.
+ */
+export const PERMIT2_ABI = [
+  "function allowance(address user, address token, address spender) view returns (uint160 amount, uint48 expiration, uint48 nonce)",
+  "function approve(address token, address spender, uint160 amount, uint48 expiration)",
+] as const;
+
+/** UniversalRouter entrypoint. `commands` 0x10 = V4_SWAP; the v4 action list lives in `inputs`. */
+export const UNIVERSAL_ROUTER_ABI = [
+  "function execute(bytes commands, bytes[] inputs, uint256 deadline) payable",
+] as const;

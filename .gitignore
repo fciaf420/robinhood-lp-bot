@@ -1,7 +1,12 @@
 # ── SECRETS — jangan pernah commit ──
 .env
 .env.*
+# Templates only. `!.env.example` alone was not enough once the second chain arrived: `.env.*`
+# above swallows .env.arc.example too, so the file both READMEs and the ROADMAP tell the operator
+# to `cp` would never have been committed — and nobody notices a file that was never added.
+# The pattern is negated by SHAPE (*.example), so the next chain's template is covered already.
 !.env.example
+!.env.*.example
 *.pem
 *.key
 *.keystore

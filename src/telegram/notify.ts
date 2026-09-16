@@ -1,8 +1,9 @@
 /** Spike notification — CA + DexScreener link + a one-tap LP button. */
 import { send } from "./tg.js";
-import { esc, pre, padR, tokenEmoji } from "./format.js";
+import { esc, pre, padR, tokenEmoji, NAT_TAG, WRAP_SYM } from "./format.js";
 import { fmtMcap } from "../util/format.js";
 import { explorerTx } from "./tg.js";
+import { CHAIN } from "../chain/profile.js";
 import type { Verdict } from "../radar/radar.js";
 import type { AutoLpResult } from "../radar/autolp.js";
 import type { SpikeHit } from "../types.js";
@@ -10,6 +11,14 @@ import type { NewTokenAlert, OutOfRangeAlert } from "../feed/monitor.js";
 import type { ScreenResult } from "../radar/screen.js";
 import type { QualifiedPool } from "../chain/candidate.js";
 import type { AutoCloseInfo, RebalanceInfo, CompoundInfo } from "../radar/automanage.js";
+
+/**
+ * DexScreener chart link for THIS chain. The slug used to be hardcoded "robinhood", which on any
+ * other chain silently opened a page for a token that isn't the one we're alerting about (the same
+ * address can exist on two chains). The slug comes from the profile; whether DexScreener actually
+ * indexes it is a separate question — a dead link is better than a confidently wrong one.
+ */
+const dexUrl = (token: string): string => `https://dexscreener.com/${CHAIN.data.dexscreener}/${token}`;
 
 /** Render an LLM/GMGN radar verdict as message lines (empty if no verdict). */
 function radarLines(v: Verdict | null): string[] {
@@ -31,6 +40,13 @@ function radarLines(v: Verdict | null): string[] {
     if (g.sellTax != null) p.push(`tax ${(g.sellTax * 100).toFixed(0)}%`);
     if (p.length) out.push(`📊 <b>GMGN:</b> ${esc(p.join(" · "))}`);
   }
+  // No GMGN block used to mean NO LINE AT ALL — on a chain GMGN doesn't cover (Arc) that reads as
+  // "scanned, nothing flagged", which is the exact opposite of the truth. An empty GMGN section is
+  // only safe when the gates ran; when they didn't, say which ones didn't, out loud.
+  if (!g && v.unchecked?.length) {
+    out.push(`⚠️ <b>Belum dicek</b> (${esc(v.gmgnStatus ?? "unavailable")}): ${esc(v.unchecked.slice(0, 5).join(" · "))}`);
+    out.push(`   <i>unknown, BUKAN 0 — gate honeypot/tax nggak dievaluasi di chain ini.</i>`);
+  }
   return out;
 }
 
@@ -51,7 +67,7 @@ export async function notifySpike(h: SpikeHit, verdict: Verdict | null = null, p
   );
   T.push("");
   T.push(`✅ AMAN — ${h.safe.reason}`);
-  T.push(`   tes beli 0.01Ξ → jual balik: ${h.safe.backPct.toFixed(1)}%`);
+  T.push(`   tes beli 0.01${NAT_TAG} → jual balik: ${h.safe.backPct.toFixed(1)}%`);
 
   await send(
     [
@@ -74,15 +90,15 @@ export async function notifySpike(h: SpikeHit, verdict: Verdict | null = null, p
   );
 }
 
-/** New WETH pool / first mint spotted on the sequencer feed — before DexScreener sees it. */
+/** New quote-paired pool / first mint spotted on the sequencer feed — before DexScreener sees it. */
 export async function notifyNewToken(a: NewTokenAlert, verdict: Verdict | null = null): Promise<void> {
   const T = [
     `${padR("event", 9)} ${a.kind === "mint" ? "first liquidity (mint)" : "pool created"}`,
     `${padR("fee", 9)} ${(a.fee / 10000).toFixed(2)}%`,
-    a.wethSeed > 0 ? `${padR("WETH seed", 9)} ${a.wethSeed.toFixed(4)}Ξ` : "",
+    a.wethSeed > 0 ? `${padR(`${WRAP_SYM} seed`, 9)} ${a.wethSeed.toFixed(4)}${NAT_TAG}` : "",
     ``,
     `✅ honeypot check — ${a.safeReason}`,
-    `   beli 0.01Ξ → jual balik: ${a.backPct.toFixed(1)}%`,
+    `   beli 0.01${NAT_TAG} → jual balik: ${a.backPct.toFixed(1)}%`,
   ].filter(Boolean);
 
   await send(
@@ -98,7 +114,7 @@ export async function notifyNewToken(a: NewTokenAlert, verdict: Verdict | null =
         inline_keyboard: [
           [
             { text: `🎯 LP ${a.symbol}`, callback_data: `ca:${a.token}` },
-            { text: "📈 DexScreener", url: `https://dexscreener.com/robinhood/${a.token}` },
+            { text: "📈 DexScreener", url: dexUrl(a.token) },
           ],
         ],
       },
@@ -135,7 +151,7 @@ export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Pro
         inline_keyboard: [
           [
             { text: `🎯 LP ${t.symbol}`, callback_data: `ca:${t.address}` },
-            { text: "📈 Chart", url: `https://dexscreener.com/robinhood/${t.address}` },
+            { text: "📈 Chart", url: dexUrl(t.address) },
           ],
         ],
       },
@@ -150,11 +166,16 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
   await send(
     [
       `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange" ? "🎯" : "🛡"}`,
-      `Otomatis dibuka ${r.sizeEth}Ξ single-side (${esc(res.side ?? "parkir quote asset")})`,
+      `Otomatis dibuka ${r.sizeEth}${NAT_TAG} single-side (${esc(res.side ?? "parkir quote asset")})`,
       `${res.entryMcap ? `entry MCAP ${fmtMcap(res.entryMcap)} · ` : ""}range tick ${res.tickLower}..${res.tickUpper}`,
       res.swapHash ? `swap: <a href="${explorerTx(res.swapHash)}">tx</a> · mint: <a href="${explorerTx(res.txHash)}">tx</a>` : `mint: <a href="${explorerTx(res.txHash)}">tx</a>`,
+      // The bot spent real money on a token whose safety gates may never have run — that belongs in
+      // the SAME message as the fill, not only in the log.
+      r.unchecked?.length ? `⚠️ <b>belum dicek:</b> ${esc(r.unchecked.slice(0, 4).join(" · "))}` : "",
       `<i>Cek /list · tutup manual kapan aja</i>`,
-    ].join("\n"),
+    ]
+      .filter(Boolean)
+      .join("\n"),
   );
 }
 
@@ -165,7 +186,7 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
     i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "FEE MATI (rotasi slot)" : "OUT OF RANGE";
   const pnl =
     i.pnlPct != null
-      ? `${i.pnlPct >= 0 ? "+" : ""}${i.pnlPct.toFixed(1)}%${i.pnlEth != null ? ` (${i.pnlEth >= 0 ? "+" : ""}${i.pnlEth.toFixed(6)}Ξ)` : ""}`
+      ? `${i.pnlPct >= 0 ? "+" : ""}${i.pnlPct.toFixed(1)}%${i.pnlEth != null ? ` (${i.pnlEth >= 0 ? "+" : ""}${i.pnlEth.toFixed(6)}${NAT_TAG})` : ""}`
       : "—";
   await send(
     [

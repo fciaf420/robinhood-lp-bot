@@ -8,10 +8,10 @@
  */
 import { cfg } from "../config.js";
 import { listPositions, closePosition } from "../chain/positions.js";
-import { ethUsd } from "../chain/price.js";
+import { nativeUsd } from "../chain/currency.js";
 import { acquireWallet, releaseWallet } from "../chain/txlock.js";
 import { recordOor, inOorCooldown } from "./oorcool.js";
-import { dexPairs } from "../chain/dexscreener.js";
+import { poolVolume } from "../chain/volume.js";
 import { logger } from "../util/log.js";
 
 const log = logger("automanage");
@@ -124,15 +124,31 @@ interface Item {
   tokenAddr: string; // volatile side — for OOR-cooldown blacklisting
   ageMs: number | null; // on-chain position age — restart-proof OOR grace basis
   feeUsd?: number | null; // uncollected fees ($) — compound threshold (v4 only)
-  poolId?: string; // v4 poolId — for the #3 volume-fade DexScreener match
+  /**
+   * What poolVolume() keys on for the #3 volume-fade check: a v4 poolId (32 bytes) OR a v3 pool
+   * ADDRESS (20 bytes) — that function detects which by length, so both venues can be measured
+   * through the same call. v3 rows were excluded from VFADE only because nobody noticed
+   * PositionRow already carries `pool`; on a chain with no wrapped native (Arc) every v3 position
+   * is token/stable, so leaving them out would have exempted most of that chain's book from the
+   * fade exit the operator armed.
+   */
+  poolId?: string;
 }
 
-/** #3 volume-fade: a v4 pool's current-hour vs 24h-average-hour volume (spikeX). 1 = neutral/no data. */
+/**
+ * #3 volume-fade: a pool's current-hour vs 24h-average-hour volume (spikeX). 1 = neutral/no data.
+ * `poolId` is a v4 poolId or a v3 pool address — poolVolume() takes either.
+ *
+ * Reads through poolVolume() rather than DexScreener directly. That indirection is the difference
+ * between a fade-exit that works on any chain and one that silently returns 1 forever on a chain no
+ * indexer covers — i.e. a trigger the operator armed that would never fire. The "no data → 1"
+ * fallback stays: an UNREADABLE pool must not be read as a FADED pool, because that mistake closes
+ * live positions (and pays the swap + gas to do it) every time the data source hiccups.
+ */
 async function poolSpikeX(tokenAddr: string, poolId: string): Promise<number> {
-  const m = await dexPairs(tokenAddr, Date.now()).catch(() => null);
-  const d = m?.get(poolId.toLowerCase());
-  if (!d || d.vol24h <= 0) return 1; // no data → never trigger a fade close
-  return d.volH1 / (d.vol24h / 24);
+  const v = await poolVolume(poolId, tokenAddr, Date.now()).catch(() => null);
+  if (!v || v.vol24h <= 0) return 1; // no data → never trigger a fade close
+  return v.volH1 / (v.vol24h / 24);
 }
 
 async function runManage(): Promise<void> {
@@ -140,11 +156,15 @@ async function runManage(): Promise<void> {
   const now = Date.now();
   stats.runs++;
   stats.lastAt = now;
-  const px = await ethUsd().catch(() => 0);
+  // nativeUsd(), NOT ethUsd(): on a stable-native chain the price is the constant 1 with no feed
+  // call, and ethUsd()'s "return 0 on failure" contract would otherwise zero every valuation —
+  // which reads as valueUsd <= 0, i.e. "unvaluable", i.e. TP/SL silently never fires there.
+  const px = await nativeUsd().catch(() => 0);
 
   const items: Item[] = [];
   const v3 = await listPositions().catch(() => []);
-  for (const p of v3) items.push({ tokenId: p.tokenId, sym: p.tokenSym, version: "v3", pnlPct: p.pnlPct, pnlEth: p.pnlEth, inRange: p.inRange, tokenAddr: p.tokenAddr, ageMs: (p as { ageMs?: number | null }).ageMs ?? null });
+  for (const p of v3)
+    items.push({ tokenId: p.tokenId, sym: p.tokenSym, version: "v3", pnlPct: p.pnlPct, pnlEth: p.pnlEth, inRange: p.inRange, tokenAddr: p.tokenAddr, ageMs: (p as { ageMs?: number | null }).ageMs ?? null, poolId: p.pool });
   try {
     const { listV4Positions } = await import("../chain/v4/list.js");
     const v4 = await listV4Positions().catch(() => []);
@@ -207,7 +227,7 @@ async function runManage(): Promise<void> {
       if ((await poolSpikeX(it.tokenAddr, it.poolId)) < a.volFadeX) reason = "VFADE";
     }
     // fee-velocity exit — a STANDALONE check, NOT chained after VFADE: VFADE's outer `else if` condition
-    // (any in-range mature v4 position) is true for EVERY in-range position, so an `else if` after it
+    // (any in-range mature position) is true for EVERY in-range position, so an `else if` after it
     // would never be reached — FVLOW would silently never fire. Gated on `!reason` so a higher-priority
     // TP/SL/OOR/VFADE still wins. The position's RECENT fee-rate ($/h over the window) fell below the
     // floor → the pool stopped being productive → evict it so the slot rotates to a live candidate.

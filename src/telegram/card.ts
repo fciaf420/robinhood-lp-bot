@@ -7,7 +7,8 @@ import { existsSync } from "node:fs";
 import { createCanvas, GlobalFonts, loadImage, type SKRSContext2D, type Image } from "@napi-rs/canvas";
 import { readLedger, ledgerSummary } from "../chain/ledger.js";
 import { listPositions } from "../chain/positions.js";
-import { ethUsd } from "../chain/price.js";
+import { nativeUsd } from "../chain/currency.js";
+import { CHAIN_NAME, NAT_SYM, NAT_IS_USD } from "./format.js";
 import { logger } from "../util/log.js";
 
 const log = logger("card");
@@ -18,7 +19,10 @@ const RED = "#ff5c72";
 const MUTED = "#8b93a3";
 const WHITE = "#f4f6fb";
 const BRAND = process.env.RH_CARD_BRAND || "0xRapzz";
-const TAGLINE = process.env.RH_CARD_TAG || "LP · ONCHAIN WATCH";
+// The chain rides in the tagline on EVERY card (portfolio + per-close). Two bots on two chains
+// produce visually identical cards otherwise, and a screenshot with no chain on it is unreadable
+// a week later — "+$59" on which chain, in which currency?
+const TAGLINE = `${process.env.RH_CARD_TAG || "LP · ONCHAIN WATCH"} · ${CHAIN_NAME}`;
 
 // Register fonts explicitly — the VPS has no fontconfig defaults, so canvas draws blank text
 // without this. STRIX aesthetic = monospace everywhere; DejaVu Sans Mono matches it.
@@ -72,7 +76,7 @@ export interface CardStat {
 }
 export interface CardData {
   title: string; // pair or "ALL-TIME"
-  headline: string; // "$59.03 USD" / "+0.013 ETH"
+  headline: string; // "$59.03 USD" / "+0.013 ETH" (native symbol, whatever the chain's is)
   positive: boolean;
   subtitle?: string; // "(226.37%)"
   stats: CardStat[]; // up to 4, laid out in the corners
@@ -209,7 +213,7 @@ export async function renderCard(d: CardData): Promise<Buffer> {
   g.font = `20px ${MONO}`;
   g.fillText(d.hold ? `HOLD ${d.hold}` : d.date.toUpperCase(), MX, 272);
 
-  // ── big PnL headline; the ($ / %) sub sits SMALL & inline, right after the ETH value ──
+  // ── big PnL headline; the ($ / %) sub sits SMALL & inline, right after the native value ──
   let hSize = 84;
   do {
     g.font = `${hSize}px ${MONOB}`;
@@ -229,7 +233,7 @@ export async function renderCard(d: CardData): Promise<Buffer> {
       g.font = `${ss}px ${MONO}`;
     }
     g.fillStyle = accent;
-    g.fillText(d.subtitle, MX + hw + 22, 425); // baseline-aligned, small, behind the ETH
+    g.fillText(d.subtitle, MX + hw + 22, 425); // baseline-aligned, small, behind the headline
   }
 
   // ── stats: one row spread across the FULL width (bottom is darkened so they read over the
@@ -262,7 +266,7 @@ function today(): string {
   return new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 }
 
-/** Sum of unrealized PnL across open positions (best-effort; v3 exact, v4/v2 via value−deposit). */
+/** Sum of unrealized PnL across open positions, in NATIVE units (v3 exact, v4/v2 via value−deposit). */
 async function unrealizedEth(px: number): Promise<number> {
   let u = 0;
   try {
@@ -291,17 +295,21 @@ async function unrealizedEth(px: number): Promise<number> {
 /** Whole-portfolio profit card (realized from ledger + unrealized from open positions). */
 export async function portfolioCardData(): Promise<CardData> {
   const sum = ledgerSummary();
-  const px = await ethUsd().catch(() => 0);
+  // nativeUsd(), NOT ethUsd(): on a chain whose native currency IS a dollar this is the constant 1
+  // with no network call. ethUsd() there would price the card in the ETH rate — off by ~3000×.
+  const px = await nativeUsd().catch(() => 0);
   const entries = readLedger().filter((e) => e.pnlEth != null);
   const biggest = entries.reduce<(typeof entries)[number] | null>((b, e) => ((e.pnlEth ?? -Infinity) > (b?.pnlEth ?? -Infinity) ? e : b), null);
   const unreal = await unrealizedEth(px).catch(() => 0);
   const dol = (eth: number) => `${eth >= 0 ? "+" : "-"}$${Math.abs(eth * px).toFixed(2)}`;
   return {
     title: "ALL-TIME",
-    // USD-led (ETH shown small inline behind it)
-    headline: px ? dol(sum.pnlEth) : `${signed(sum.pnlEth, 4)} ETH`,
+    // USD-led (the native amount shown small inline behind it)
+    headline: px ? dol(sum.pnlEth) : `${signed(sum.pnlEth, 4)} ${NAT_SYM}`,
     positive: sum.pnlEth >= 0,
-    subtitle: px ? `(${signed(sum.pnlEth, 4)} ETH)` : undefined,
+    // On a stable-native chain the $ headline and the native subtitle are the SAME number, so the
+    // subtitle would just repeat it — drop it there rather than print "+$12.30 (+12.3000 USDC)".
+    subtitle: px && !NAT_IS_USD ? `(${signed(sum.pnlEth, 4)} ${NAT_SYM})` : undefined,
     stats: [
       { label: "Realized", value: dol(sum.pnlEth), color: sum.pnlEth >= 0 ? GREEN : RED },
       { label: "Unrealized", value: dol(unreal), color: unreal >= 0 ? GREEN : RED },
@@ -315,14 +323,14 @@ export async function portfolioCardData(): Promise<CardData> {
 export interface ClosePnl {
   name: string; // symbol or pair
   version: "v2" | "v3" | "v4";
-  quote?: "eth" | "usd"; // "usd" for USDG-paired pools → headline/stats in $
+  quote?: "eth" | "usd"; // "usd" for stable-quoted pools (USDG/USDC) → headline/stats in $
   depEth: number | null;
   outEth: number;
   pnlEth: number | null;
   pnlPct?: number | null;
   feeEth?: number;
   heldMs?: number | null;
-  ethUsd?: number; // ETH/USD at close (for stable pairs); falls back to live rate
+  ethUsd?: number; // native/USD at close (for stable pairs); falls back to the live rate
 }
 
 /** hh:mm:ss from a duration in ms (STRIX "HOLD 00:20:19"). */
@@ -335,9 +343,9 @@ function fmtHold(ms: number): string {
   return `${p2(h)}:${p2(m)}:${p2(s)}`;
 }
 
-/** Per-close profit card — USD-led (ETH small inline). Amounts stored in ETH-equiv, shown in $. */
+/** Per-close profit card — USD-led (native small inline). Amounts stored native-equiv, shown in $. */
 export async function closeCardData(p: ClosePnl): Promise<CardData> {
-  const px = p.ethUsd || (await ethUsd().catch(() => 0));
+  const px = p.ethUsd || (await nativeUsd().catch(() => 0));
   const pnl = p.pnlEth ?? 0;
   const has = p.pnlEth != null;
   const dol = (eth: number) => `$${(eth * px).toFixed(2)}`;
@@ -348,8 +356,9 @@ export async function closeCardData(p: ClosePnl): Promise<CardData> {
     { label: "Exit", value: dol(p.outEth) },
   ];
 
-  const headline = has && px ? `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl * px).toFixed(2)}` : has ? `${signed(pnl, 4)} ETH` : "—";
-  const subtitle = has && px ? `(${signed(pnl, 4)} ETH)` : undefined; // ETH small, inline behind the $
+  const headline = has && px ? `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl * px).toFixed(2)}` : has ? `${signed(pnl, 4)} ${NAT_SYM}` : "—";
+  // native small, inline behind the $ — omitted when the two would print the same number (see above)
+  const subtitle = has && px && !NAT_IS_USD ? `(${signed(pnl, 4)} ${NAT_SYM})` : undefined;
   return {
     title: p.name,
     headline,

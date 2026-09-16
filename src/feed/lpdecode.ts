@@ -16,7 +16,10 @@ import type { FeedTx } from "./decode.js";
 
 const NPM_L = C.positionManager.toLowerCase();
 const FACTORY_L = C.factory.toLowerCase();
-const WETH_L = C.weth.toLowerCase();
+// null on a chain with no wrapped native (Arc): config.ts fills C.weth with the ZERO address
+// there, which is also v4's native-currency sentinel — comparing pool sides against it would
+// start matching real 0x0 currencies. null makes every WETH-pair test below fail closed instead.
+const WETH_L: string | null = C.weth && C.weth !== ethers.ZeroAddress ? C.weth.toLowerCase() : null;
 
 const IFACE = new ethers.Interface([
   "function mint((address token0,address token1,uint24 fee,int24 tickLower,int24 tickUpper,uint256 amount0Desired,uint256 amount1Desired,uint256 amount0Min,uint256 amount1Min,address recipient,uint256 deadline))",

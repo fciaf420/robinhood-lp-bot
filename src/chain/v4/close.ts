@@ -1,7 +1,11 @@
 /**
- * v4 close + fee-collect. Works for ANY pair (token/ETH, token/USDG, token/token) by
- * reconstructing the Position from the REAL pool currencies — the earlier code forced
- * native ETH as currency0, which produced wrong calldata and reverted on non-ETH pools.
+ * v4 close + fee-collect. Works for ANY pair (token/native, token/stable, token/token) by
+ * reconstructing the Position from the REAL pool currencies — the earlier code forced the native
+ * currency as currency0, which produced wrong calldata and reverted on non-native pools.
+ *
+ * Every "is this side native / wrapped / stable?" test goes through the profile, so on a chain
+ * that forbids the 0x0 sentinel (Arc) the native branches are unreachable and a pool currency is
+ * never read at the wrong decimals.
  */
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
@@ -10,11 +14,23 @@ import { C, cfg } from "../../config.js";
 import { wallet, provider, overrides, waitTx } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
-import { NATIVE } from "./poolkey.js";
+import { isNativeCurrency } from "./poolkey.js";
 import { loadV4Deposit, approveViaPermit2 } from "./mint.js";
 import { listV4Positions } from "./list.js";
-import { ethUsd } from "../price.js";
-import { kyberSwap, KYBER_NATIVE } from "../kyber.js";
+import {
+  nativeUsd,
+  natSym,
+  natDecimals,
+  fmtNat,
+  isWrappedNative,
+  isStableQuote,
+  stableSym,
+  nativeIsStableQuote,
+  stableRawToNatWei,
+} from "../currency.js";
+import { kyberEnabled, KYBER_NATIVE } from "../kyber.js";
+import { swapBest } from "../router.js";
+import { defaultQuoteAddr } from "../swaps.js";
 import { appendLedger } from "../ledger.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
@@ -22,13 +38,16 @@ import { logger } from "../../util/log.js";
 const { Ether, Token, CurrencyAmount, Percent } = sdkCore as any;
 const { Pool, Position, V4PositionManager } = v4sdk as any;
 const log = logger("v4close");
-const STABLES = new Set(["0x5fc5360d0400a0fd4f2af552add042d716f1d168"]); // USDG
-const WETH_L = C.weth.toLowerCase();
+/** Native-side meta for a pool currency slot holding the 0x0 sentinel. */
+const nativeMeta = () => ({ symbol: natSym(), decimals: natDecimals() });
+/** "Already the native currency (or trivially convertible to it) — nothing to sweep." */
+const isNativeEquivalent = (a: string): boolean =>
+  isNativeCurrency(a) || isWrappedNative(a) || (nativeIsStableQuote() && isStableQuote(a));
 
 const signed24 = (v: number): number => (v >= 0x800000 ? v - 0x1000000 : v);
 
 function sdkCurrency(addr: string, dec: number, sym: string): any {
-  return addr.toLowerCase() === NATIVE ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(addr), dec, sym);
+  return isNativeCurrency(addr) ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(addr), dec, sym);
 }
 
 /** Reconstruct the SDK Pool + Position for a tokenId from real on-chain currencies. */
@@ -44,8 +63,8 @@ async function loadPosition(tokenId: string) {
   const fee = Number(pk.fee);
   const tickSpacing = Number(pk.tickSpacing);
   const [m0, m1] = await Promise.all([
-    c0.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
-    c1.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
+    isNativeCurrency(c0) ? Promise.resolve(nativeMeta()) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
+    isNativeCurrency(c1) ? Promise.resolve(nativeMeta()) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
   ]);
   const sv = new ethers.Contract(C.v4StateView!, STATEVIEW_ABI, provider);
   const poolId = ethers.keccak256(
@@ -80,13 +99,13 @@ export interface V4CloseResult {
   sym1: string;
   depEth: number | null;
   pair: string;
-  outEth: number; // realized value at close (ETH)
-  feeEth: number; // fees earned over the position's life (ETH)
+  outEth: number; // realized value at close (NATIVE units)
+  feeEth: number; // fees earned over the position's life (NATIVE units)
   pnlEth: number | null;
   pnlPct: number | null;
   forfeited: string | null; // symbol of a honeypot token forfeited to salvage the ETH side
-  sweepHash?: string | null; // Kyber tx if proceeds were auto-swapped → native ETH
-  sweptEth?: number; // ETH gained from sweeping token/USDG proceeds back to native
+  sweepHash?: string | null; // Kyber tx if proceeds were auto-swapped → the native currency
+  sweptEth?: number; // native gained from sweeping token/stable proceeds back to native
 }
 
 export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "manual"): Promise<V4CloseResult> {
@@ -100,8 +119,8 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
   const c1 = pk.currency1 as string;
   const fee = Number(pk.fee);
   const [m0, m1] = await Promise.all([
-    c0.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
-    c1.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
+    isNativeCurrency(c0) ? Promise.resolve(nativeMeta()) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
+    isNativeCurrency(c1) ? Promise.resolve(nativeMeta()) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
   ]);
 
   // Snapshot the position's USD value + fees + pair BEFORE closing (needs the position live) so
@@ -136,10 +155,8 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
     // A honeypot/rug token can revert its own transfer() (the pool can't send it out), so a
     // normal close fails on CurrencyNotSettled. Recover the GOOD side (ETH/WETH/stable) and
     // FORFEIT the un-transferable token via CLEAR_OR_TAKE(0x13) — better to salvage the ETH.
-    const isGood = (a: string) => {
-      const x = a.toLowerCase();
-      return x === NATIVE || x === C.weth.toLowerCase() || STABLES.has(x);
-    };
+    // "good" = a side worth salvaging: the native currency, its wrapper, or a dollar stable.
+    const isGood = (a: string) => isNativeCurrency(a) || isWrappedNative(a) || isStableQuote(a);
     if (isGood(c0) === isGood(c1)) throw e; // nothing clearly salvageable → surface the real error
     const ct0 = coder.encode(["address", "uint256"], [c0, isGood(c0) ? 0n : ethers.MaxUint256]); // 0→take, MAX→clear
     const ct1 = coder.encode(["address", "uint256"], [c1, isGood(c1) ? 0n : ethers.MaxUint256]);
@@ -152,20 +169,20 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
   const [bal0After, bal1After] = await Promise.all([balOf(c0, m0.decimals), balOf(c1, m1.decimals)]);
 
   const dep = loadV4Deposit(String(tokenId));
-  const depEth = dep?.depositWei ? Number(ethers.formatEther(dep.depositWei)) : null;
+  const depEth = dep?.depositWei ? Number(fmtNat(dep.depositWei)) : null;
   const pair = pre?.pair ?? `${m0.symbol}/${m1.symbol}`;
-  const px = await ethUsd().catch(() => 0);
+  const px = await nativeUsd().catch(() => 0);
   const outEth = pre && px ? pre.valueUsd / px : 0;
   const feeEth = pre && px ? pre.feeUsd / px : 0;
 
   // BASIS for PnL. For ETH pairs the deposit was ETH-funded → realized PnL vs that ETH is exact.
-  // For USDG (non-ETH) pairs, funding the position swapped ETH→USDG+token, so the recorded ETH
-  // deposit is contaminated by the token's own price move. We instead measure LP-vs-HODL: value
+  // For stable (non-native) pairs, funding the position swapped native→stable+token, so the recorded
+  // native deposit is contaminated by the token's own price move. We instead measure LP-vs-HODL: value
   // the DEPOSITED token amounts at the CLOSE price, so a token that merely dropped in price isn't
   // counted as an LP loss — only fees + impermanent loss are. Keeps forward-close consistent with
   // the historical reconstruction (backfill.ts), which is why WOLVES/USDG shows fee-driven profit.
   let basisEth = depEth;
-  const isUsdgPair = STABLES.has(c0.toLowerCase()) || STABLES.has(c1.toLowerCase());
+  const isUsdgPair = isStableQuote(c0) || isStableQuote(c1);
   if (isUsdgPair && dep?.dep0 && dep?.dep1 && px) {
     try {
       const sv = new ethers.Contract(C.v4StateView!, STATEVIEW_ABI, provider);
@@ -184,14 +201,13 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
         const a = addr.toLowerCase();
         const ui = Number(ethers.formatUnits(raw, dec));
         let v = 0;
-        if (a === NATIVE || a === WETH_L) v = ui * px;
-        else if (STABLES.has(a) || /usd/i.test(sym)) v = ui;
+        if (isNativeCurrency(a) || isWrappedNative(a)) v = ui * px;
+        else if (isStableQuote(a) || /usd/i.test(sym)) v = ui;
         else {
           try {
             const inOther = Number(pool.priceOf(cur).quote(CurrencyAmount.fromRawAmount(cur, raw.toString())).toExact());
-            const oa = otherAddr.toLowerCase();
-            if (oa === NATIVE || oa === WETH_L) v = inOther * px;
-            else if (STABLES.has(oa) || /usd/i.test(otherSym)) v = inOther;
+            if (isNativeCurrency(otherAddr) || isWrappedNative(otherAddr)) v = inOther * px;
+            else if (isStableQuote(otherAddr) || /usd/i.test(otherSym)) v = inOther;
           } catch {
             /* price out of range → skip */
           }
@@ -213,7 +229,10 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
   // 1e50+ and poison the ledger + lifetime PnL (GME #462440 landed -$2.4e55, dwarfing every real
   // trade). If any leg is non-finite or absurd, record the close with UNKNOWN pnl + zeroed legs so a
   // single bad quote can't corrupt the aggregates.
-  const SANE_ETH = 100; // ~$186k — no single farming position is remotely near this
+  // ~$186k of ether on Robinhood; on a stable-native chain 100 native units is $100, which is a
+  // TIGHTER (safer) clamp for a bot whose positions are a few dollars. Either way the point is the
+  // same: no single farming position is anywhere near it, so past it means the quote exploded.
+  const SANE_ETH = 100;
   const valuationBroken = [outEth, feeEth, basisEth ?? 0].some((v) => !Number.isFinite(v) || Math.abs(v) > SANE_ETH);
   if (valuationBroken) log.warn(`#${tokenId} ${pair}: valuasi rusak (out=${outEth} fee=${feeEth} basis=${basisEth}) → pnl direkam null, leg di-nol`);
   const ledgerOut = valuationBroken ? 0 : outEth;
@@ -253,24 +272,39 @@ export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "O
 
   dropDeposit(tokenId);
 
-  // ── sweep proceeds → native ETH (like the v3 USDG close) so the wallet returns to CLEAN ETH:
-  //    PnL realizes and native gas tops up, so auto-add never gets stuck holding USDG after a close.
-  //    Swaps ALL non-native currency balances (the volatile token AND USDG) via Kyber. Gated by
-  //    cfg.lp.autoSwapOnClose. Native ETH / WETH are already ETH-equivalent so they're skipped.
+  // ── sweep proceeds → the native currency (like the v3 stable close) so the wallet returns CLEAN:
+  //    PnL realizes and native gas tops up, so auto-add never gets stuck holding the stable after a
+  //    close. Swaps ALL non-native currency balances (the volatile token AND the stable) via router.ts.
+  //    Gated by cfg.lp.autoSwapOnClose. The native currency, its wrapper — and, on a chain where
+  //    the native IS the stable, the stable itself — are already native-equivalent, so skipped.
   let sweepHash: string | null = null;
   let sweptEth = 0;
   if (cfg.lp.autoSwapOnClose !== false) {
+    // WHERE the proceeds are sold, same rule as the v3 stable close in positions.ts. This was
+    // hard-wired to kyberSwap(), which returns null the instant the profile says the aggregator
+    // doesn't serve the chain — so on Arc the volatile side was simply NEVER sold: a stop-loss
+    // fired, the position was burnt, and the memecoin kept riding in the wallet. The stop did not
+    // stop the loss. Selling into the default quote there (the 6-dec USDC ERC-20) still realizes
+    // PnL and still tops gas up, because on that chain the quote IS the gas currency in its other
+    // representation.
+    const sellTo = kyberEnabled() ? KYBER_NATIVE : defaultQuoteAddr();
+    // amountOut is denominated in whatever we sold INTO. Only a native-denominated output may be
+    // read with fmtNat(): the stable is 6-dec, so it goes through the exact integer rescale first.
+    // Feeding a 6-dec raw to an 18-dec formatter would under-report the realized proceeds — and
+    // sweptEth feeds the close card + the ledger, so that is a lie about money, not a display bug.
+    const outAsNat = (out: bigint): bigint =>
+      !isStableQuote(sellTo) ? out : nativeIsStableQuote() ? stableRawToNatWei(out) : 0n;
     for (const [addr, dec] of [[c0, m0.decimals], [c1, m1.decimals]] as const) {
-      const a = addr.toLowerCase();
-      if (a === NATIVE || a === WETH_L) continue; // already ETH-equivalent
+      if (isNativeEquivalent(addr)) continue;
       const raw = await rawBalOf(addr);
       if (raw <= 0n) continue;
       try {
-        const k = await Promise.race([kyberSwap(addr, KYBER_NATIVE, raw), new Promise<null>((r) => setTimeout(() => r(null), 60_000))]);
+        const k = await Promise.race([swapBest(addr, sellTo, raw), new Promise<null>((r) => setTimeout(() => r(null), 60_000))]);
         if (k?.tx) {
           sweepHash = k.tx;
-          sweptEth += Number(ethers.formatEther(k.amountOut));
-          log.info(`sweep v4 #${tokenId}: ${STABLES.has(a) ? "USDG" : "token"} ${ethers.formatUnits(raw, dec)} → ${Number(ethers.formatEther(k.amountOut)).toFixed(6)} ETH`);
+          const gotNat = outAsNat(k.amountOut);
+          sweptEth += Number(fmtNat(gotNat));
+          log.info(`sweep v4 #${tokenId}: ${isStableQuote(addr) ? stableSym() : "token"} ${ethers.formatUnits(raw, dec)} → ${Number(fmtNat(gotNat)).toFixed(6)} ${natSym()}`);
         }
       } catch {
         /* leave the currency in the wallet if the swap fails (non-fatal) */
@@ -342,21 +376,21 @@ export interface V4CompoundResult {
 /**
  * #3 fee-compound: harvest an in-range position's accrued fees and add them straight back as
  * liquidity (no swap → no fee drag). Collects fees to the wallet, measures EXACTLY what was
- * collected (raw balance delta, so any pre-held USDG parked in the wallet is NEVER redeposited),
+ * collected (raw balance delta, so any pre-held stable parked in the wallet is NEVER redeposited),
  * then increases the same tokenId with those amounts. The ratio-mismatch remainder stays as dust
- * (tiny; swept on the eventual close). USDG/ERC20 pairs only — a native-ETH leg needs a useNative
- * settle path, so ETH pairs are skipped (returns compounded:false with a reason).
+ * (tiny; swept on the eventual close). ERC20/ERC20 pairs only — a native leg needs a useNative
+ * settle path, so native pairs are skipped (returns compounded:false with a reason).
  *
  * Deposit basis is intentionally UNCHANGED: the fees were already earned profit, so folding them
  * into liquidity doesn't raise the cost basis — they surface as PnL when the position finally closes.
  */
 export async function compoundV4Position(tokenId: string): Promise<V4CompoundResult> {
   const { pool, c0, c1, m0, m1, tickLower, tickUpper } = await loadPosition(tokenId);
-  if (c0.toLowerCase() === NATIVE || c1.toLowerCase() === NATIVE) {
-    return { compounded: false, reason: "pair ETH (compound cuma pair USDG/ERC20)" };
+  if (isNativeCurrency(c0) || isNativeCurrency(c1)) {
+    return { compounded: false, reason: `pair ${natSym()} native (compound cuma pair ERC20)` };
   }
 
-  // 1) harvest — RAW deltas so pre-held balances (e.g. parked USDG) are never folded in
+  // 1) harvest — RAW deltas so pre-held balances (e.g. parked stable) are never folded in
   const [before0, before1] = await Promise.all([rawBalOf(c0), rawBalOf(c1)]);
   await collectV4Fees(tokenId);
   const [after0, after1] = await Promise.all([rawBalOf(c0), rawBalOf(c1)]);
@@ -400,7 +434,7 @@ export async function compoundV4Position(tokenId: string): Promise<V4CompoundRes
 
 async function balOf(addr: string, dec: number): Promise<number> {
   const w = wallet();
-  if (addr.toLowerCase() === NATIVE) return Number(ethers.formatEther(await provider.getBalance(w.address)));
+  if (isNativeCurrency(addr)) return Number(fmtNat(await provider.getBalance(w.address)));
   const erc = new ethers.Contract(addr, ["function balanceOf(address) view returns (uint256)"], provider);
   return Number(ethers.formatUnits(await erc.balanceOf!(w.address).catch(() => 0n), dec));
 }

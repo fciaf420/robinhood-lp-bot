@@ -1,28 +1,30 @@
 /**
- * v2 close — burn the full LP position back to WETH + token, unwrap the WETH, and (if
- * autoSwapOnClose) sell the token side back through the same pair so the operator ends
- * in ETH. Burn is simulated (staticCall) before broadcast.
+ * v2 close — burn the full LP position back to wrapped-native + token, unwrap it, and (if
+ * autoSwapOnClose) sell the token side back through the same pair so the operator ends in the
+ * native currency. Burn is simulated (staticCall) before broadcast.
+ *
+ * Wrapped-native pairs only, same as the open — a position that cannot be opened on this chain
+ * cannot exist to be closed, and the unwrap step has nothing to unwrap without a WETH9.
  */
 import { ethers } from "ethers";
 import { C, cfg } from "../../config.js";
 import { wallet, overrides } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { WETH_ABI, ERC20_ABI } from "../abis.js";
-import { pairContract, getAmountOut } from "./pair.js";
+import { pairContract, getAmountOut, v2UnsupportedReason } from "./pair.js";
 import { loadV2Deposit, dropV2Deposit } from "./mint.js";
-import { ethUsd } from "../price.js";
+import { nativeUsd, natSym, fmtNat, isWrappedNative } from "../currency.js";
 import { appendLedger } from "../ledger.js";
 import { logger } from "../../util/log.js";
 
 const log = logger("v2close");
-const WETH_L = C.weth.toLowerCase();
 
 export interface V2CloseResult {
   txHash: string;
   swapHash?: string;
   unwrapHash?: string;
   sym: string;
-  recvEth: number; // WETH out (before/plus token-swap), pre-unwrap total in ETH
+  recvEth: number; // wrapped-native out (before/plus token-swap), pre-unwrap total in native units
   recvToken: number; // token left in wallet if not auto-swapped
   soldToken: boolean;
   depEth: number | null;
@@ -30,6 +32,8 @@ export interface V2CloseResult {
 }
 
 export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> {
+  const unsupported = v2UnsupportedReason();
+  if (unsupported) throw new Error(unsupported);
   const w = wallet();
   const gas = await overrides();
   const c = pairContract(pairAddr, w);
@@ -39,7 +43,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
     c.balanceOf!(w.address) as Promise<bigint>,
   ]);
   if (bal === 0n) throw new Error("LP balance 0 — nggak ada yang ditutup");
-  const wethIsT0 = t0.toLowerCase() === WETH_L;
+  const wethIsT0 = isWrappedNative(t0);
   const tokenAddr = wethIsT0 ? t1 : t0;
   const meta = await tokenMeta(tokenAddr).catch(() => ({ symbol: "?", decimals: 18 }));
   const weth = new ethers.Contract(C.weth, WETH_ABI, w);
@@ -96,13 +100,13 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
   }
 
   const dep = loadV2Deposit(pairAddr);
-  const depEth = dep ? Number(ethers.formatEther(dep.depositWei)) : null;
-  const recvEth = Number(ethers.formatEther(wethOut));
+  const depEth = dep ? Number(fmtNat(dep.depositWei)) : null;
+  const recvEth = Number(fmtNat(wethOut));
   const pnlEth = depEth != null ? recvEth - depEth : null;
 
   // record to the unified ledger (v2 close → modal/PnL in /ledger + stats)
   try {
-    const px = await ethUsd().catch(() => 0);
+    const px = await nativeUsd().catch(() => 0);
     appendLedger({
       tokenId: pairAddr,
       sym: String(meta.symbol),
@@ -129,7 +133,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
   }
 
   dropV2Deposit(pairAddr);
-  log.info(`close v2 ${meta.symbol} pair ${pairAddr.slice(0, 10)} → ${recvEth.toFixed(6)}Ξ`);
+  log.info(`close v2 ${meta.symbol} pair ${pairAddr.slice(0, 10)} → ${recvEth.toFixed(6)} ${natSym()}`);
   return {
     txHash: burnTx.hash,
     swapHash,

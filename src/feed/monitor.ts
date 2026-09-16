@@ -20,7 +20,7 @@ import { findPools } from "../chain/pools.js";
 import { listPositions } from "../chain/positions.js";
 import { closePosition } from "../chain/positions.js";
 import { safetyCheck } from "../watch/scanner.js";
-import { bsFetch } from "../chain/blockscout.js";
+import { tokenCatalog, indexerKind } from "../chain/indexer.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import { logger } from "../util/log.js";
 import { nudge as nudgeManage } from "../radar/automanage.js";
@@ -256,19 +256,24 @@ export class FeedMonitor {
     }
   }
 
+  /**
+   * Pre-fill the "already seen" set so the first minutes of a feed run don't alert on every token
+   * that has existed for months.
+   *
+   * REQUIRES a real token CATALOG, and that is why this is gated on the indexer kind rather than
+   * just calling tokenCatalog() and taking whatever comes back. The rpc backend answers the same
+   * function with "tokens that traded in the last 15 minutes" — the right list for a spike scanner
+   * and precisely the wrong one here, because seeding from it marks a few dozen tokens as seen and
+   * leaves the entire rest of the chain looking brand new. An EMPTY seed is the safe failure
+   * (noisy for one cycle); a tiny seed is the unsafe one (noisy forever, indistinguishable).
+   */
   private async warmSeed(): Promise<void> {
-    log.info("warm-seed seen-set dari Blockscout…");
-    let next: Record<string, string> | null = null;
-    for (let page = 0; page < 8 && this.seen.size < 800; page++) {
-      const q = next ? "?" + new URLSearchParams(next).toString() : "?type=ERC-20";
-      const r: any = await bsFetch<any>(`/api/v2/tokens${q}`, 15_000);
-      for (const t of r?.items ?? []) {
-        const a = (t.address_hash || t.address || "").toLowerCase();
-        if (a) this.seen.add(a);
-      }
-      next = r?.next_page_params ?? null;
-      if (!next) break;
+    if (indexerKind() !== "blockscout") {
+      log.info("warm-seed dilewat — chain ini nggak punya katalog token (feed bakal anggep semua token baru di siklus pertama)");
+      return;
     }
+    log.info("warm-seed seen-set dari katalog token…");
+    for (const t of (await tokenCatalog(800).catch(() => null)) ?? []) this.seen.add(t.address.toLowerCase());
     this.persistSeen();
     log.info(`seen-set: ${this.seen.size} token`);
   }

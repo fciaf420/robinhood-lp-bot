@@ -12,7 +12,7 @@ import { wallet, provider } from "./client.js";
 import { POOL_ABI, NPM_EVENTS_ABI, ROUTER_ABI } from "./abis.js";
 import { tokenMeta } from "./tokens.js";
 import { quoteTokenToWeth, tokenBalanceRaw } from "./swaps.js";
-import { ethUsd } from "./price.js";
+import { nativeUsd, natSym, chainId, fmtNat, isWrappedNative, hasWrapped } from "./currency.js";
 import { bsFetch, blockscout, mapLimit } from "./blockscout.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import type { LedgerEntry } from "../types.js";
@@ -23,9 +23,17 @@ export function readLedger(): LedgerEntry[] {
   const d = readJson<{ entries?: LedgerEntry[] }>(LEDGER_FILE, {});
   return Array.isArray(d.entries) ? d.entries : [];
 }
+/**
+ * Append a closed-position record.
+ *
+ * `nat` + `chainId` are stamped HERE, once, so every close path (v3/v4/v2) gets them without
+ * each one remembering to. They are stamped as DEFAULTS (spread after), so a caller that already
+ * knows better wins. Existing entries in the file are never touched or migrated: an entry with
+ * no `nat` is, by definition, a pre-multi-chain Robinhood/ETH entry.
+ */
 export function appendLedger(entry: LedgerEntry): void {
   const entries = readLedger();
-  entries.push(entry);
+  entries.push({ nat: natSym(), chainId: chainId(), ...entry });
   writeJson(LEDGER_FILE, { entries });
 }
 export function writeLedger(entries: LedgerEntry[]): void {
@@ -77,6 +85,15 @@ interface Agg {
 /** Rebuild the ledger from on-chain events. See module header for the accounting model. */
 export async function backfillLedger(onProgress: (msg: string) => void = () => {}): Promise<{ rebuilt: number; total: number }> {
   const w = wallet();
+  // On-chain reconstruction walks WETH Transfer logs to find the pool + the realized swap output,
+  // so it only works on a chain that HAS a wrapped native. Without one (Arc) there are no WETH
+  // transfers to sum and every position would reconstruct as depEth=0 → a fabricated 0-basis
+  // ledger entry. Better to return "nothing to rebuild" than to invent history.
+  if (!hasWrapped()) {
+    onProgress("chain ini nggak punya wrapped native — backfill v3 lewat log WETH nggak berlaku.");
+    const existing = readLedger();
+    return { rebuilt: 0, total: existing.length };
+  }
   const NPM_L = C.positionManager.toLowerCase();
   const RT_L = C.swapRouter02.toLowerCase();
   const WETH_L = C.weth.toLowerCase();
@@ -177,7 +194,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
     } catch {
       continue;
     }
-    const wethIs0 = t0.toLowerCase() === WETH_L;
+    const wethIs0 = isWrappedNative(t0);
     const tokAddr = ethers.getAddress(wethIs0 ? t1 : t0);
     const tm = await tokenMeta(tokAddr).catch(() => ({ symbol: "?", decimals: 18 }));
     const depWei = wethIs0 ? p.inc0 : p.inc1;
@@ -202,7 +219,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
     const t = byToken[k]!;
     t.wethFromSwaps = swaps
       .filter((s) => s.tokenIn === k)
-      .reduce((a, s) => a + Number(ethers.formatEther(s.wethOut)), 0);
+      .reduce((a, s) => a + Number(fmtNat(s.wethOut)), 0);
     t.leftRaw = await tokenBalanceRaw(t.addr).catch(() => 0n);
     t.leftEth = t.leftRaw > 0n ? (await quoteTokenToWeth(t.addr, t.leftRaw).catch(() => ({ weth: 0 }))).weth : 0;
   }
@@ -213,8 +230,8 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
     const share = t && t.totalOut > 0n ? Number(r.tokOutRaw) / Number(t.totalOut) : 0;
     const realizedTok = t ? t.wethFromSwaps * share : 0;
     const leftEth = t ? t.leftEth * share : 0;
-    const depEth = Number(ethers.formatEther(r.depWei));
-    const outEth = Number(ethers.formatEther(r.outWei)) + realizedTok;
+    const depEth = Number(fmtNat(r.depWei));
+    const outEth = Number(fmtNat(r.outWei)) + realizedTok;
     const pnlEth = depEth > 0 ? outEth - depEth : null;
     entries.push({
       tokenId: r.id,
@@ -225,7 +242,9 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
       heldMs: r.p.openedAt && r.p.closedAt ? r.p.closedAt - r.p.openedAt : null,
       depEth,
       outEth,
-      feeEth: Number(ethers.formatEther(r.feeWei > 0n ? r.feeWei : 0n)),
+      feeEth: Number(fmtNat(r.feeWei > 0n ? r.feeWei : 0n)),
+      nat: natSym(),
+      chainId: chainId(),
       pnlEth,
       pnlPct: depEth > 0 ? (pnlEth! / depEth) * 100 : null,
       pnlUsd: null,
@@ -237,7 +256,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
     });
   }
 
-  const px = await ethUsd().catch(() => 0);
+  const px = await nativeUsd().catch(() => 0);
   for (const e of entries) {
     if (e.pnlEth != null && px) {
       e.pnlUsd = e.pnlEth * px;

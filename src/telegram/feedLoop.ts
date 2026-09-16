@@ -1,5 +1,7 @@
 /** Owns the sequencer-feed monitor lifecycle. Separate from handlers to avoid cycles. */
 import { cfg } from "../config.js";
+import { CHAIN } from "../chain/profile.js";
+import { sequencerEnabled } from "../chain/sequencer.js";
 import { FeedMonitor } from "../feed/monitor.js";
 import { notifyOutOfRange } from "./notify.js";
 import { handleNewToken } from "./pipeline.js";
@@ -14,6 +16,14 @@ export function isFeedOn(): boolean {
 
 export async function startFeed(): Promise<void> {
   if (monitor || !cfg.feed.enabled) return;
+  // The monitor subscribes to the SEQUENCER's tx stream. A validator L1 (Arc) has none, so there
+  // is nothing to connect to. /feed on already refuses, but this is the boot path AND the path a
+  // hand-edited `config.<chain>.json` with feed.enabled:true would take — guard it here too, or
+  // the process spends every restart failing to dial an endpoint that does not exist.
+  if (!sequencerEnabled()) {
+    log.info(`nggak jalan — ${CHAIN.name} nggak punya sequencer (feed itu khusus stream sequencer). Pakai /watch + /hunt.`);
+    return;
+  }
   monitor = new FeedMonitor({
     onNewToken: (ev) => void handleNewToken(ev).catch(() => {}),
     onOutOfRange: (ev) => void notifyOutOfRange(ev).catch(() => {}),

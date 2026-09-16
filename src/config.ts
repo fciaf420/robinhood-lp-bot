@@ -1,32 +1,64 @@
 /**
- * Config = config.json (validated with zod) + secrets from .env.
+ * Config = chain profile (chains/<chain>.json) + strategy tunables (config.json) + secrets (.env).
  *
- * config.json holds tunables (safe to commit). .env holds the private key, RPC URLs,
- * Telegram token, and the OWNER chat id (the auth boundary). Anything money- or
- * identity-sensitive lives in .env only.
+ * Split, and why:
+ *   chains/<key>.json  WHERE we trade — chainId, RPC, contracts, gas policy, capability flags.
+ *                      Picked by RH_CHAIN (unset = robinhood). See chain/profile.ts.
+ *   config.json        HOW we trade — lp/watch/feed/radar/autoLp/scan. Chain-agnostic, safe to
+ *                      commit. config.<key>.json optionally overlays it for a non-default chain.
+ *   .env               private key, RPC URLs, Telegram token, OWNER chat id (the auth boundary).
+ *                      Anything money- or identity-sensitive lives here only.
+ *
+ * The exported `cfg` / `C` shape is UNCHANGED by the chain split: the chain keys are simply
+ * sourced from the profile instead of from config.json, so every other module keeps working and
+ * the live Robinhood bot (RH_CHAIN unset) loads exactly the values it loaded before.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ROOT, writeJson } from "./util/files.js";
+import { CHAIN, ProfileContractsSchema } from "./chain/profile.js";
+import { CHAIN_KEY, DEFAULT_CHAIN, ROOT, writeJson } from "./util/files.js";
 import { logger } from "./util/log.js";
 
 const log = logger("config");
+const IS_DEFAULT_CHAIN = CHAIN_KEY === DEFAULT_CHAIN;
+/** Strategy base — shared by every chain. */
 const CONFIG_FILE = path.join(ROOT, "config.json");
+/** Per-chain strategy overlay. Only for non-default chains: on Robinhood config.json IS the file
+ *  /set writes to, and a stray config.robinhood.json silently overriding it would be a trap. */
+const OVERLAY_FILE = IS_DEFAULT_CHAIN ? "" : path.join(ROOT, `config.${CHAIN_KEY}.json`);
+/** Where persist()/`/set` writes. Never the profile — addresses are not runtime-tunable. */
+const PERSIST_FILE = IS_DEFAULT_CHAIN ? CONFIG_FILE : OVERLAY_FILE;
 
-const ContractsSchema = z.object({
-  factory: z.string(), // v3 factory
-  positionManager: z.string(), // v3 NonfungiblePositionManager
-  swapRouter02: z.string(),
-  quoter: z.string(),
+/**
+ * Arc has NO wrapped native (no WETH9 exists), but `C.weth` is a plain string in ~40 call sites.
+ * It is filled with the zero address there ON PURPOSE: every comparison against it fails to match
+ * (so no token is ever mistaken for WETH) and any contract call to it reverts loudly instead of
+ * silently swapping the wrong asset. hasWrappedNative() is the guard those paths check.
+ */
+const NO_WETH = "0x0000000000000000000000000000000000000000";
+
+/**
+ * Contracts deployed at the SAME CREATE2 address on every chain the bot targets. A profile may
+ * still pin its own (chains/arc.json pins both), so the profile always wins; these are the
+ * fallback when it says nothing.
+ *
+ * Resolved HERE, once, rather than as a `C.x ?? "0x…"` at each use. There were four such
+ * fallbacks across v4/{mint,swap,discover,list}.ts — two spellings of Permit2 and two of
+ * Multicall3 — and two copies of an address constant is two places for a chain to be half
+ * migrated. Multicall3 only ever costs speed if it is wrong (every caller falls back to per-pool
+ * reads), but Permit2 is an APPROVAL TARGET: approving the wrong one reverts inside SETTLE_ALL
+ * with a bare "execution reverted", which is the least debuggable failure in the v4 swap path.
+ */
+const CANONICAL_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+const CANONICAL_MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+
+// Same contract set as the profile, but `weth`, `permit2` and `multicall` are ALWAYS present
+// (see NO_WETH and the canonical addresses above) so nothing downstream deals with an optional.
+const ContractsSchema = ProfileContractsSchema.extend({
   weth: z.string(),
-  // Other Uniswap versions on Robinhood Chain (detection now; v2/v4 LP execution = later)
-  v2Factory: z.string().optional(),
-  v4PoolManager: z.string().optional(),
-  v4PositionManager: z.string().optional(),
-  v4StateView: z.string().optional(),
-  v4Quoter: z.string().optional(),
-  universalRouter: z.string().optional(), // dominant swap venue (routes v2/v3/v4)
+  permit2: z.string(),
+  multicall: z.string(),
 });
 
 const LpSchema = z.object({
@@ -132,6 +164,15 @@ const AutoLpSchema = z.object({
 const ScanSchema = z.object({
   enabled: z.boolean().default(true),
   intervalMin: z.number().int().positive().default(3),
+  // Which candidate FEEDS the hunter runs (radar/scanLoop.ts scanSources()). Declared here because
+  // zod STRIPS undeclared keys: without this line a `scan.sources` written into config.json by a
+  // human parses away to undefined and the operator's override silently does nothing.
+  // Deliberately `.optional()` with no default — absent means "let the chain profile decide"
+  // (gmgn-trending on a GMGN chain, the two on-chain sources elsewhere), which is not the same
+  // statement as any fixed list, and a default here would freeze one chain's answer into both.
+  // The union mirrors ScanSource in radar/screen.ts; it is repeated rather than imported because
+  // config.ts is the root of the import graph and screen.ts sits far downstream of it.
+  sources: z.array(z.enum(["gmgn-trending", "onchain-new", "volume-spike"])).optional(),
   feeMinPpm: z.number().int().default(30000), // 3.00%
   feeMaxPpm: z.number().int().default(50000), // 5.00%
   minVolUsd: z.number().default(10000), // pool 24h volume floor ("tx rame")
@@ -179,14 +220,53 @@ export type RadarConfig = z.infer<typeof RadarSchema>;
 export type AutoLpConfig = z.infer<typeof AutoLpSchema>;
 export type ScanConfig = z.infer<typeof ScanSchema>;
 
-function load(): Config {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
-  } catch (e) {
-    throw new Error(`config.json tidak terbaca: ${(e as Error).message}`);
+/** Strategy sections that are merged KEY-BY-KEY (overlay/persist), not replaced wholesale, so a
+ *  partial config.<chain>.json only has to name the fields it actually changes. */
+const SECTIONS = ["lp", "watch", "feed", "radar", "autoLp", "scan"] as const;
+
+type Raw = Record<string, unknown>;
+const isObj = (v: unknown): v is Raw => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** base ⊕ overlay, one level deep on the known sections. Same merge persist() has always used. */
+function mergeStrategy(base: Raw, over: Raw): Raw {
+  const out: Raw = { ...base, ...over };
+  for (const s of SECTIONS) {
+    if (isObj(base[s]) || isObj(over[s])) {
+      out[s] = { ...(isObj(base[s]) ? base[s] : {}), ...(isObj(over[s]) ? over[s] : {}) };
+    }
   }
-  const parsed = ConfigSchema.safeParse(raw);
+  return out;
+}
+
+function readRaw(file: string, required: boolean): Raw {
+  try {
+    const v: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return isObj(v) ? v : {};
+  } catch (e) {
+    if (required) throw new Error(`config.json tidak terbaca: ${(e as Error).message}`);
+    return {}; // overlay is optional — absent means "no per-chain override"
+  }
+}
+
+function load(): Config {
+  const raw = mergeStrategy(readRaw(CONFIG_FILE, true), OVERLAY_FILE ? readRaw(OVERLAY_FILE, false) : {});
+  // Chain keys come from the profile and OVERRIDE whatever config.json still carries. config.json
+  // keeps its old rpcUrl/chainId/explorer/contracts block (identical to chains/robinhood.json) —
+  // ignoring it here is what lets the Arc process share the same strategy file without ever
+  // reading Robinhood's addresses.
+  const merged: Raw = {
+    ...raw,
+    rpcUrl: CHAIN.rpcUrl,
+    chainId: CHAIN.chainId,
+    explorer: CHAIN.explorer.url,
+    contracts: {
+      ...CHAIN.contracts,
+      weth: CHAIN.contracts.weth ?? CHAIN.native.wrapped ?? NO_WETH,
+      permit2: CHAIN.contracts.permit2 ?? CANONICAL_PERMIT2,
+      multicall: CHAIN.contracts.multicall ?? CANONICAL_MULTICALL3,
+    },
+  };
+  const parsed = ConfigSchema.safeParse(merged);
   if (!parsed.success) {
     log.error("config.json invalid", parsed.error.flatten().fieldErrors);
     throw new Error("config.json gagal validasi — cek field di atas.");
@@ -201,44 +281,60 @@ export const C = cfg.contracts;
 /**
  * Persist current config back to disk. MERGE with what's on disk so a concurrent edit
  * of an unrelated key isn't clobbered by our in-memory snapshot.
+ *
+ * Writes STRATEGY ONLY. rpcUrl/chainId/explorer/contracts now live in the chain profile, so
+ * writing them back would (a) re-materialise Robinhood's addresses into a file the Arc process
+ * also reads and (b) let a `/set` silently fork the address book away from chains/*.json. The
+ * existing chain block in config.json is left exactly as it is by the `...disk` spread.
  */
 export function persist(): void {
-  let disk: Record<string, unknown> = {};
-  try {
-    disk = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
-  } catch {
-    /* first run */
-  }
-  const merged = {
-    ...disk,
-    ...cfg,
-    lp: { ...((disk.lp as object) ?? {}), ...cfg.lp },
-    watch: { ...((disk.watch as object) ?? {}), ...cfg.watch },
-    feed: { ...((disk.feed as object) ?? {}), ...cfg.feed },
-    radar: { ...((disk.radar as object) ?? {}), ...cfg.radar },
-    autoLp: { ...((disk.autoLp as object) ?? {}), ...cfg.autoLp },
-    scan: { ...((disk.scan as object) ?? {}), ...cfg.scan },
-    contracts: { ...((disk.contracts as object) ?? {}), ...cfg.contracts },
+  const disk = readRaw(PERSIST_FILE, false);
+  const strategy: Raw = {
+    lp: cfg.lp,
+    gasPriceGwei: cfg.gasPriceGwei,
+    watch: cfg.watch,
+    feed: cfg.feed,
+    radar: cfg.radar,
+    autoLp: cfg.autoLp,
+    scan: cfg.scan,
   };
-  writeJson(CONFIG_FILE, merged);
+  if (cfg.telegramChatId !== undefined) strategy.telegramChatId = cfg.telegramChatId;
+  writeJson(PERSIST_FILE, mergeStrategy(disk, strategy));
 }
 
 // ── Secrets & identity (env only) ──
-const DEFAULT_SEQUENCER = "https://sequencer.mainnet.chain.robinhood.com/";
+/**
+ * RPC URLs are CHAIN-SPECIFIC. On a non-default chain the RH_* RPC vars are IGNORED: a second
+ * process started with the Robinhood .env still in the environment would otherwise sign
+ * Arc-intended transactions against a chainId-4663 node (the provider is constructed with a
+ * static network, so ethers would not catch the mismatch). Use <CHAIN>_RPC_URL instead —
+ * ARC_RPC_URL, which is also what scripts/probe-arc.ts reads.
+ */
+const ignoredEnv: string[] = [];
+function rpcVar(rhName: string, chainName: string, fallback: string): string {
+  const rh = (process.env[rhName] || "").trim();
+  if (IS_DEFAULT_CHAIN) return rh || fallback;
+  const own = (process.env[`${CHAIN_KEY.toUpperCase()}_${chainName}`] || "").trim();
+  if (rh) ignoredEnv.push(rhName);
+  return own || fallback;
+}
+
 export const env = {
-  rpcUrl: process.env.RH_RPC_URL?.trim() || cfg.rpcUrl,
-  watchRpcUrl: process.env.RH_WATCH_RPC_URL?.trim() || "",
+  rpcUrl: rpcVar("RH_RPC_URL", "RPC_URL", cfg.rpcUrl),
+  watchRpcUrl: rpcVar("RH_WATCH_RPC_URL", "WATCH_RPC_URL", ""),
   // dedicated RPC for the heavy v4 discovery getLogs (fromBlock=0 full-range) so a hunt-scan burst
   // can't rate-limit / slow the main RPC that LP ops (mint/close) need. Falls back to `provider`.
-  logsRpcUrl: process.env.RH_LOGS_RPC_URL?.trim() || "",
+  logsRpcUrl: rpcVar("RH_LOGS_RPC_URL", "LOGS_RPC_URL", ""),
   walletKey: (process.env.RH_WALLET_KEY || "").trim(),
   tgToken: (process.env.RH_TG_TOKEN || "").trim(),
   /** OWNER chat id — the auth boundary. Only this chat may command the bot. */
   ownerChat: (process.env.RH_TG_CHAT || cfg.telegramChatId || "").trim(),
-  // fast-submit: broadcast raw txs straight to the sequencer (skip Alchemy relay hop)
-  fastSubmit: /^(1|true|yes|on)$/i.test(process.env.RH_FAST_SUBMIT?.trim() || ""),
-  sequencerUrl: process.env.RH_SEQUENCER_URL?.trim() || DEFAULT_SEQUENCER,
-  sequencerIp: process.env.RH_SEQUENCER_IP?.trim() || "",
+  // fast-submit: broadcast raw txs straight to the sequencer (skip Alchemy relay hop). Only a
+  // chain that HAS a sequencer can do this — Arc is a validator L1, so the flag is forced off
+  // there and the plain JsonRpcProvider is used (see chain/client.ts).
+  fastSubmit: !!CHAIN.sequencer && /^(1|true|yes|on)$/i.test(process.env.RH_FAST_SUBMIT?.trim() || ""),
+  sequencerUrl: CHAIN.sequencer ? process.env.RH_SEQUENCER_URL?.trim() || CHAIN.sequencer : "",
+  sequencerIp: CHAIN.sequencer ? process.env.RH_SEQUENCER_IP?.trim() || "" : "",
   // LLM radar — any OpenAI-compatible endpoint (OpenRouter default; override RH_OPENROUTER_URL
   // for a custom gateway, e.g. agentcash). + GMGN enrichment.
   openrouterKey: (process.env.RH_OPENROUTER_KEY || "").trim(),
@@ -256,9 +352,25 @@ export const env = {
   // Used to acquire the token side before an in-range LP (far better execution than swapping on
   // the fee-tier pool you're farming). Router is a hard whitelist: calldata is only ever sent here.
   kyberBase: (process.env.KYBERSWAP_AGGREGATOR_API_BASE_URL || "https://aggregator-api.kyberswap.com").trim().replace(/\/$/, ""),
-  kyberChain: (process.env.KYBERSWAP_CHAIN || "robinhood").trim(),
-  kyberRouter: (process.env.KYBERSWAP_ROUTER_ADDRESS || "").trim(),
+  // Chain slug in the aggregator URL. null in the profile = Kyber has no route API for this chain
+  // (unverified on Arc until `npm run probe:arc` says otherwise).
+  kyberChain: (process.env.KYBERSWAP_CHAIN || CHAIN.data.kyberChain || "").trim(),
+  // The router is a HARD WHITELIST — swap calldata is only ever sent to this address. When the
+  // profile says the aggregator doesn't serve this chain, the address is dropped so kyberEnabled()
+  // stays false: a copied-over KYBERSWAP_ROUTER_ADDRESS would otherwise build `${base}//api/v1`
+  // requests and, worse, point a swap at a router deployed on a DIFFERENT chain.
+  kyberRouter: CHAIN.data.kyberChain ? (process.env.KYBERSWAP_ROUTER_ADDRESS || "").trim() : "",
 };
+
+if (ignoredEnv.length) {
+  log.warn(`chain ${CHAIN_KEY}: ${ignoredEnv.join(", ")} diabaikan (itu RPC chain lain) — pakai ${CHAIN_KEY.toUpperCase()}_RPC_URL.`);
+}
+if (!CHAIN.data.kyberChain && (process.env.KYBERSWAP_ROUTER_ADDRESS || "").trim()) {
+  log.warn(`chain ${CHAIN_KEY}: KYBERSWAP_ROUTER_ADDRESS diabaikan — profil bilang Kyber belum support chain ini (router "${CHAIN.data.router}").`);
+}
+if (!CHAIN.sequencer && /^(1|true|yes|on)$/i.test(process.env.RH_FAST_SUBMIT?.trim() || "")) {
+  log.warn(`chain ${CHAIN_KEY}: RH_FAST_SUBMIT diabaikan — chain ini nggak punya sequencer.`);
+}
 
 /** Fail fast at startup if a required secret is missing or malformed. */
 export function assertSecrets(): void {

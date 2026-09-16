@@ -8,14 +8,14 @@ import { ethers } from "ethers";
 import { C } from "../../config.js";
 import { wallet } from "../client.js";
 import { tokenMeta } from "../tokens.js";
-import { ethUsd } from "../price.js";
+import { nativeUsd, natSym, chainId, fmtNat, hasWrapped, isWrappedNative } from "../currency.js";
 import { pairContract } from "./pair.js";
-import { bsFetch, mapLimit } from "../blockscout.js";
+import { mapLimit } from "../blockscout.js";
+import { addressTokens } from "../indexer.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
 
 const log = logger("v2list");
-const WETH_L = C.weth.toLowerCase();
 const SKIP_FILE = "v2-skip.json"; // ERC20s confirmed NOT our v2 pairs — never re-check (shared arb wallet holds many junk tokens)
 
 export interface V2Row {
@@ -32,18 +32,24 @@ export interface V2Row {
   pnlEth: number | null;
   pnlPct: number | null;
   ageMs: number | null;
+  nat?: string; // native currency symbol valueEth/depEth are denominated in ("ETH" | "USDC")
+  chainId?: number; // chain this row came from
 }
 
-/** Candidate ERC20 balances that might be v2 LP tokens (from Blockscout + tracked deposits). */
+/**
+ * Candidate ERC20 balances that might be v2 LP tokens (wallet holdings + tracked deposits).
+ *
+ * Holdings come from chain/indexer.ts rather than a Blockscout URL written out here — it was the
+ * third copy of "enumerate this wallet's ERC-20s" in the tree, and three copies of one REST shape
+ * is three places to fix when an explorer changes its field names. A null answer ("can't ask")
+ * still leaves the TRACKED pairs below, so a failed enumeration hides junk, never our own position.
+ */
 async function candidatePairs(owner: string): Promise<Map<string, bigint>> {
   const out = new Map<string, bigint>();
   const deps = readJson<Record<string, { pair: string }>>(dataPath("v2-positions.json"), {});
   for (const k of Object.keys(deps)) out.set(k.toLowerCase(), 0n);
-  const res = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${owner}/tokens?type=ERC-20`);
-  for (const it of res?.items ?? []) {
-    const addr = (it.token?.address_hash || it.token?.address || "").toLowerCase();
-    const val = BigInt(it.value ?? "0");
-    if (addr && val > 0n) out.set(addr, val);
+  for (const t of (await addressTokens(owner).catch(() => null)) ?? []) {
+    if (t.raw > 0n) out.set(t.address.toLowerCase(), t.raw);
   }
   // never re-check ERC20s already confirmed NOT to be our pairs (skip the factory() RPC per junk token)
   const skip = new Set(readJson<string[]>(dataPath(SKIP_FILE), []));
@@ -55,12 +61,16 @@ async function candidatePairs(owner: string): Promise<Map<string, bigint>> {
 
 export async function listV2Positions(): Promise<V2Row[]> {
   if (!C.v2Factory) return [];
+  // v2 here is wrapped-native-paired only (see v2/pair.ts), so on a chain without a WETH9 there
+  // is nothing this scan could ever match — and skipping it saves a Blockscout token enumeration
+  // plus a factory() read per junk ERC-20 in the wallet.
+  if (!hasWrapped()) return [];
   const w = wallet();
   const factoryL = C.v2Factory.toLowerCase();
   const deps = readJson<Record<string, { depositWei: string; ts: number }>>(dataPath("v2-positions.json"), {});
   const cands = await candidatePairs(w.address);
   if (!cands.size) return [];
-  const px = await ethUsd().catch(() => 0);
+  const px = await nativeUsd().catch(() => 0);
 
   const notOurs: string[] = [];
   const rows = await mapLimit([...cands.keys()], 10, async (addr): Promise<V2Row | null> => {
@@ -83,19 +93,19 @@ export async function listV2Positions(): Promise<V2Row[]> {
         c.token1!() as Promise<string>,
       ]);
       if (bal === 0n || ts === 0n) return null;
-      const wethIsT0 = t0.toLowerCase() === WETH_L;
+      const wethIsT0 = isWrappedNative(t0);
       const tokenAddr = wethIsT0 ? t1 : t0;
       const wethReserve: bigint = wethIsT0 ? reserves[0] : reserves[1];
       const tokenReserve: bigint = wethIsT0 ? reserves[1] : reserves[0];
-      if (wethReserve === 0n) return null; // not a WETH pair we manage
+      if (wethReserve === 0n) return null; // not a wrapped-native pair we manage
       const meta = await tokenMeta(tokenAddr).catch(() => ({ symbol: "?", decimals: 18 }));
 
       const shareWeth = (wethReserve * bal) / ts;
       const shareToken = (tokenReserve * bal) / ts;
-      const wethF = Number(ethers.formatEther(shareWeth));
+      const wethF = Number(fmtNat(shareWeth));
       const valueEth = wethF * 2; // both sides equal value at pool mid
       const dep = deps[addr];
-      const depEth = dep ? Number(ethers.formatEther(dep.depositWei)) : null;
+      const depEth = dep ? Number(fmtNat(dep.depositWei)) : null;
       return {
         pair: ethers.getAddress(addr),
         sym: String(meta.symbol),
@@ -110,6 +120,8 @@ export async function listV2Positions(): Promise<V2Row[]> {
         pnlEth: depEth != null ? valueEth - depEth : null,
         pnlPct: depEth != null && depEth > 0 ? ((valueEth - depEth) / depEth) * 100 : null,
         ageMs: dep?.ts ? Date.now() - dep.ts : null,
+        nat: natSym(),
+        chainId: chainId(),
       };
     } catch (e) {
       log.warn(`skip v2 ${addr.slice(0, 10)}: ${(e as Error).message.slice(0, 60)}`);

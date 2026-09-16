@@ -12,13 +12,23 @@
 import { readLedger, ledgerSummary } from "../chain/ledger.js";
 import { listPositions } from "../chain/positions.js";
 import { listV4Positions } from "../chain/v4/list.js";
-import { ethUsd } from "../chain/price.js";
+import { nativeUsd } from "../chain/currency.js";
+import { CHAIN } from "../chain/profile.js";
+import { chainLabel, dataCaveat } from "../radar/openrouter.js";
 import { cfg, env } from "../config.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import { send } from "./tg.js";
-import { esc } from "./format.js";
+import { esc, NAT_SYM, CHAIN_NAME } from "./format.js";
 import { logger } from "../util/log.js";
 import type { LedgerEntry } from "../types.js";
+
+/**
+ * Symbols that are a QUOTE side, never the token being farmed. Used to pull the token name out of
+ * a "TOKEN/QUOTE" pair label. Derived from the profile (+ the native symbol) instead of the old
+ * hardcoded ["USDG","ETH","WETH"] — on Arc the quote is USDC and the old list left the pair intact,
+ * so the OOR cluster stopped collapsing and printed one row per park.
+ */
+const QUOTE_SYMS = new Set([CHAIN.native.symbol, ...CHAIN.quotes.map((q) => q.symbol)].map((x) => x.toUpperCase()));
 
 const log = logger("briefing");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -94,7 +104,8 @@ async function gather(): Promise<BriefData> {
     .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0))
     .map((e) => ({ ...e, reason: effReason(e) })); // fill inferred reason for pre-`reason` history
 
-  const ethPx = await ethUsd().catch(() => 0);
+  // nativeUsd(): the constant 1 on a chain whose gas token is a dollar, ethUsd() elsewhere.
+  const ethPx = await nativeUsd().catch(() => 0);
 
   // open positions — best-effort; a slow RPC must never block the briefing
   const [v3, v4] = await Promise.all([
@@ -166,7 +177,7 @@ function llmDataBlock(d: BriefData): string {
   const a = cfg.autoLp,
     s = cfg.scan;
   const L: string[] = [];
-  L.push(`ETH=$${d.ethPx.toFixed(0)}`);
+  L.push(`${NAT_SYM}=$${d.ethPx.toFixed(2)}`); // the native/USD rate the whole block is denominated in
   L.push(`24h: closed=${d.closes.length} win=${d.wins} loss=${d.losses} realizedPnL=${usd(d.dayPnlUsd)} feesEarned=$${d.dayFeeUsd.toFixed(2)}`);
   L.push(`open=${d.openCount} value=$${d.openValUsd.toFixed(0)} unrealized=${usd(d.openUnrealUsd)} outOfRange=${d.openOor}`);
   L.push(`lifetime: trades=${d.life.count} winRate=${d.life.winRate.toFixed(0)}% totalPnL=${usd(d.life.pnlUsd)} feesTotal=~${(d.life.feeEth * d.ethPx).toFixed(2)}`);
@@ -192,8 +203,13 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
     log.info("brief LLM skip — RH_BRIEF_KEY kosong (pakai fallback deterministik)");
     return null;
   }
+  // The chain is named from the PROFILE, and dataCaveat() tells the model which intel it is NOT
+  // getting here (no GMGN on Arc → honeypot/tax were never evaluated). A thin payload must read as
+  // uncertainty, not as a clean bill of health.
+  const caveat = dataCaveat();
   const system =
-    "Kamu analis kuantitatif buat bot liquidity-provider (LP) di DEX Uniswap v4 (chain Robinhood). " +
+    `Kamu analis kuantitatif buat bot liquidity-provider (LP) di DEX Uniswap v4 (chain ${chainLabel()}, native ${CHAIN.native.symbol}). ` +
+    (caveat ? caveat + " " : "") +
     "Bot auto-hunt token, buka LP di pool fee tinggi (3-5%), lalu auto-close pas take-profit (TP), stop-loss (SL), " +
     "keluar-range (OOR), atau volume-fade (VFADE). Kamu dikasih ringkasan aktivitas 24 jam terakhir + config strategi. " +
     "Tulis analisa SINGKAT & TAJAM dalam Bahasa Indonesia gaya operator (lo/gue boleh), bukan formal.\n" +
@@ -280,7 +296,9 @@ export async function buildBriefing(): Promise<string> {
   const { label } = wibParts();
 
   const H: string[] = [];
-  H.push(`📋 <b>BRIEFING HARIAN</b> — <i>${esc(label)}</i>`);
+  // The chain name sits in the header: two briefings land in two chats every morning and they are
+  // otherwise identical in shape.
+  H.push(`📋 <b>BRIEFING HARIAN</b> · ${esc(CHAIN_NAME)} — <i>${esc(label)}</i>`);
   H.push("━━━━━━━━━━━━━━━━━━━");
   const wl = `${d.wins}W/${d.losses}L`;
   H.push(`💰 <b>PnL 24h:</b> ${esc(usd(d.dayPnlUsd))}  (${wl}) · fee ~$${d.dayFeeUsd.toFixed(2)}`);
@@ -316,7 +334,7 @@ export async function buildBriefing(): Promise<string> {
     if (oor.length) {
       const cnt: Record<string, number> = {};
       for (const e of oor) {
-        const nm = (e.pair || e.sym).split("/").find((x) => x !== "USDG" && x !== "ETH" && x !== "WETH") || (e.pair || e.sym);
+        const nm = (e.pair || e.sym).split("/").find((x) => !QUOTE_SYMS.has(x.toUpperCase())) || (e.pair || e.sym);
         cnt[nm] = (cnt[nm] || 0) + 1;
       }
       const names = Object.entries(cnt)

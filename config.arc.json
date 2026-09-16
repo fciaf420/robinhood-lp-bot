@@ -1,0 +1,13 @@
+{
+  "_catatan": "Overlay strategi khusus chain Arc. Di-MERGE di atas config.json per-section (lp/watch/feed/radar/autoLp/scan), jadi yang gak ditulis di sini ikut config.json. Cuma dibaca kalau RH_CHAIN=arc. Alamat/RPC/gas TIDAK di sini — itu chains/arc.json.",
+  "_catatan_satuan": "BACA INI DULU. Di Arc native currency-nya USDC, jadi SEMUA angka yang namanya *Eth di file ini satuannya DOLAR, bukan ether. sizeEth 25 = $25 per posisi. dailyCapEth 0.01 (default config.json) = SATU SEN — makanya di-override jadi 0 di bawah.",
+  "_catatan_cap": "maxOpen / maxPerHour / dailyCapEth = 0 artinya UNLIMITED (lihat capOff() di src/radar/autolp.ts), bukan 'nol boleh'. Ini permintaan eksplisit operator: yang ngebatesin cuma jumlah deposit. Yang TETEP jalan dan BUKAN cap: cadangan gas 2.0 USDC (chains/arc.json native.gasReserve) — itu FLOOR, ditahan sebelum tiap open biar posisi selalu kebeli gas buat DITUTUP. Dedup '1 token = 1 posisi' juga gak punya saklar mati.",
+  "_catatan_wajib_dicek": "Angka yang MASIH ukuran Robinhood dan belum divalidasi buat Arc — cek sebelum /auto on: (1) autoLp.sizeEth di bawah, satu-satunya angka yang harus lu tentuin sendiri; (2) autoLp.minLiqUsd 20000 — chain baru kemungkinan belum punya pool sebesar itu, jadi kemungkinan besar GAK ADA yang lolos (ini fail-safe, sengaja gak diturunin di sini); (3) watch.minVol5m 150000 / minVol1h 300000 / minLiqUsd 50000; (4) scan.minVolUsd 10000 / minPoolFeesUsd 250 / minPoolLiqUsd 1000. Likuiditas pool v4 di Arc kebaca 0 (PoolManager singleton) — gate yang butuh likuiditas kebaca otomatis dilewat, bukan diblok.",
+  "_catatan_sumber": "scan.sources sengaja GAK diisi: kalau kosong, sumber kandidat diambil dari profil chain (Arc gak ada GMGN → onchain-new + volume-spike). Isi manual cuma kalau mau beda dari itu.",
+  "autoLp": {
+    "sizeEth": 25,
+    "maxOpen": 0,
+    "maxPerHour": 0,
+    "dailyCapEth": 0
+  }
+}
