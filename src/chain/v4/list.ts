@@ -1,9 +1,15 @@
 /**
- * List the wallet's v4 LP positions — ANY pair (token/ETH, token/USDG, token/token), not
- * just native-ETH. The v4 PositionManager isn't enumerable, so tokenIds come from Blockscout
- * NFT holdings (catches manual Uniswap positions too). Amounts are built from the REAL pool
+ * List the wallet's v4 LP positions — ANY pair (token/native, token/stable, token/token), not
+ * just native-paired. The v4 PositionManager isn't enumerable, so tokenIds come from chain/
+ * indexer.ts's NFT-holdings lookup (catches manual Uniswap positions too) — the explorer's
+ * enum where the chain has one, an ownerOf-verified Transfer-log scan where it doesn't. Amounts are built from the REAL pool
  * currencies (earlier bug: forced native ETH → garbage $100M values). Unclaimed fees are
  * computed from feeGrowthInside deltas. Value is estimated in USD.
+ *
+ * On a chain that forbids the 0x0 native sentinel (Arc) every row is a two-ERC-20 pool, and
+ * isNativeCurrency() is false everywhere — so the Ether.onChain() / 18-decimal branches below
+ * are simply never taken there, which is the whole point: a 0x0 currency read as 18-dec native
+ * when the real asset is the 6-dec ERC-20 would be off by 1e12.
  */
 import { ethers } from "ethers";
 import sdkCore from "@uniswap/sdk-core";
@@ -11,10 +17,11 @@ import v4sdk from "@uniswap/v4-sdk";
 import { C, cfg } from "../../config.js";
 import { wallet, provider } from "../client.js";
 import { tokenMeta } from "../tokens.js";
-import { ethUsd } from "../price.js";
+import { nativeUsd, natSym, natDecimals, chainId, fmtNat, isWrappedNative, isStableQuote } from "../currency.js";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
-import { NATIVE } from "./poolkey.js";
-import { bsFetch, mapLimit } from "../blockscout.js";
+import { isNativeCurrency } from "./poolkey.js";
+import { mapLimit } from "../blockscout.js";
+import { nftTokenIds, nftMintTimestamp } from "../indexer.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
 
@@ -22,9 +29,11 @@ const { Ether, Token, CurrencyAmount } = sdkCore as any;
 const { Pool, Position } = v4sdk as any;
 const log = logger("v4list");
 
-const WETH_L = C.weth.toLowerCase();
-const STABLES = new Set(["0x5fc5360d0400a0fd4f2af552add042d716f1d168"]); // USDG
 const MASK256 = (1n << 256n) - 1n;
+/** Native-side meta for a pool currency slot holding the 0x0 sentinel. */
+const nativeMeta = () => ({ symbol: natSym(), decimals: natDecimals() });
+/** "This side is a quote asset, not the volatile token." */
+const isQuoteSide = (a: string): boolean => isNativeCurrency(a) || isWrappedNative(a) || isStableQuote(a);
 
 export interface V4Row {
   tokenId: string;
@@ -42,10 +51,12 @@ export interface V4Row {
   feeUsd: number;
   valueUsd: number;
   depEth: number | null;
-  ethPaired: boolean; // true if one side is native ETH (bot-manageable close)
+  ethPaired: boolean; // true if one side is the native currency (bot-manageable close)
   ageMs: number | null;
-  tokenAddr: string; // the volatile (non-ETH/non-USDG) side — for OOR-cooldown keying
+  tokenAddr: string; // the volatile (non-quote) side — for OOR-cooldown keying
   poolId: string; // v4 poolId — to match DexScreener volume for the #3 volume-fade check
+  nat?: string; // native currency symbol depEth is denominated in ("ETH" | "USDC")
+  chainId?: number; // chain this row came from
 }
 
 const signed24 = (v: number): number => (v >= 0x800000 ? v - 0x1000000 : v);
@@ -76,15 +87,10 @@ export interface V4ClosedRow {
 export async function listClosedV4Positions(): Promise<V4ClosedRow[]> {
   if (!C.v4PositionManager) return [];
   const w = wallet();
-  const posmL = C.v4PositionManager.toLowerCase();
   const deps = readJson<Record<string, { depositWei?: string }>>(dataPath("v4-positions.json"), {});
-  let ids: string[] = [];
-  try {
-    const nft = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${w.address}/nft?type=ERC-721`);
-    ids = (nft?.items ?? []).filter((i) => (i.token?.address_hash || "").toLowerCase() === posmL).map((i) => String(i.id));
-  } catch {
-    /* */
-  }
+  // null ("couldn't enumerate") and [] ("holds none") both mean "nothing to list" HERE, because
+  // this is a read-only ledger view — unlike listV4Positions below, where the difference matters.
+  const ids = (await nftTokenIds(C.v4PositionManager, w.address).catch(() => null)) ?? [];
   if (!ids.length) return [];
   const posm = new ethers.Contract(C.v4PositionManager, V4_POSM_ABI, provider);
   const rows = await mapLimit(ids, 8, async (tokenId): Promise<V4ClosedRow | null> => {
@@ -93,8 +99,8 @@ export async function listClosedV4Positions(): Promise<V4ClosedRow[]> {
       if (liq > 0n) return null; // still open → shown in /list, not ledger
       const [pk] = await posm.getPoolAndPositionInfo!(tokenId);
       const [m0, m1] = await Promise.all([
-        pk.currency0.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH" }) : tokenMeta(pk.currency0).catch(() => ({ symbol: "?" })),
-        pk.currency1.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH" }) : tokenMeta(pk.currency1).catch(() => ({ symbol: "?" })),
+        isNativeCurrency(pk.currency0) ? Promise.resolve({ symbol: natSym() }) : tokenMeta(pk.currency0).catch(() => ({ symbol: "?" })),
+        isNativeCurrency(pk.currency1) ? Promise.resolve({ symbol: natSym() }) : tokenMeta(pk.currency1).catch(() => ({ symbol: "?" })),
       ]);
       const dep = deps[tokenId];
       // closedAt: use the bot's local deposit ts if we have it, else null. We DROPPED the per-NFT
@@ -105,7 +111,7 @@ export async function listClosedV4Positions(): Promise<V4ClosedRow[]> {
         tokenId,
         pair: `${m0.symbol}/${m1.symbol}`,
         fee: Number(pk.fee),
-        depEth: dep?.depositWei ? Number(ethers.formatEther(dep.depositWei)) : null,
+        depEth: dep?.depositWei ? Number(fmtNat(dep.depositWei)) : null,
         closedAt: depTs,
       };
     } catch {
@@ -129,15 +135,7 @@ export async function v4MintTs(tokenId: string): Promise<number | null> {
     v4MintTsCache.set(key, deps[key]!.mintTs!);
     return deps[key]!.mintTs!;
   }
-  let ts: number | null = null;
-  try {
-    const r = await bsFetch<{ items?: any[] }>(`/api/v2/tokens/${C.v4PositionManager}/instances/${key}/transfers`, 10_000);
-    const items = r?.items ?? [];
-    const mint = items.filter((i) => /^0x0{40}$/i.test(i.from?.hash || "")).pop() ?? items[items.length - 1];
-    ts = mint?.timestamp ? new Date(mint.timestamp).getTime() : null;
-  } catch {
-    /* leave null */
-  }
+  const ts = await nftMintTimestamp(C.v4PositionManager!, key).catch(() => null);
   v4MintTsCache.set(key, ts);
   if (ts) {
     const d = readJson<Record<string, any>>(dataPath("v4-positions.json"), {});
@@ -148,14 +146,17 @@ export async function v4MintTs(tokenId: string): Promise<number | null> {
 }
 
 function sdkCurrency(addr: string, dec: number, sym: string): any {
-  return addr.toLowerCase() === NATIVE ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(addr), dec, sym);
+  return isNativeCurrency(addr) ? Ether.onChain(cfg.chainId) : new Token(cfg.chainId, ethers.getAddress(addr), dec, sym);
 }
 
-/** USD per 1 unit of a currency, or null if unknown (then value via the pool's other side). */
+/**
+ * USD per 1 unit of a currency, or null if unknown (then value via the pool's other side).
+ * `px` is the USD price of ONE NATIVE unit (nativeUsd()), so on a stable-native chain the native
+ * and stable branches agree at 1 instead of fighting over a stale ether quote.
+ */
 function usdOfCurrency(addr: string, sym: string, px: number): number | null {
-  const a = addr.toLowerCase();
-  if (a === NATIVE || a === WETH_L) return px;
-  if (STABLES.has(a) || /^usd|usd$/i.test(sym)) return 1;
+  if (isNativeCurrency(addr) || isWrappedNative(addr)) return px;
+  if (isStableQuote(addr) || /^usd|usd$/i.test(sym)) return 1;
   return null;
 }
 
@@ -168,17 +169,14 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
   if (!C.v4PositionManager || !C.v4StateView) return [];
   if (staleOkMs > 0 && posCache && Date.now() - posCache.at < staleOkMs) return posCache.rows;
   const w = wallet();
-  const posmL = C.v4PositionManager.toLowerCase();
   const deps = readJson<Record<string, { depositWei?: string; ts?: number; mintTs?: number }>>(dataPath("v4-positions.json"), {});
-  let ids: string[] = [];
-  const nft = await bsFetch<{ items?: any[] }>(`/api/v2/addresses/${w.address}/nft?type=ERC-721`);
-  if (nft?.items) {
-    ids = nft.items.filter((i) => (i.token?.address_hash || "").toLowerCase() === posmL).map((i) => String(i.id));
-  } else {
-    // Blockscout enum failed (rate-limit/lag). Positions opened OUTSIDE the bot (web UI) live ONLY in
-    // this enum, so they can transiently vanish from /list until Blockscout recovers. Bot-opened ones
-    // still show via the local deps union below. Surfaced so an empty /list isn't mistaken for "no pos".
-    log.warn("/list: enum NFT Blockscout kosong/gagal (rate-limit?) — andalin deps lokal (posisi web-UI bisa ke-skip sementara)");
+  // null vs [] is load-bearing here and is exactly why this goes through the indexer: positions
+  // opened OUTSIDE the bot (web UI) live ONLY in this enum, so a FAILED enum read as "holds none"
+  // makes them vanish from /list. Bot-opened ones still show via the local deps union below.
+  const owned = await nftTokenIds(C.v4PositionManager, w.address).catch(() => null);
+  let ids: string[] = owned ?? [];
+  if (owned === null) {
+    log.warn("/list: enum NFT gagal (rate-limit / indexer nggak ada?) — andalin deps lokal (posisi web-UI bisa ke-skip sementara)");
   }
   ids = [...new Set([...ids, ...Object.keys(deps)])];
   // Drop tokenIds the ledger already knows are CLOSED — deps accumulates every historical mint
@@ -195,14 +193,15 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
   const posm = new ethers.Contract(C.v4PositionManager, V4_POSM_ABI, provider);
   const sv = new ethers.Contract(C.v4StateView, STATEVIEW_ABI, provider);
   const coder = ethers.AbiCoder.defaultAbiCoder();
-  const px = await ethUsd().catch(() => 0);
+  const px = await nativeUsd().catch(() => 0);
 
   // Pre-filter via Multicall3: read getPositionLiquidity for ALL ids in ONE eth_call and drop the
   // CLOSED (0-liq) NFTs the wallet accumulates (30+). Otherwise /list pays 2 reads PER dead NFT — that
   // is what made "Memuat posisi" crawl. Only the surviving OPEN ids get the full per-position read below.
   let openIds = ids;
   try {
-    const mc = new ethers.Contract("0xcA11bde05977b3631167028862bE2a173976CA11", ["function aggregate3((address,bool,bytes)[]) view returns ((bool,bytes)[])"], provider);
+    // Multicall3 address resolved in config.ts (profile, else canonical CREATE2).
+    const mc = new ethers.Contract(C.multicall, ["function aggregate3((address,bool,bytes)[]) view returns ((bool,bytes)[])"], provider);
     const calls = ids.map((id) => ({ target: C.v4PositionManager, allowFailure: true, callData: posm.interface.encodeFunctionData("getPositionLiquidity", [id]) }));
     const res: Array<{ success: boolean; returnData: string }> = await mc.aggregate3!(calls);
     openIds = ids.filter((id, i) => {
@@ -254,8 +253,8 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
       const c1 = pk.currency1 as string;
 
       const [m0, m1] = await Promise.all([
-        c0.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
-        c1.toLowerCase() === NATIVE ? Promise.resolve({ symbol: "ETH", decimals: 18 }) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
+        isNativeCurrency(c0) ? Promise.resolve(nativeMeta()) : tokenMeta(c0).catch(() => ({ symbol: "?", decimals: 18 })),
+        isNativeCurrency(c1) ? Promise.resolve(nativeMeta()) : tokenMeta(c1).catch(() => ({ symbol: "?", decimals: 18 })),
       ]);
 
       const poolId = ethers.keccak256(coder.encode(["address", "address", "uint24", "int24", "address"], [c0, c1, fee, tickSpacing, pk.hooks]));
@@ -302,9 +301,8 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
       const valueUsd = sideUsd(total0, u0, u1) + sideUsd(total1, u1, u0);
       const feeUsd = sideUsd(fee0, u0, u1) + sideUsd(fee1, u1, u0);
 
-      const ethPaired = c0.toLowerCase() === NATIVE || c1.toLowerCase() === NATIVE;
-      const isQuote = (a: string) => a === NATIVE || a === WETH_L || STABLES.has(a);
-      const tokenAddr = isQuote(c0.toLowerCase()) ? c1 : c0; // volatile side (non-ETH/non-USDG)
+      const ethPaired = isNativeCurrency(c0) || isNativeCurrency(c1);
+      const tokenAddr = isQuoteSide(c0) ? c1 : c0; // volatile side (non-quote)
       const dep = deps[tokenId];
       // age: bot deposit ts, else the position's on-chain mint time (manual web adds)
       const openedAt = dep?.ts ?? dep?.mintTs ?? (await v4MintTs(tokenId).catch(() => null));
@@ -315,7 +313,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
       // (dep0/dep1) at the CURRENT price. The old basis (gross ETH budget = depositWei) wrongly
       // counted the entry swap-fee + the leftover swept BACK to the wallet as "loss", so /list showed
       // a phantom minus that disagreed with the realized close PnL. Now they match.
-      let basisEth = dep?.depositWei ? Number(ethers.formatEther(dep.depositWei)) : null;
+      let basisEth = dep?.depositWei ? Number(fmtNat(dep.depositWei)) : null;
       const depAmts = dep as { dep0?: string; dep1?: string } | undefined;
       if (depAmts?.dep0 && depAmts?.dep1 && px > 0) {
         try {
@@ -346,6 +344,8 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
         ageMs: openedAt ? Date.now() - openedAt : null,
         tokenAddr: ethers.getAddress(tokenAddr),
         poolId,
+        nat: natSym(),
+        chainId: chainId(),
       };
     } catch (e) {
       log.warn(`skip v4 #${tokenId}: ${(e as Error).message.slice(0, 80)}`);

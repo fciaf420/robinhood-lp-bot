@@ -6,9 +6,26 @@
  * rate-limits ("Too many requests") under the bot's scan load, and a throttled getLogs read as an
  * empty result = a false "no pool". bsFetch now detects that rate-limit and retries with backoff
  * instead of returning null on the first throttle. Set RH_BLOCKSCOUT_KEY to raise the limit.
+ *
+ * NOT EVERY CHAIN HAS ONE. The base URL is the profile's `explorer.api`, and `explorer.kind` says
+ * whether that URL actually speaks Blockscout. Arc's explorer exposes JSON-RPC (/api/eth-rpc), so
+ * `${api}/api/v2/…` there isn't a REST call that comes back empty — it is a request in the WRONG
+ * PROTOCOL whose 404/HTML body would parse as "no data", i.e. an empty wallet, a zero deposit, a
+ * position with no mint time. So bsFetch refuses outright when kind !== "blockscout" and returns
+ * null ("can't know"). chain/indexer.ts is the layer that turns that null into an RPC fallback —
+ * new code should call the indexer, not this file.
  */
-const BASE = "https://robinhoodchain.blockscout.com";
+import { CHAIN } from "./profile.js";
+import { logger } from "../util/log.js";
+
+const log = logger("blockscout");
+
+const BASE = CHAIN.explorer.api;
+const ENABLED = CHAIN.explorer.kind === "blockscout";
 const API_KEY = (process.env.RH_BLOCKSCOUT_KEY || "").trim();
+
+/** Does this chain have a Blockscout REST API? false on Arc until the probe proves otherwise. */
+export const blockscoutEnabled = (): boolean => ENABLED;
 
 /** True if the HTTP status or response body says we were rate-limited (v1 API returns 200 + a JSON
  *  {status:"0", message:"Too many requests…"}; v2 endpoints return HTTP 429). */
@@ -16,7 +33,16 @@ const isRateLimited = (httpStatus: number, body: unknown): boolean =>
   httpStatus === 429 ||
   (!!body && typeof body === "object" && String((body as { message?: unknown }).message ?? "").toLowerCase().includes("too many"));
 
+let warnedDisabled = false;
+
 export async function bsFetch<T = any>(pathq: string, timeoutMs = 20_000, tries = 3): Promise<T | null> {
+  if (!ENABLED) {
+    if (!warnedDisabled) {
+      warnedDisabled = true;
+      log.warn(`explorer chain ${CHAIN.key} bukan Blockscout (kind=${CHAIN.explorer.kind}) — fitur REST pakai fallback RPC (chain/indexer.ts).`);
+    }
+    return null;
+  }
   const url = API_KEY ? `${BASE}${pathq}${pathq.includes("?") ? "&" : "?"}apikey=${API_KEY}` : `${BASE}${pathq}`;
   for (let i = 0; i < tries; i++) {
     try {

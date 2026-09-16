@@ -16,16 +16,32 @@ import { cfg, C } from "../config.js";
 import { provider } from "./client.js";
 import { FACTORY_ABI, POOL_ABI, ERC20_ABI } from "./abis.js";
 import { sdkToken } from "./tokens.js";
+import { stableAddr, stableDecimals, stableSym, hasWrapped, isWrappedNative } from "./currency.js";
 import type { PoolInfo, MintMode } from "../types.js";
 
 const LN_10001 = Math.log(1.0001);
 
-/** Robinhood Chain stablecoin. Some tokens keep their v3 liquidity in token/USDG, not token/WETH. */
-export const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
-const USDG_DECIMALS = 6;
+/**
+ * The chain's dollar quote asset — USDG on Robinhood, the 6-dec USDC ERC-20 predeploy on Arc.
+ * Some tokens keep their v3 liquidity in token/stable, not token/WETH; on a chain with no
+ * wrapped native (Arc) token/stable is the ONLY shape a pool can have.
+ *
+ * A module-level const is safe here: the profile is loaded (and validated) at import time, one per
+ * process, and RH_CHAIN cannot change at runtime — so this address is fixed for the process's life
+ * exactly like the hardcoded constant it replaced. Call stableAddr() instead where you want the
+ * read to be obviously chain-derived at the call site.
+ */
+export const STABLE_QUOTE = stableAddr();
+const STABLE_DECIMALS = stableDecimals();
 
-/** All WETH-paired pools for a token that actually have liquidity, ranked by depth. */
+/**
+ * All WETH-paired pools for a token that actually have liquidity, ranked by depth.
+ * Returns EMPTY on a chain with no wrapped native (Arc): a v3 pool can only hold ERC-20s, so
+ * with no WETH9 there is nothing for a token to be native-paired WITH. Returning [] (instead of
+ * querying the factory with the zero address) keeps every caller's "no pool → skip" branch.
+ */
 export async function findPools(tokenAddr: string): Promise<PoolInfo[]> {
+  if (!hasWrapped()) return [];
   const token = ethers.getAddress(tokenAddr);
   const weth = ethers.getAddress(C.weth);
   const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
@@ -52,19 +68,20 @@ export async function findPools(tokenAddr: string): Promise<PoolInfo[]> {
 }
 
 /**
- * All token/USDG v3 pools with liquidity. The WETH-only `findPools` misses these — some tokens
- * (e.g. JACKET) keep their real v3 liquidity in a token/USDG pool, so without this the bot shows
- * "0 v3" for a token that actually has a live, deep v3 pool. Ranked by USDG depth.
+ * All token/<stable> v3 pools with liquidity. The WETH-only `findPools` misses these — some
+ * tokens (e.g. JACKET) keep their real v3 liquidity in a token/USDG pool, so without this the bot
+ * shows "0 v3" for a token that actually has a live, deep v3 pool. On Arc this is the ONLY pool
+ * shape that exists. Ranked by stable-side depth.
  */
-export async function findUsdgPools(tokenAddr: string): Promise<PoolInfo[]> {
+export async function findStableQuotePools(tokenAddr: string): Promise<PoolInfo[]> {
   const token = ethers.getAddress(tokenAddr);
-  const usdg = ethers.getAddress(USDG);
-  if (token.toLowerCase() === usdg.toLowerCase()) return [];
+  const stable = ethers.getAddress(STABLE_QUOTE);
+  if (token.toLowerCase() === stable.toLowerCase()) return [];
   const factory = new ethers.Contract(C.factory, FACTORY_ABI, provider);
-  const uc = new ethers.Contract(usdg, ERC20_ABI, provider);
+  const uc = new ethers.Contract(stable, ERC20_ABI, provider);
   const out: PoolInfo[] = [];
   for (const fee of cfg.lp.feeTiers) {
-    const pool: string = await factory.getPool!(token, usdg, fee).catch(() => ethers.ZeroAddress);
+    const pool: string = await factory.getPool!(token, stable, fee).catch(() => ethers.ZeroAddress);
     if (pool === ethers.ZeroAddress) continue;
     const pc = new ethers.Contract(pool, POOL_ABI, provider);
     const [liq, t0] = await Promise.all([pc.liquidity!(), pc.token0!()]);
@@ -77,12 +94,31 @@ export async function findUsdgPools(tokenAddr: string): Promise<PoolInfo[]> {
       token0: ethers.getAddress(t0),
       wethInPool: 0,
       quote: "usd",
-      usdgInPool: Number(ethers.formatUnits(ubal, USDG_DECIMALS)),
+      // field name kept (data files + telegram read it); the VALUE is the profile stable's
+      // balance at the profile stable's decimals — 6 on both chains today, but read, not assumed.
+      usdgInPool: Number(ethers.formatUnits(ubal, STABLE_DECIMALS)),
     });
   }
   out.sort((a, b) => (b.usdgInPool ?? 0) - (a.usdgInPool ?? 0));
   return out;
 }
+
+/** Symbol of the chain's stable quote, for display ("USDG" | "USDC"). */
+export function stableQuoteSym(): string {
+  return stableSym();
+}
+
+/**
+ * Quote-side depth of a pool, in whatever currency that pool is actually quoted in.
+ *
+ * This is NOT cosmetic: `wethInPool` is hardcoded to 0 for every row findStableQuotePools()
+ * returns (the real depth lands in `usdgInPool`), so ranking on wethInPool alone made every
+ * stable-quoted pool look bone dry. pickLpPool's `wethInPool > 0` filter then rejected all of
+ * them, which on a chain where token/<stable> is the ONLY possible pool shape (Arc) meant auto-LP
+ * reported "tidak ada pool" for tokens with a deep, live v3 pool — the whole branch was dead.
+ * Rows from findPools() carry no `quote`, so they still rank on wethInPool exactly as before.
+ */
+const quoteDepth = (p: PoolInfo): number => (p.quote === "usd" ? (p.usdgInPool ?? 0) : p.wethInPool);
 
 /**
  * Choose which pool to LP into, honoring the fee focus (cfg.lp.minFeePpm / preferHighestFee).
@@ -90,10 +126,10 @@ export async function findUsdgPools(tokenAddr: string): Promise<PoolInfo[]> {
  * income is thin at low tiers, so we prefer the highest eligible fee that still has depth.
  */
 export function pickLpPool(pools: PoolInfo[]): PoolInfo | null {
-  const eligible = pools.filter((p) => p.fee >= cfg.lp.minFeePpm && p.wethInPool > 0);
+  const eligible = pools.filter((p) => p.fee >= cfg.lp.minFeePpm && quoteDepth(p) > 0);
   if (!eligible.length) return null;
   eligible.sort((a, b) =>
-    cfg.lp.preferHighestFee ? b.fee - a.fee || b.wethInPool - a.wethInPool : b.wethInPool - a.wethInPool,
+    cfg.lp.preferHighestFee ? b.fee - a.fee || quoteDepth(b) - quoteDepth(a) : quoteDepth(b) - quoteDepth(a),
   );
   return eligible[0]!;
 }
@@ -148,17 +184,25 @@ export async function getPoolState(poolAddr: string): Promise<PoolState> {
     token1Sdk,
     sqrtPriceX96: slot0.sqrtPriceX96,
     liquidity,
-    wethIsToken0: t0.toLowerCase() === C.weth.toLowerCase(),
+    // isWrappedNative() is FALSE on a chain with no WETH9, so this can never accidentally match
+    // a zero-address currency (config.ts fills C.weth with 0x0 there). On a token/stable pool
+    // neither side is wrapped native → false, and the stable branches below take over.
+    wethIsToken0: isWrappedNative(t0),
   };
 }
 
-/** MCAP (USD) of the non-WETH token at a given tick. Uses SDK price math. */
-export function mcapAtTick(st: PoolState, tick: number, ethUsd: number, supplyUi: number): number {
+/**
+ * MCAP (USD) of the non-quote token at a given tick. Uses SDK price math.
+ * `natUsd` is the USD price of ONE NATIVE unit — pass nativeUsd(), not ethUsd(): on a chain whose
+ * native currency is a dollar stable that is the constant 1, and a stale ether quote would scale
+ * every market cap by ~4000×. (Parameter renamed only; the position is unchanged.)
+ */
+export function mcapAtTick(st: PoolState, tick: number, natUsd: number, supplyUi: number): number {
   const tokenSdk = st.wethIsToken0 ? st.token1Sdk : st.token0Sdk;
   const wethSdk = st.wethIsToken0 ? st.token0Sdk : st.token1Sdk;
   const clamped = Math.min(Math.max(tick, TickMath.MIN_TICK), TickMath.MAX_TICK);
   const priceInEth = Number(tickToPrice(tokenSdk, wethSdk, clamped).toSignificant(18));
-  return priceInEth * ethUsd * supplyUi;
+  return priceInEth * natUsd * supplyUi;
 }
 
 /** Width of the range in ticks, from widthPct, snapped to the pool's spacing. */

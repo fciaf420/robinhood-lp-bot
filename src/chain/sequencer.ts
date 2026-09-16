@@ -8,6 +8,11 @@
  *
  * IP pinning (RH_SEQUENCER_IP) is supported for the same DNS-hijack reason as the feed:
  * connect to the raw IP while keeping the real hostname for SNI + Host.
+ *
+ * NOT every chain has one. Arc is a validator L1 (Malachite BFT) with no sequencer at all, so
+ * `profile.sequencer` is null there → env.sequencerUrl is "" and seqCall() refuses. Refusing with
+ * a rejected promise (rather than throwing at import, or silently POSTing to a bad URL) is what
+ * keeps client.ts's existing catch → "fallback RPC utama" path correct on a chain without one.
  */
 import https from "node:https";
 import { env } from "../config.js";
@@ -24,8 +29,13 @@ export interface RpcResponse {
   error?: { code: number; message: string };
 }
 
-/** POST one JSON-RPC payload to the sequencer. Rejects only on transport failure. */
+/** Does this chain have a sequencer to submit to at all? */
+export const sequencerEnabled = (): boolean => !!env.sequencerUrl;
+
+/** POST one JSON-RPC payload to the sequencer. Rejects only on transport failure (and on a chain
+ *  that has no sequencer, which the caller treats as exactly that: use the normal RPC). */
 export function seqCall(payload: RpcPayload): Promise<RpcResponse> {
+  if (!env.sequencerUrl) return Promise.reject(new Error("chain ini nggak punya sequencer"));
   const url = new URL(env.sequencerUrl);
   const body = JSON.stringify({ jsonrpc: "2.0", ...payload });
   const options: https.RequestOptions = {

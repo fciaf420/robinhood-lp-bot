@@ -7,10 +7,21 @@
  * Match key (DexScreener `pairAddress`, lowercased):
  *   • v2 / v3 → the pool CONTRACT address
  *   • v4      → the 32-byte POOL ID (verified: pairAddress === keccak poolId)
+ *
+ * WHICH CHAIN: the token endpoint answers for EVERY chain that lists the address, so rows are now
+ * filtered by the profile's slug (`data.dexscreener`). The same address can exist on two EVM
+ * chains — that is how a foreign pool's volume could end up qualifying a local pool that has none.
+ * Coverage is NOT guaranteed: whether DexScreener indexes Arc at all is one of the open questions
+ * `npm run probe:arc` answers, so "no rows" is a normal, expected answer here. Callers that need a
+ * number regardless go through chain/volume.ts, which falls back to on-chain Swap events.
  */
+import { CHAIN } from "./profile.js";
 import { logger } from "../util/log.js";
 
 const log = logger("dexscreener");
+
+/** DexScreener's chainId slug for this chain ("robinhood" | "arc" | …). */
+export const DS_CHAIN = CHAIN.data.dexscreener;
 
 export interface DexPair {
   pairAddr: string; // lowercased pool address (v2/v3) or poolId (v4)
@@ -26,6 +37,10 @@ export interface DexPair {
 const cache = new Map<string, { at: number; map: Map<string, DexPair> }>();
 const TTL_MS = 30_000;
 
+// Logged once: "the API answered, but never about THIS chain" is the fingerprint of a chain
+// DexScreener doesn't index yet — worth one line, not one per token.
+let warnedNoChain = false;
+
 /** Pairs for a token keyed by lowercased pairAddress. Cached ~30s; empty map on any failure. */
 export async function dexPairs(token: string, now: number): Promise<Map<string, DexPair>> {
   const key = token.toLowerCase();
@@ -36,7 +51,12 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
   try {
     const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${token}`, { signal: AbortSignal.timeout(8000) });
     const j: any = await r.json().catch(() => null);
+    let foreign = 0;
     for (const p of j?.pairs ?? []) {
+      if (String(p.chainId ?? "") !== DS_CHAIN) {
+        foreign++;
+        continue; // another chain's pool that happens to share this token address
+      }
       const pa = String(p.pairAddress ?? "").toLowerCase();
       if (!pa) continue;
       map.set(pa, {
@@ -49,6 +69,10 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
         chgH6: Number(p.priceChange?.h6 ?? 0),
         volH1: Number(p.volume?.h1 ?? 0),
       });
+    }
+    if (!map.size && foreign && !warnedNoChain) {
+      warnedNoChain = true;
+      log.warn(`DexScreener jawab tapi nggak punya baris chain "${DS_CHAIN}" — volume jatuh ke sumber ${CHAIN.data.volumeSource}.`);
     }
   } catch (e) {
     log.warn(`dexPairs gagal: ${(e as Error).message.slice(0, 80)}`);

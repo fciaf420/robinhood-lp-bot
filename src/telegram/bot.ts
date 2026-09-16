@@ -9,7 +9,11 @@ import { startBriefingScheduler } from "./briefing.js";
 import { handleHuntCandidate } from "./pipeline.js";
 import { notifyCandidate, notifyAutoClose, notifyRebalance, notifyCompound } from "./notify.js";
 import { wallet } from "../chain/client.js";
-import { cfg } from "../config.js";
+import { CHAIN } from "../chain/profile.js";
+import { sequencerEnabled } from "../chain/sequencer.js";
+import { gmgnSupported } from "../radar/gmgn.js";
+// cfg is no longer read here — the startup banner names the chain from the profile, not cfg.chainId.
+import { NAT_SYM, ROUTER_LABEL } from "./format.js";
 import { logger } from "../util/log.js";
 import * as H from "./handlers.js";
 
@@ -49,7 +53,10 @@ async function routeCallback(cq: any): Promise<void> {
   if (d.startsWith("lg:")) return H.onLedger(Number(d.split(":")[1]), mid);
   if (d.startsWith("pool:")) return H.onPick(Number(d.split(":")[1]), mid);
   if (d === "ballp") return H.onBalancedLp(mid);
-  if (d === "usdgw") return H.onUseWalletUsdg(mid); // single-side pakai USDG di wallet (no swap/input)
+  // WIRE VALUE FROZEN at "usdgw": inline keyboards already sitting in the chat history send this
+  // exact string, so renaming it would make every older "Single-side" button a silent no-op.
+  // The handler behind it is chain-generic now (USDG on Robinhood, USDC on Arc).
+  if (d === "usdgw") return H.onUseWalletStable(mid); // single-side pakai stable di wallet (no swap/input)
   if (d.startsWith("mint:")) return H.onMint(mid, d.slice(5)); // single|inrange|v4|v4r
   if (d === "mint") return H.onMint(mid, "single");
   if (d === "cancel") {
@@ -132,18 +139,18 @@ async function registerCommands(): Promise<void> {
       { command: "ledger", description: "📒 Riwayat posisi ditutup (realized PnL)" },
       { command: "pnl", description: "💰 PnL seumur hidup" },
       { command: "briefing", description: "📋 Briefing harian (analisa posisi + saran)" },
-      { command: "feed", description: "📡 Monitor sequencer real-time" },
+      { command: "feed", description: sequencerEnabled() ? "📡 Monitor sequencer real-time" : "📡 Monitor real-time (butuh sequencer)" },
       { command: "watch", description: "👁 Pemantau lonjakan volume" },
       { command: "scan", description: "🔍 Cek lonjakan volume sekarang" },
-      { command: "screen", description: "🧪 Screening GMGN 24h (mcap>500k, vol>1M, no flap)" },
+      { command: "screen", description: gmgnSupported() ? "🧪 Screening GMGN 24h (mcap>500k, vol>1M, no flap)" : "🧪 Screening GMGN (n/a di chain ini)" },
       { command: "hunt", description: "🎯 Hunter kandidat LP (fee 3-5% + rame + screening)" },
       { command: "card", description: "📸 Kartu profit shareable (portfolio)" },
       { command: "calendar", description: "📅 Profit calendar harian (PnL per hari)" },
-      { command: "swap", description: "🔄 Swap token via KyberSwap (rute terbaik)" },
+      { command: "swap", description: `🔄 Swap token via ${ROUTER_LABEL} (rute terbaik)` },
       { command: "auto", description: "🤖 Auto-LP (radar → buka otomatis)" },
       { command: "v4", description: "🦄 Cek pool Uniswap v4 sebuah token CA" },
       { command: "closeall", description: "🗑 Tutup SEMUA posisi" },
-      { command: "sell", description: "💸 Jual token nyangkut → ETH" },
+      { command: "sell", description: `💸 Jual token nyangkut → ${NAT_SYM}` },
       { command: "wallet", description: "👛 Saldo hot wallet" },
       { command: "settings", description: "⚙️ Width, slippage, dll" },
       { command: "help", description: "❔ Bantuan + menu" },
@@ -160,7 +167,9 @@ export function stop(): void {
 
 export async function run(): Promise<void> {
   await registerCommands();
-  log.info(`Robinhood LP Bot v2 jalan — chain ${cfg.chainId}, wallet ${wallet().address}`);
+  // Name the CHAIN, not just its id: two of these run side by side (Robinhood + Arc) and the log
+  // is the only thing distinguishing the two terminals.
+  log.info(`LP Bot v2 jalan — chain ${CHAIN.name} (${CHAIN.key}/${CHAIN.chainId}), wallet ${wallet().address}`);
   startWatch();
   void startFeed(); // no-op unless cfg.feed.enabled
   startScan({

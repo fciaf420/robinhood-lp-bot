@@ -1,0 +1,56 @@
+{
+  "_catatan": "Profil chain Robinhood — INI YANG DIPAKE BOT LIVE. Nilainya SAMA PERSIS dengan config.json lama (rpcUrl/chainId/explorer/contracts) + default lama di src/config.ts. Jangan diubah tanpa alasan: bot ini lagi jalan dengan posisi kebuka. Setting strategi (lp/watch/feed/radar/autoLp/scan) tetep di config.json, BUKAN di sini.",
+  "_catatan_gas": "native.gasReserve = 0.0004 itu angka PERSIS dari const GAS_RESERVE lama di src/telegram/handlers.ts + src/radar/autolp.ts (~4-5 tx @ ~0.0001). JANGAN dinaikin ke 0.015: 0.015 itu lp.nativeTargetEth, TARGET unwrap WETH→ETH yang dikejar ensureNativeEth() abis tiap close — jadi kalau reserve disamain sama target, saldo native di steady-state selalu SEDIKIT DI BAWAH reserve (mint barusan bakar gas) dan tiap /lp manual + tiap auto-open ditolak 'kurang buat gas' padahal WETH-nya banyak. Reserve itu LANTAI belanja, target itu PLAFON top-up; kalau mau reserve lebih gede, dia wajib < lp.nativeTargetEth.",
+  "key": "robinhood",
+  "name": "Robinhood Chain",
+  "chainId": 4663,
+  "rpcUrl": "https://rpc.mainnet.chain.robinhood.com",
+  "blockTimeMs": 500,
+  "pollMs": 350,
+  "explorer": {
+    "url": "https://robinhoodchain.blockscout.com",
+    "api": "https://robinhoodchain.blockscout.com",
+    "kind": "blockscout"
+  },
+  "sequencer": "https://sequencer.mainnet.chain.robinhood.com/",
+  "native": {
+    "symbol": "ETH",
+    "decimals": 18,
+    "stable": false,
+    "wrapped": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+    "gasReserve": 0.0004,
+    "erc20Parity": false
+  },
+  "quotes": [
+    { "kind": "erc20", "address": "0x0bd7d308f8e1639fab988df18a8011f41eacad73", "symbol": "WETH", "decimals": 18, "class": "eth" },
+    { "kind": "erc20", "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", "symbol": "USDG", "decimals": 6, "class": "usd" }
+  ],
+  "contracts": {
+    "factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+    "positionManager": "0x73991a25c818bf1f1128deaab1492d45638de0d3",
+    "swapRouter02": "0xcaf681a66d020601342297493863e78c959e5cb2",
+    "quoter": "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7",
+    "weth": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+    "v2Factory": "0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f",
+    "v4PoolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    "v4PositionManager": "0x58daec3116aae6D93017bAAea7749052E8a04fA7",
+    "v4StateView": "0xF3334192D15450CdD385c8B70e03f9A6bD9E673b",
+    "v4Quoter": "0x628c00B016415Ef530552063faE4154B0CdEb0Ac",
+    "universalRouter": "0x8876789976dEcBfCbBbe364623C63652db8C0904"
+  },
+  "gas": {
+    "mode": "legacy",
+    "priorityGwei": 0,
+    "multiplier": 3,
+    "fixedGwei": 0
+  },
+  "venues": { "v2": true, "v3": true, "v4": true, "v4NativeCurrency": true },
+  "data": {
+    "dexscreener": "robinhood",
+    "kyberChain": "robinhood",
+    "gmgn": true,
+    "volumeSource": "dexscreener",
+    "router": "kyber"
+  },
+  "discovery": { "v4FromBlock": 0 }
+}

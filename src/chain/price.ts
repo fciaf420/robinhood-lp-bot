@@ -1,4 +1,13 @@
-/** ETH/USD spot with a 60s cache and multi-source fallback (survives one API blocking). */
+/**
+ * ETH/USD spot with a 60s cache and multi-source fallback (survives one API blocking).
+ *
+ * This is ETHER's price and nothing else. It is NOT the price of "the native currency": on Arc
+ * the gas token is USDC, and quoting a position against ether there would be nonsense (and a
+ * dead API call that returns 0 on failure → every valuation silently zeroed). Every LP / PnL /
+ * sizing path therefore goes through `nativeUsd()` in currency.ts, which returns this on a chain
+ * whose native is ether and the constant 1 on a chain whose native is a dollar stable. Keep
+ * calling ethUsd() directly ONLY for things genuinely denominated in ether.
+ */
 
 let cache = { v: 0, at: 0 };
 

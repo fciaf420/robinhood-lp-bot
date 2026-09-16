@@ -1,20 +1,41 @@
 /**
- * GMGN enrichment via the `gmgn-cli` (chain `robinhood`). Best-effort: if the CLI is
- * missing or not configured (keypair + GMGN_API_KEY must match, set up on the machine
- * that generated the key), every call returns null and the radar degrades gracefully.
+ * GMGN enrichment via the `gmgn-cli`. Best-effort: if the CLI is missing or not configured
+ * (keypair + GMGN_API_KEY must match, set up on the machine that generated the key), every
+ * call returns null and the radar degrades gracefully.
  *
  * Setup on the host that runs the bot:
  *   npm install -g gmgn-cli
  *   gmgn-cli config              # generates keypair, prints a URL
  *   # open the URL, create the API key bound to the shown public key, then:
  *   gmgn-cli config --apply <API_KEY>
+ *
+ * CHAIN COVERAGE (profile `data.gmgn`): GMGN indexes Robinhood Chain, NOT Arc. On a chain it
+ * does not cover every call here short-circuits — WITHOUT spawning the CLI, which would happily
+ * answer `--chain arc` with an empty/garbage row that the screener cannot tell apart from a
+ * genuine "this token is clean". The safety gates that ONLY GMGN can answer (honeypot flag, buy/
+ * sell tax, holder concentration, sniper/dev/bundler stats) must then be reported as UNKNOWN,
+ * never as 0 — see GMGN_ONLY_GATES and screen.ts's `unchecked` list.
  */
 import { execFile } from "node:child_process";
+import { CHAIN } from "../chain/profile.js";
 import { logger } from "../util/log.js";
 
 const log = logger("gmgn");
-const CHAIN = "robinhood";
+/** GMGN's own chain slug. It matches our profile key on the one chain GMGN covers (robinhood). */
+const GMGN_CHAIN = CHAIN.key;
 const TIMEOUT = 12_000;
+
+/**
+ * The gates NOTHING ELSE on this bot can evaluate. When GMGN is off these are UNCHECKED, and a
+ * caller must surface them as such — "0% tax" and "tax never measured" are not the same claim,
+ * and treating the second as the first is how a honeypot walks through a safety filter.
+ */
+export const GMGN_ONLY_GATES = ["honeypot", "buy/sell tax", "top10 holder", "rug ratio", "sniper/dev/bundler", "smart-money/KOL"] as const;
+
+/** Does the ACTIVE chain have GMGN coverage at all? (Profile flag — not a CLI probe.) */
+export function gmgnSupported(): boolean {
+  return CHAIN.data.gmgn;
+}
 
 let available: boolean | null = null;
 
@@ -32,9 +53,17 @@ function run(args: string[]): Promise<any | null> {
   });
 }
 
-/** One-time availability probe (CLI present + configured). */
+/** One-time availability probe (chain covered + CLI present + configured). */
 export async function gmgnAvailable(): Promise<boolean> {
   if (available !== null) return available;
+  // Chain gate FIRST: never spawn the CLI for a chain GMGN doesn't index. `gmgn-cli config --check`
+  // would succeed (it only validates the local keypair), so without this the bot would go on to
+  // query `--chain arc`, get an empty row back, and read it as "no flags = safe".
+  if (!gmgnSupported()) {
+    available = false;
+    log.info(`GMGN nggak cover chain ${CHAIN.name} — gate honeypot/tax/holder JADI UNKNOWN, bukan "aman"`);
+    return false;
+  }
   const r = await new Promise<boolean>((resolve) => {
     execFile("gmgn-cli", ["config", "--check"], { timeout: 8000, windowsHide: true }, (err) => resolve(!err));
   });
@@ -123,7 +152,7 @@ export interface TrendingOpts {
 /** Query trending tokens (server-side filtered). Returns [] if the CLI is unavailable. */
 export async function gmgnTrending(opts: TrendingOpts = {}): Promise<GmgnTrendToken[]> {
   if (!(await gmgnAvailable())) return [];
-  const args = ["market", "trending", "--chain", CHAIN, "--interval", opts.interval ?? "24h", "--limit", String(opts.limit ?? 100), "--raw"];
+  const args = ["market", "trending", "--chain", GMGN_CHAIN, "--interval", opts.interval ?? "24h", "--limit", String(opts.limit ?? 100), "--raw"];
   if (opts.minMarketCap != null) args.push("--min-marketcap", String(opts.minMarketCap));
   if (opts.minVolume != null) args.push("--min-volume", String(opts.minVolume));
   if (opts.minLiquidity != null) args.push("--min-liquidity", String(opts.minLiquidity));
@@ -182,12 +211,12 @@ export async function gmgnTrending(opts: TrendingOpts = {}): Promise<GmgnTrendTo
   }));
 }
 
-/** Fetch + flatten the GMGN token info + security for a Robinhood-chain token. */
+/** Fetch + flatten GMGN token info + security. null on a chain GMGN does not cover (= UNKNOWN). */
 export async function gmgnToken(address: string): Promise<GmgnData | null> {
   if (!(await gmgnAvailable())) return null;
   const [info, sec] = await Promise.all([
-    run(["token", "info", "--chain", CHAIN, "--address", address, "--raw"]),
-    run(["token", "security", "--chain", CHAIN, "--address", address, "--raw"]),
+    run(["token", "info", "--chain", GMGN_CHAIN, "--address", address, "--raw"]),
+    run(["token", "security", "--chain", GMGN_CHAIN, "--address", address, "--raw"]),
   ]);
   if (!info && !sec) return null;
   const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));

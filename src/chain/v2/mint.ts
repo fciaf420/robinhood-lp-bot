@@ -1,26 +1,32 @@
 /**
- * v2 LP open — "zap" a single ETH deposit into a full-range token/WETH position.
- * v2 has no ranges and no single-side: liquidity is always both-sided 50/50 by value,
- * so we wrap ETH → WETH, swap the optimal fraction WETH → token (zap formula, 0.3% fee),
- * then add both sides to the pair (mint LP). Every step is simulated before broadcast.
+ * v2 LP open — "zap" a single native deposit into a full-range token/wrapped-native position.
+ * v2 has no ranges and no single-side: liquidity is always both-sided 50/50 by value, so we wrap
+ * native → wrapped, swap the optimal fraction → token (zap formula, 0.3% fee), then add both sides
+ * to the pair (mint LP). Every step is simulated before broadcast.
+ *
+ * WRAPPED-NATIVE ONLY: the whole zap is built around a WETH side, so this path does not exist on
+ * a chain without a WETH9 (Arc) — see v2/pair.ts. It refuses up front rather than wrapping into
+ * the zero address.
  */
 import { ethers } from "ethers";
 import { C } from "../../config.js";
 import { wallet, overrides } from "../client.js";
 import { tokenMeta } from "../tokens.js";
 import { WETH_ABI, ERC20_ABI } from "../abis.js";
-import { readV2Pool, pairContract, getAmountOut, zapSwapAmount, type V2Pool } from "./pair.js";
+import { readV2Pool, pairContract, getAmountOut, zapSwapAmount, v2UnsupportedReason, type V2Pool } from "./pair.js";
+import { natSym, chainId, parseNat, fmtNat } from "../currency.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
 
 const log = logger("v2mint");
 const POS_FILE = dataPath("v2-positions.json");
 
-type V2Dep = { depositWei: string; ts: number; token: string; pair: string };
+/** `depositWei` is NATIVE wei (the name is frozen — data/v2-positions.json is never migrated). */
+type V2Dep = { depositWei: string; ts: number; token: string; pair: string; nat?: string; chainId?: number };
 
 export function saveV2Deposit(pair: string, rec: V2Dep): void {
   const d = readJson<Record<string, V2Dep>>(POS_FILE, {});
-  d[pair.toLowerCase()] = rec;
+  d[pair.toLowerCase()] = { nat: natSym(), chainId: chainId(), ...rec };
   writeJson(POS_FILE, d);
 }
 export function loadV2Deposit(pair: string): V2Dep | null {
@@ -48,10 +54,14 @@ export interface V2OpenResult {
  */
 export async function openV2(token: string, amountEthStr: string): Promise<V2OpenResult> {
   const w = wallet();
+  const unsupported = v2UnsupportedReason();
+  if (unsupported) throw new Error(unsupported);
   const pool = await readV2Pool(token);
   if (!pool) throw new Error("tidak ada pool v2/WETH dengan likuiditas");
   const meta = await tokenMeta(token);
-  const deposit = ethers.parseEther(amountEthStr);
+  // No budgetForOpen() clamp here: this path only runs on a chain WITH a wrapped native, where
+  // the clamp is a no-op by construction (the budget comes from WETH, not the gas float).
+  const deposit = parseNat(amountEthStr);
 
   const weth = new ethers.Contract(C.weth, WETH_ABI, w);
   const erc = new ethers.Contract(ethers.getAddress(token), ERC20_ABI, w);
@@ -107,7 +117,7 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
   const lpMinted = lpFromReceipt(rc!, pool.pair, w.address);
 
   saveV2Deposit(pool.pair, { depositWei: deposit.toString(), ts: Date.now(), token: ethers.getAddress(token), pair: pool.pair });
-  log.info(`open v2 ${meta.symbol} ${amountEthStr}Ξ pair ${pool.pair.slice(0, 10)} LP ${lpMinted}`);
+  log.info(`open v2 ${meta.symbol} ${fmtNat(deposit)} ${natSym()} pair ${pool.pair.slice(0, 10)} LP ${lpMinted}`);
   return {
     txHash: mintTx.hash,
     wrapHash,
@@ -119,7 +129,7 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
   };
 }
 
-/** Given held WETH+token and current reserves, the max both-sided amounts in ratio. */
+/** Given held wrapped-native+token and current reserves, the max both-sided amounts in ratio. */
 function ratioAmounts(wethHave: bigint, tokHave: bigint, p: V2Pool): { addWeth: bigint; addTok: bigint } {
   // token needed to pair with all our WETH: tokForWeth = wethHave · tokenReserve / wethReserve
   const tokForWeth = (wethHave * p.tokenReserve) / p.wethReserve;

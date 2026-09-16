@@ -4,6 +4,8 @@
  * one JSON body. Best-effort: returns null if no key or on any failure.
  */
 import { env } from "../config.js";
+import { CHAIN } from "../chain/profile.js";
+import { gmgnSupported, GMGN_ONLY_GATES } from "./gmgn.js";
 import { logger } from "../util/log.js";
 
 const log = logger("llm");
@@ -12,6 +14,32 @@ export interface LlmVerdict {
   score: number; // 0..100 conviction
   action: "ape" | "watch" | "skip";
   summary: string;
+}
+
+/**
+ * The chain the prompts must name. Every screening/briefing SYSTEM prompt used to hardcode
+ * "Robinhood Chain", which on Arc is a factual lie fed to the model — it would reason about the
+ * wrong native asset (ETH vs USDC), the wrong token culture and the wrong venue set.
+ *
+ * telegram/format.ts's CHAIN_NAME is the DISPLAY spelling of the same profile field. Two readers
+ * of one immutable const, deliberately not merged — see the note there for why.
+ */
+export function chainLabel(): string {
+  return CHAIN.name;
+}
+
+/**
+ * One sentence telling the model WHICH intel it is NOT getting on this chain, so a thin payload
+ * reads as uncertainty instead of a clean bill of health. This is the prompt-side half of the
+ * `unchecked` list: the numeric gates degrade (screen.ts) AND the model is told they degraded.
+ * Empty string on a fully-covered chain, so Robinhood's prompts are byte-identical to before.
+ */
+export function dataCaveat(): string {
+  const missing: string[] = [];
+  if (!gmgnSupported()) missing.push(`GMGN is NOT available on ${chainLabel()}, so ${GMGN_ONLY_GATES.join(", ")} are UNKNOWN — never assume 0/clean for them`);
+  if (CHAIN.data.volumeSource === "onchain") missing.push("volume/liquidity are derived from on-chain swap logs, not an indexer, so they can lag or under-report");
+  if (!missing.length) return "";
+  return `DATA AVAILABILITY ON THIS CHAIN: ${missing.join(". ")}. Unknown is NOT a pass — treat it as risk and lean toward "watch"/"skip".`;
 }
 
 export async function llmScore(system: string, user: string): Promise<LlmVerdict | null> {

@@ -1,12 +1,17 @@
 /**
- * Uniswap v2 primitives for Robinhood Chain. v2 pools are full-range constant-product
- * (x*y=k) with a fixed 0.3% swap fee; LP is a fungible ERC20 (the pair token). We drive
- * add/remove at the pair level (mint/burn) so no v2 Router address is required — the
- * UniversalRouter routes v2 SWAPS but can't add/remove liquidity.
+ * Uniswap v2 primitives. v2 pools are full-range constant-product (x*y=k) with a fixed 0.3% swap
+ * fee; LP is a fungible ERC20 (the pair token). We drive add/remove at the pair level (mint/burn)
+ * so no v2 Router address is required — the UniversalRouter routes v2 SWAPS but can't add/remove
+ * liquidity.
+ *
+ * The bot's v2 support is WRAPPED-NATIVE-PAIRED ONLY (token/WETH): the zap, the ratio maths and
+ * the close all assume a WETH side. A chain with no WETH9 (Arc) therefore has no v2 pair this
+ * code can drive, and readV2Pool() returns null there rather than querying getPair(token, 0x0).
  */
 import { ethers } from "ethers";
 import { C } from "../../config.js";
 import { provider } from "../client.js";
+import { hasWrapped, isWrappedNative, natSym, fmtNat } from "../currency.js";
 
 export const V2_FACTORY_ABI = ["function getPair(address,address) view returns (address)"] as const;
 
@@ -31,9 +36,9 @@ export interface V2Pool {
   reserve1: bigint;
   totalSupply: bigint;
   wethIsToken0: boolean;
-  wethReserve: bigint; // reserve of WETH side
+  wethReserve: bigint; // reserve of the wrapped-native side
   tokenReserve: bigint; // reserve of the token side
-  wethInPool: number; // display (ETH-denominated depth of the WETH side)
+  wethInPool: number; // display (native-denominated depth of the wrapped-native side)
 }
 
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -47,10 +52,16 @@ export function pairContract(addr: string, runner: ethers.ContractRunner = provi
   return new ethers.Contract(addr, V2_PAIR_ABI, runner);
 }
 
-/** The token/WETH v2 pair address, or null if none exists. */
+/** The token/wrapped-native v2 pair address, or null if none exists (always null with no WETH9). */
 export async function getPairAddress(token: string): Promise<string | null> {
+  if (!hasWrapped()) return null; // nothing to pair against — see module header
   const a = await v2Factory().getPair!(ethers.getAddress(token), C.weth).catch(() => ZERO);
   return a && a !== ZERO ? (a as string) : null;
+}
+
+/** Why v2 is unavailable on this chain, for a user-facing message. */
+export function v2UnsupportedReason(): string | null {
+  return hasWrapped() ? null : `v2 di bot ini cuma pair wrapped-native; chain ini gak punya wrapped ${natSym()}`;
 }
 
 /** Read a token/WETH v2 pool state, or null if the pair doesn't exist / is empty. */
@@ -66,7 +77,7 @@ export async function readV2Pool(token: string): Promise<V2Pool | null> {
   ]);
   const reserve0: bigint = reserves[0];
   const reserve1: bigint = reserves[1];
-  const wethIsToken0 = t0.toLowerCase() === C.weth.toLowerCase();
+  const wethIsToken0 = isWrappedNative(t0);
   const wethReserve = wethIsToken0 ? reserve0 : reserve1;
   const tokenReserve = wethIsToken0 ? reserve1 : reserve0;
   if (wethReserve === 0n || tokenReserve === 0n) return null;
@@ -80,7 +91,7 @@ export async function readV2Pool(token: string): Promise<V2Pool | null> {
     wethIsToken0,
     wethReserve,
     tokenReserve,
-    wethInPool: Number(ethers.formatEther(wethReserve)),
+    wethInPool: Number(fmtNat(wethReserve)),
   };
 }
 

@@ -2,15 +2,22 @@
 
 export type MintMode = "single" | "inrange";
 
-/** A pool discovered for a token (WETH-paired by default; USDG-paired when quote==="usd"). */
+/**
+ * A pool discovered for a token (wrapped-native-paired by default; stable-paired when
+ * quote==="usd"). On a chain with no wrapped native (Arc) EVERY pool is quote==="usd".
+ *
+ * Field names are frozen: they are read back out of data/*.json written by the live bot, so
+ * "weth"/"usdg" here mean "the wrapped-native side" and "the stable-quote side", NOT those two
+ * specific tokens. Renaming them would orphan the Robinhood history.
+ */
 export interface PoolInfo {
   pool: string;
   fee: number;
   liquidity: bigint;
   token0: string;
-  wethInPool: number; // proxy TVL for ranking (ETH units; 0 for USDG pools)
-  quote?: "eth" | "usd"; // "usd" = token/USDG pair (no WETH leg); default "eth"
-  usdgInPool?: number; // USDG-side balance for quote==="usd" (display + ranking)
+  wethInPool: number; // proxy TVL for ranking (native units; 0 for stable-quoted pools)
+  quote?: "eth" | "usd"; // "usd" = token/stable pair (no wrapped-native leg); default "eth"
+  usdgInPool?: number; // stable-side balance for quote==="usd" (display + ranking)
 }
 
 /** Token metadata (cached). */
@@ -50,11 +57,17 @@ export interface OpenResult {
   liquidity: string;
 }
 
-/** A live open position row for /list. */
+/**
+ * A live open position row for /list.
+ *
+ * valEth/feeEth/depEth/pnlEth are in NATIVE units — "Eth" is the historical name, kept so the
+ * existing data files and the telegram formatters stay readable. `nat` says which currency that
+ * actually is on this chain ("ETH" | "USDC").
+ */
 export interface PositionRow {
   tokenId: string;
   pool: string;
-  tokenAddr: string; // the non-WETH token address
+  tokenAddr: string; // the non-quote token address
   token0: string;
   token1: string;
   tokenSym: string;
@@ -78,6 +91,8 @@ export interface PositionRow {
   ageMs: number | null;
   ageSource: "bot" | "onchain" | null;
   mode: MintMode;
+  nat?: string; // native currency symbol of the chain this row came from ("ETH" | "USDC")
+  chainId?: number; // chain this position lives on (absent on rows built before multi-chain)
 }
 
 /** Result of closing a position. */
@@ -107,13 +122,22 @@ export interface TopUp {
   nativeAfter: number;
 }
 
-/** One closed-position record in the permanent ledger. */
+/**
+ * One closed-position record in the permanent ledger.
+ *
+ * depEth/outEth/feeEth/pnlEth are NATIVE units, not necessarily ether — the names are frozen
+ * because data/lp-ledger.json has years of entries under them and nothing is ever migrated.
+ * NEW entries carry `nat` + `chainId` so a reader can tell which currency and chain an entry
+ * belongs to; OLD entries have neither and are implicitly Robinhood/ETH.
+ */
 export interface LedgerEntry {
   tokenId: string;
   sym: string;
   version?: "v2" | "v3" | "v4"; // absent = v3 (legacy entries)
-  pair?: string; // v4/v2 non-ETH display, e.g. "WOLVES/USDG"
-  quote?: "eth" | "usd"; // display denomination: "usd" for stable-paired pools (USDG); default eth
+  pair?: string; // v4/v2 non-native display, e.g. "WOLVES/USDG"
+  quote?: "eth" | "usd"; // display denomination: "usd" for stable-paired pools; default eth
+  nat?: string; // native currency symbol at close time ("ETH" | "USDC"); absent = legacy = ETH
+  chainId?: number; // chain the position lived on; absent = legacy = 4663 (Robinhood)
   mode: MintMode;
   openedAt: number | null;
   closedAt: number | null;
@@ -124,7 +148,7 @@ export interface LedgerEntry {
   pnlEth: number | null;
   pnlPct: number | null;
   pnlUsd: number | null;
-  ethUsdAtClose: number | null;
+  ethUsdAtClose: number | null; // USD price of ONE native unit at close (1.0 on a stable-native chain)
   entryMcap?: number | null;
   tokenKept: number;
   tokenRug: number;

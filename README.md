@@ -6,15 +6,16 @@
 ![Node](https://img.shields.io/badge/Node-20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)
 ![ethers](https://img.shields.io/badge/ethers-v6-2535A0?style=for-the-badge&logo=ethereum&logoColor=white)
 ![Robinhood Chain](https://img.shields.io/badge/Robinhood_Chain-MAINNET-00C805?style=for-the-badge)
+![Arc](https://img.shields.io/badge/Arc-MAINNET-2775CA?style=for-the-badge)
 <br>
 ![Uniswap](https://img.shields.io/badge/Uniswap-v2_·_v3_·_v4-FF007A?style=for-the-badge&logo=uniswap&logoColor=white)
 ![Kyber](https://img.shields.io/badge/Kyber-AGGREGATOR-31CB9E?style=for-the-badge)
 ![Control](https://img.shields.io/badge/Control-TELEGRAM-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-EAB308?style=for-the-badge)
 
-**LP otomatis di Uniswap v2 · v3 · v4 (Robinhood Chain) — full kontrol dari Telegram.**
+**LP otomatis di Uniswap v2 · v3 · v4 (Robinhood Chain · Arc) — full kontrol dari Telegram.**
 
-Paste CA → pilih pool → ketik jumlah ETH → posisi kebuka. Sekarang juga.
+Paste CA → pilih pool → ketik jumlah (ETH di Robinhood, USDC di Arc) → posisi kebuka. Sekarang juga.
 
 [![Bahasa Indonesia](https://img.shields.io/badge/Bahasa_Indonesia-D71920?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzIDIiPjxyZWN0IHdpZHRoPSIzIiBoZWlnaHQ9IjIiIGZpbGw9IiNmZmYiLz48cmVjdCB3aWR0aD0iMyIgaGVpZ2h0PSIxIiBmaWxsPSIjY2UxMTI2Ii8%2BPC9zdmc%2B&logoColor=white)](README.md) [![English](https://img.shields.io/badge/English-2b3137?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2MCAzMCI%2BPGNsaXBQYXRoIGlkPSJ0Ij48cGF0aCBkPSJNMzAsMTVoMzB2MTV6djE1aC0zMHpoLTMwdi0xNXp2LTE1aDMweiIvPjwvY2xpcFBhdGg%2BPHBhdGggZD0iTTAsMHYzMGg2MHYtMzB6IiBmaWxsPSIjMDEyMTY5Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2Ii8%2BPHBhdGggZD0iTTAsMGw2MCwzMG0wLC0zMGwtNjAsMzAiIGNsaXAtcGF0aD0idXJsKCN0KSIgc3Ryb2tlPSIjYzgxMDJlIiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMTAiLz48cGF0aCBkPSJNMzAsMHYzMG0tMzAsLTE1aDYwIiBzdHJva2U9IiNjODEwMmUiIHN0cm9rZS13aWR0aD0iNiIvPjwvc3ZnPg==)](README.en.md)
 
@@ -390,7 +391,116 @@ Cek: `pm2 logs robinhood-lp`
 
 > Kartu profit butuh font: `sudo apt install -y fonts-dejavu-core fonts-dejavu-extra` (canvas render blank text tanpa ini).
 
-> ⚠️ **Jangan jalanin di 2 tempat sekaligus.** Dua proses polling token Telegram yang sama → rebutan (`409 Conflict`). v2 udah ada **single-instance lock** (`data/bot.lock`). Kalau share wallet sama bot lain → **jangan jalan bareng** (nonce tabrakan).
+> ⚠️ **Jangan jalanin dua proses dengan TOKEN TELEGRAM yang sama.** Dua proses polling token yang sama → rebutan (`409 Conflict`). v2 udah ada **single-instance lock**, dan lock-nya **per chain** (`data/bot.lock` vs `data/arc/bot.lock`) — jadi bot Robinhood + bot Arc boleh jalan bareng **asal token bot-nya beda**. Kalau share wallet sama bot lain **di chain yang sama** → jangan jalan bareng (nonce tabrakan); beda chain aman, nonce-nya kepisah.
+
+---
+
+## 🔵 Arc — chain kedua (proses kedua)
+
+Bot ini bisa jalan di **Arc** (L1 EVM-nya Circle, chainId `5042`, mainnet buka 2026-09-16) **tanpa nyentuh bot Robinhood sama sekali**. Yang milih chain itu satu env var: `RH_CHAIN`. Kalau dikosongin, semuanya persis kayak sekarang (`config.json`, folder `data/`, kelakuan sama).
+
+### Bedanya di mana
+
+| | Robinhood Chain | Arc |
+|---|---|---|
+| chainId | 4663 | **5042** |
+| gas dibayar pakai | ETH | **USDC** (native, 18 desimal) |
+| quote LP | USDG (6 dec) | **USDC ERC-20** `0x3600…0000` (6 dec) |
+| wrapped native | WETH | **nggak ada** — nggak ada WETH9 di Arc |
+| sequencer / fast-submit | ada | **nggak ada** (validator L1, Malachite BFT, 1 konfirmasi = final) |
+| aggregator swap | KyberSwap | **Uniswap** (dukungan Kyber di Arc belum kebukti) |
+| GMGN | ada | **nggak ada** → gate honeypot/tax/holder **nggak dievaluasi** |
+| gas price | floating | **base fee tetap 20 gwei** (EIP-1559) |
+
+> ### ⚠️ Di Arc, duit gas dan modal LP itu SALDO YANG SAMA
+> Gas di Arc dibayar pakai USDC — persis aset yang dipake buat LP. Kalau bot deploy 100% saldo ke posisi, **nggak ada sisa buat bayar gas nutup posisi itu**. Makanya `chains/arc.json` nahan `native.gasReserve = 2.0` USDC yang nggak akan pernah kepake buat LP.
+>
+> Itu **LANTAI, bukan batas ukuran posisi.** Nggak ada cap `maxOpen`/`maxPerHour`/`dailyCapEth` di Arc (semuanya `0` = tanpa batas) — yang jadi batas cuma **deposit lu** dan cadangan gas ini. Cek angkanya kapan aja di `/wallet` dan `/settings`.
+
+### 1. Isi wallet pakai USDC lewat CCTP
+
+Arc nggak punya faucet mainnet, dan wallet-nya **butuh USDC dulu sebelum apa pun jalan** (gas, approve, mint — semua butuh USDC).
+
+- **Jalur**: CCTP v2 dari Ethereum / Base / Arbitrum → Arc. Domain Arc = **26**, `TokenMessenger` = `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d`, fast path **1 konfirmasi**.
+- **Cara gampang**: pakai UI CCTP Circle, atau `@circle-fin/bridge-kit` dari mesin lu sendiri. Bot **nggak** ikut bridge — sengaja: bot cuma boleh nandatangan tx LP.
+- **Wallet-nya sama** kayak bot Robinhood (satu private key, dua chain — nonce kepisah per chain, nggak bakal tabrakan).
+- **Kirim lebih dari cadangan gas.** `2.0` USDC itu yang ditahan buat gas; deposit `2.0` doang artinya modal LP `0`.
+
+Cek udah nyampe apa belum: `/wallet` di bot Arc.
+
+### 2. Probe dulu, baru nyalain bot
+
+```bash
+RH_CHAIN=arc npm run probe:arc
+```
+
+**Langkah 2 — dry-run jalur keputusan (masih read-only, masih gratis):**
+
+```bash
+RH_CHAIN=arc npm run dryrun -- 0xTokenAddress 25
+```
+
+Kalau `probe:arc` nanya *"chain-nya beneran kayak yang kita kira?"*, `dryrun` nanya pertanyaan
+sesudahnya: **bot ini bakal beneran buka posisi di token ini nggak, dan bakal milih pool yang
+mana?** Dia jalanin jalur aslinya — discovery → pilih pool → quote routing → round-trip beli/jual
+(uji honeypot) → itung range → sizing setelah cadangan gas → status approval — pakai fungsi yang
+SAMA dengan yang dipanggil `/lp`. Nggak ada tx yang dikirim, nggak ada approve, jadi aman
+dijalanin pakai wallet produksi yang udah ada isinya. Baris merah di sini = bug integrasi yang
+ketangkep SEBELUM mint ngabisin duit.
+
+**Langkah 3 — satu posisi beneran.** Buka ukuran paling kecil yang lo rela ilang lewat Telegram,
+pastiin muncul di `/list` dengan angka masuk akal, terus tutup dan cek PnL di ledger. Baru setelah
+round-trip itu jalan, `/auto` boleh nyentuh Arc.
+
+Read-only — **nggak ada tx yang dikirim, private key nggak dipake nandatangan**. Laporan lengkapnya mendarat di `data/arc/arc-probe.json`.
+
+Yang dia jawab, dan flag apa yang di-flip di `chains/arc.json`:
+
+| Hasil probe | Flag yang diubah | Efeknya |
+|---|---|---|
+| `native/ERC-20 parity` ✅ | — (asumsi desain) | native == ERC-20 × 1e12 → deposit LP nggak butuh wrap/swap sama sekali. **Kalau ❌, jangan lanjut** — sizing di §6 plan-nya beda |
+| `getCode()` tiap alamat ✅ | — | contract-nya emang udah kedeploy (SDK bisa nyantumin alamat yang belum ada) |
+| `v3Pools` / `v4` sample | `discovery.v4FromBlock` = blok `Initialize` paling awal | scan getLogs nggak usah dari genesis tiap kali |
+| `DexScreener indexes Arc` ✅ | `data.volumeSource` → `"dexscreener"` | volume 1h/24h dari indexer (lebih cepet). Default `"onchain"` = derive dari Swap event |
+| `KyberSwap routes Arc` ✅ | `data.kyberChain` → `"arc"` **dan** `data.router` → `"kyber"` | urutan venue jadi `kyber → uniswap` sendiri, nol perubahan kode. Isi `kyberChain` doang = Kyber jadi cadangan **di belakang** Uniswap |
+| `Blockscout v1/v2 API` ✅ | `explorer.kind` → `"blockscout"` | `/pnl` arus wallet (setor/tarik/net), rebuild ledger, riwayat holdings nyala. Default `"rpc"` = fitur-fitur itu jujur bilang `n/a`, bukan nampilin 0 |
+
+**Semua flag itu default-nya KONSERVATIF** (anggap pihak ketiga nggak ada sampai kebukti). Yang nggak ada cuma bikin satu sinyal degrade — bukan bikin bot rusak.
+
+### 3. Jalanin proses keduanya
+
+```bash
+cp .env.arc.example .env.arc
+# isi: RH_CHAIN=arc · RH_TG_TOKEN (bot BARU) · RH_TG_CHAT (sama) · RH_WALLET_KEY (sama)
+
+node --env-file=.env.arc --import tsx src/index.ts
+```
+
+pm2, dua-duanya bareng:
+```bash
+pm2 start npm --name robinhood-lp -- start                                   # chain Robinhood
+pm2 start node --name arc-lp -- --env-file=.env.arc --import tsx src/index.ts # chain Arc
+pm2 save
+```
+
+**Kenapa harus proses kedua, bukan satu bot dua chain:**
+- **Token Telegram harus BEDA.** Satu token cuma boleh di-polling satu proses — kalau dipake barengan, dua-duanya rebutan `getUpdates` (409 Conflict) dan perintah bisa nyasar ke chain yang salah. Bikin bot kedua di @BotFather.
+- **State-nya kepisah**: `data/arc/` (positions, ledger, autolp-state, lock). tokenId NFT v3/v4 itu counter per chain — kalau dicampur, posisi antar chain bisa ketuker.
+- **Lock file ikut per-chain**, jadi dua proses ini emang boleh jalan bareng.
+- Owner chat-nya sama, jadi dua-duanya nge-chat lu. Tiap layar bawa nama chain-nya (`/start`, `/list`, `/wallet`, `/pnl`, kartu profit) biar nggak ketuker.
+
+Tunable khusus Arc (`lp` / `autoLp` / `scan`) taruh di **`config.arc.json`** — file opsional yang nimpa `config.json` cuma buat proses Arc. `config.json` punya bot Robinhood nggak kesentuh.
+
+### 4. Yang beda rasanya di Arc
+
+- **Prompt jumlah baca "Ketik jumlah USDC"**, layar konfirmasi bilang USDC, kartu profit pakai simbol yang bener. Satu code path, dua chain.
+- **Single-side "parkir stable"** tetep ada — di Robinhood namanya USDG, di Arc USDC. Sama persis alurnya.
+- **`/feed` mati** — nggak ada sequencer buat di-tap. Pakai `/watch` + `/hunt`.
+- **`/screen` mati** — itu screener GMGN, dan GMGN nggak nyover Arc.
+- **`/hunt` ganti sumber**: `onchain-new` (log `Initialize` v4 + `PoolCreated` v3) + `volume-spike`, bukan GMGN trending.
+- **Skor kandidat mentok 70, bukan 100.** Sengaja: gate yang nggak kecek nggak dikasih poin. Tiap alert bawa baris `⚠️ belum dicek: …` yang nyebut gate-nya satu-satu. **Unknown itu bukan lulus.**
+- **`/swap` manual belum ada** selama Kyber belum kebukti di Arc (LP-nya jalan normal lewat router internal Uniswap; buat keluar dari token, tutup posisinya lewat `/list`).
+- **`/pnl`**: "LP realized" akurat; baris arus wallet (setor/tarik/net) nulis `n/a` sampai `explorer.kind` jadi `blockscout` — transfer native nggak ninggalin log, jadi tanpa indexer angkanya emang nggak kebaca. Lebih baik `n/a` daripada `0.00000` palsu.
 
 ---
 
@@ -402,21 +512,27 @@ src/
 ├── config.ts             load + validasi config (zod) + secret dari .env
 ├── types.ts              tipe domain bersama
 ├── chain/                semua urusan blockchain
+│   ├── profile.ts        ⭐ CHAIN PROFILE (zod) — chains/<key>.json, dipilih RH_CHAIN
+│   ├── currency.ts       ⭐ native vs quote — natSym, fmtNat, nativeUsd, cadangan gas
+│   ├── router.ts         ⭐ pilih venue swap (kyber | v3 | v4) per profil, best-of quote
+│   ├── indexer.ts        ⭐ abstraksi indexer — blockscout REST | getLogs RPC (fallback)
+│   ├── volume.ts         ⭐ volume pool 1h/24h — DexScreener atau Swap event on-chain
 │   ├── client.ts         provider (LP + watch), wallet, gas, fast-submit routing
+│   ├── sequencer.ts      broadcast langsung ke sequencer (nolak kalau chain nggak punya)
 │   ├── kyber.ts          KyberSwap aggregator (quote + build, 4 security gate)
-│   ├── positions.ts      v3 open / list / close + USDG single-side & in-range (Uniswap SDK math)
+│   ├── positions.ts      v3 open / list / close + stable single-side & in-range (Uniswap SDK math)
 │   ├── pools.ts          findPools, poolState, range math (SDK)
-│   ├── swaps.ts          quote + swap v3 (slippage floor)
+│   ├── swaps.ts          quote + swap v3 (slippage floor) + jual ber-quote
 │   ├── candidate.ts      qualifyCandidate — pool 3-5% + fee-yield gate (hunter)
 │   ├── dexscreener.ts    volume/liq pool (cached) — sinyal fee-farming
 │   ├── txlock.ts         serialize tx wallet (anti nonce-collision)
 │   ├── ledger.ts         ledger permanen + rebuild on-chain
-│   ├── analytics.ts      PnL seumur hidup
+│   ├── analytics.ts      PnL seumur hidup (capKnown=false kalau chain tanpa indexer)
 │   ├── tokens.ts         metadata token (cached) + SDK Token
 │   ├── price.ts          ETH/USD multi-source
 │   ├── blockscout.ts     helper REST Blockscout + mapLimit
 │   ├── v2/               Uniswap v2 — pair.ts · mint.ts (zap) · list.ts · close.ts
-│   └── v4/               Uniswap v4 — discover · mint (single/in-range + reuse USDG) · list (PnL LP-vs-HODL) · close (sweep→ETH) · backfill
+│   └── v4/               Uniswap v4 — discover · mint (single/in-range + reuse stable) · list (PnL LP-vs-HODL) · close (sweep→native) · backfill · swap
 ├── telegram/
 │   ├── tg.ts             transport + AUTH boundary (owner-only)
 │   ├── bot.ts            long-poll loop + routing + setMyCommands
@@ -427,7 +543,7 @@ src/
 │   ├── notify.ts         notif spike / token baru / out-of-range
 │   ├── watchLoop.ts      timer scanner
 │   ├── feedLoop.ts       lifecycle feed monitor
-│   └── format.ts         escape, padding, emoji per-token
+│   └── format.ts         escape, padding, emoji per-token + label chain/currency (NAT_TAG dll)
 ├── feed/                 monitor sequencer real-time (Nitro)
 │   ├── decode · listener (WS + IP-pin) · swapdecode · lpdecode · monitor
 ├── radar/                screening + auto-farming
@@ -436,16 +552,25 @@ src/
 │   ├── autolp.ts         auto-add: gate chain + open (dedup 1 token/posisi + txlock)
 │   ├── automanage.ts     auto-close TP/SL/OOR (grace restart-proof)
 │   └── oorcool.ts        OOR cooldown (blacklist token yang gak pernah masuk range)
+├── scripts/probe-arc.ts  ⭐ preflight Arc READ-ONLY (npm run probe:arc) — nggak ngirim tx
+├── scripts/dryrun.ts     ⭐ dry-run buka LP READ-ONLY (npm run dryrun) — pakai modul asli
 ├── watch/scanner.ts      scan volume + uji honeypot on-chain
-└── util/                 log, atomic file write + lock, formatter
+└── util/                 log, atomic file write + lock, formatter (+ CHAIN_KEY, DATA_DIR per chain)
 ```
+
+⭐ = file baru buat dukungan multi-chain (Arc).
 
 | File lain | Isinya apa |
 |---|---|
-| `config.json` | Setting (di-validasi zod pas start) |
+| `chains/robinhood.json` | ⭐ Profil chain default — chainId, RPC, explorer, contract, gas policy, flag data. **Nilainya sama persis kayak config.json lama** |
+| `chains/arc.json` | ⭐ Profil chain Arc — alamat Uniswap Arc + flag kemampuan (default konservatif, di-flip abis probe) |
+| `config.json` | Setting strategi (di-validasi zod pas start) — chain-agnostic |
+| `config.arc.json` | ⭐ Opsional. Nimpa `config.json` **cuma** buat proses Arc (`config.<chainKey>.json`) |
 | `.env` | **Kunci-kunci. Rahasia.** (gitignored) |
+| `.env.arc` | ⭐ Env proses Arc — `RH_CHAIN=arc` + token bot kedua. **Rahasia juga** (gitignored) |
 | `assets/card-bg.jpg` | Background kartu profit (opsional) |
-| `data/` | State runtime — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `bot.lock`. **Jangan dihapus** — catatan PnL lu di situ. (gitignored) |
+| `data/` | State runtime chain default — `positions.json`, `v4-positions.json`, `lp-ledger.json`, `v2-skip.json`, `bot.lock`. **Jangan dihapus** — catatan PnL lu di situ. (gitignored) |
+| `data/arc/` | ⭐ State yang sama buat Arc, terisolasi penuh (`data/<chainKey>/` buat tiap chain non-default) |
 
 Ditulis atomik (temp + rename), jadi crash di tengah nulis nggak bikin ledger korup.
 
@@ -462,6 +587,10 @@ Ditulis atomik (temp + rename), jadi crash di tengah nulis nggak bikin ledger ko
 **Auto-farming pakai dana REAL, tanpa nanya.** `/auto on` bikin bot buka + tutup posisi sendiri pakai duit lu. OFF by default, cap konservatif — tapi lu yang set, naikin sadar-sadar.
 
 **PnL di `/list` = LP-vs-HODL** (fee + impermanent loss), bukan perubahan absolut wallet. Ini ngukur performa LP-nya (fee vs IL), konsisten sama yang di-realize pas close. Gerakan harga token = risiko pasar terpisah.
+
+**Di Arc, gas dan modal LP itu saldo yang sama.** Cadangan gas (`native.gasReserve`, default 2.0 USDC) itu satu-satunya yang bikin posisi tetep bisa **ditutup**. Jangan diturunin ke 0.
+
+**Di chain tanpa GMGN (Arc), gate honeypot/tax/holder nggak pernah jalan.** Alert-nya bakal bilang `⚠️ belum dicek: …` dan skornya mentok 70. Itu **unknown, bukan lulus** — jangan dibaca sebagai "bersih".
 
 **Pakai burner wallet.** Private key-nya duduk di `.env` dalam bentuk teks biasa. Jangan taruh duit yang lu nggak siap ilang.
 

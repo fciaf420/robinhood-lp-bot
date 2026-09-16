@@ -7,15 +7,18 @@
  */
 import { ethers } from "ethers";
 import { C } from "../../config.js";
+import { CHAIN } from "../profile.js";
 import { provider, logsProvider } from "../client.js";
 import { mapLimit } from "../blockscout.js";
 import { tokenMeta } from "../tokens.js";
+import { stableAddr, isStableQuote } from "../currency.js";
 import { STATEVIEW_ABI } from "./abis.js";
-import { ethPoolKey, computePoolId, NATIVE, V4_FEE_TIERS, type PoolKey } from "./poolkey.js";
+import { nativePoolKey, computePoolId, NATIVE, v4NativeCurrencyAllowed, V4_FEE_TIERS, type PoolKey } from "./poolkey.js";
 
 const INITIALIZE_TOPIC = ethers.id("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)");
 const DYNAMIC_FEE_FLAG = 0x800000; // fee with this bit = dynamic (hook-set) — not LP-able normally
-export const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"; // Robinhood Chain stable
+/** The chain's dollar quote: USDG on Robinhood, the 6-dec USDC ERC-20 predeploy on Arc. */
+export const STABLE_QUOTE = stableAddr();
 
 export interface V4Pool {
   poolKey: PoolKey;
@@ -26,7 +29,7 @@ export interface V4Pool {
   tick: number;
   liquidity: bigint;
   lpFee: number;
-  quote: "eth" | "usd"; // what the token is paired against (native ETH vs USDG stable)
+  quote: "eth" | "usd"; // what the token is paired against (native currency vs the dollar stable)
 }
 
 function stateView(): ethers.Contract {
@@ -66,23 +69,27 @@ const KEY_TTL_MS = 30 * 60_000; // re-scan getLogs for NEW pools every 30 min
 async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.Log[]> {
   const pm = C.v4PoolManager;
   if (!pm) return [];
+  // Earliest block that can possibly hold an Initialize log: the PoolManager's own deploy. 0 on
+  // Robinhood (unchanged full-range scan); on a chain whose Uniswap deploy is far from genesis
+  // this skips millions of empty blocks on every scan instead of re-reading them.
+  const FROM = CHAIN.discovery.v4FromBlock;
   // dedicated logs RPC first, then the main provider (covers a down/throttled logs key)
   const provs = logsProvider === provider ? [provider] : [logsProvider, provider];
   for (const prov of provs) {
     try {
-      return await prov.getLogs({ address: pm, topics, fromBlock: 0, toBlock: "latest" });
+      return await prov.getLogs({ address: pm, topics, fromBlock: FROM, toBlock: "latest" });
     } catch {
       /* try the next provider */
     }
   }
   {
-    // every full-range attempt failed (RPC range/result cap?) → scan latest→0 in windows on the main RPC
+    // every full-range attempt failed (RPC range/result cap?) → scan latest→FROM in windows on the main RPC
     try {
       const latest = await provider.getBlockNumber();
       const SPAN = 5_000_000;
       const out: ethers.Log[] = [];
-      for (let hi = latest; hi >= 0; hi -= SPAN) {
-        const lo = Math.max(0, hi - SPAN + 1);
+      for (let hi = latest; hi >= FROM; hi -= SPAN) {
+        const lo = Math.max(FROM, hi - SPAN + 1);
         const part = await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
         out.push(...part);
       }
@@ -93,7 +100,11 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
   }
 }
 
-const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"; // canonical, deployed on Robinhood
+// Multicall3 batches the per-pool StateView reads. Address resolution (profile, else the canonical
+// CREATE2 one) happens in config.ts — Robinhood's profile omits the key and gets exactly the old
+// constant. Every caller falls back to per-pool reads if the batch reverts, so a wrong address here
+// degrades to "slower", never to "wrong numbers".
+const MULTICALL3 = C.multicall;
 const MC3_ABI = ["function aggregate3((address target,bool allowFailure,bytes callData)[] calls) view returns ((bool success,bytes returnData)[])"];
 
 /**
@@ -156,8 +167,15 @@ async function verifyIndividual(sv: ethers.Contract, keys: Array<{ pk: PoolKey; 
   return out.filter((p): p is V4Pool => p !== null);
 }
 
-/** All live token/native-ETH v4 pools for a token (via Initialize events). */
+/**
+ * All live token/native-currency v4 pools for a token (via Initialize events).
+ *
+ * Returns EMPTY on a chain that forbids the 0x0 sentinel in a pool key (Arc): there are no
+ * native-paired pools to find, and any 0x0 currency seen there would be mis-scaled by 1e12.
+ * Callers already handle "no pools" → the picker falls through to the stable-quoted set.
+ */
 export async function discoverV4Pools(token: string): Promise<V4Pool[]> {
+  if (!v4NativeCurrencyAllowed()) return [];
   const sv = stateView();
   const t = ethers.getAddress(token);
   const tL = t.toLowerCase();
@@ -219,21 +237,23 @@ export async function discoverV4Pools(token: string): Promise<V4Pool[]> {
   const cached = v4EthCache.get(tL);
   if (cached?.length) return cached;
   const probeKeys = V4_FEE_TIERS.map((fee) => {
-    const pk = ethPoolKey(t, fee);
+    const pk = nativePoolKey(t, fee);
     return { pk, poolId: computePoolId(pk) };
   });
   return verify(sv, probeKeys);
 }
 
-/** All live token/USDG v4 pools (token can be currency0 OR currency1, USDG is the other side). */
-export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
+/**
+ * All live token/<stable> v4 pools (token can be currency0 OR currency1, the stable is the other
+ * side). On a chain with no native-currency pools (Arc) this is the ONLY discovery path.
+ */
+export async function discoverV4StablePools(token: string): Promise<V4Pool[]> {
   const pm = C.v4PoolManager;
   if (!pm) return [];
   const sv = stateView();
   const t = ethers.getAddress(token);
   const tL = t.toLowerCase();
   const tk = "0x" + t.slice(2).toLowerCase().padStart(64, "0");
-  const usdgL = USDG.toLowerCase();
   // cache-first (see discoverV4Pools): re-verify cached keys via StateView, skip the costly getLogs
   const ck = usdKeyCache.get(tL);
   if (ck && Date.now() - ck.at < KEY_TTL_MS) {
@@ -246,7 +266,7 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
   const seen = new Set<string>();
   const keys: Array<{ pk: PoolKey; poolId: string }> = [];
   // token can be currency0 (topics[2]) OR currency1 (topics[3]); keep only the pools whose OTHER side
-  // is USDG. Both queries via the RPC (Blockscout's rate limit made this return empty = false "no pool").
+  // is the stable. Both via the RPC (Blockscout's rate limit made this return empty = false "no pool").
   const logSets = await Promise.all([
     rpcInitLogs([INITIALIZE_TOPIC, null, tk]),
     rpcInitLogs([INITIALIZE_TOPIC, null, null, tk]),
@@ -257,7 +277,7 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
         const c0 = ("0x" + lg.topics[2].slice(26)).toLowerCase();
         const c1 = ("0x" + lg.topics[3].slice(26)).toLowerCase();
         const other = c0 === tL ? c1 : c0;
-        if (other !== usdgL) continue; // token/USDG pools only
+        if (!isStableQuote(other)) continue; // token/<stable> pools only
         const d: string = lg.data.slice(2);
         const fee = parseInt(d.slice(0, 64), 16);
         const tickSpacing = parseInt(d.slice(64, 128), 16);
@@ -287,12 +307,13 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
  * (memecoin farming wants high fee, but a pool with no liquidity has no volume to farm).
  */
 /**
- * When no ETH-paired pool has liquidity, describe the token's OTHER v4 pools (e.g. token/USDG)
- * so the user understands why it can't be LP'd with ETH. Returns a short summary or null.
+ * When no native-paired pool has liquidity, describe the token's OTHER v4 pools (e.g. token/USDG)
+ * so the user understands why it can't be LP'd with the native currency. Short summary or null.
+ * Meaningless on a chain with no native-currency pools at all → null there.
  */
 export async function nonEthV4Summary(token: string): Promise<string | null> {
   const pm = C.v4PoolManager;
-  if (!pm) return null;
+  if (!pm || !v4NativeCurrencyAllowed()) return null;
   const t = ethers.getAddress(token);
   const tk = "0x" + t.slice(2).toLowerCase().padStart(64, "0");
   const sv = stateView();

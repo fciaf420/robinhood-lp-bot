@@ -12,6 +12,7 @@
  */
 import { ethers } from "ethers";
 import { env, cfg } from "../config.js";
+import { CHAIN } from "./profile.js";
 import { wallet, provider, overrides, waitTx } from "./client.js";
 import { logger } from "../util/log.js";
 
@@ -20,7 +21,23 @@ export const KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"; // kyb
 const HEADERS = { "x-client-id": "robinhood-lp-bot" };
 
 const api = () => `${env.kyberBase}/${env.kyberChain}/api/v1`;
-export const kyberEnabled = (): boolean => !!env.kyberBase && !!env.kyberRouter;
+
+/**
+ * Is the aggregator USABLE on this chain? Three conditions, and the third is the new one:
+ * `data.kyberChain === null` means the profile says KyberSwap has no route API here (Arc, until
+ * `npm run probe:arc` proves otherwise). config.ts already blanks `kyberRouter` in that case, so
+ * this is belt-and-braces — but it is the guard that matters: without it a hand-edited
+ * KYBERSWAP_ROUTER_ADDRESS would let the bot POST Arc token addresses to `…/null/api/v1` and,
+ * worse, send the returned calldata to an address that is a router on some OTHER chain.
+ *
+ * Deliberately NOT gated on `data.router === "kyber"`: "the aggregator exists here" and "the
+ * aggregator is the venue we try first" are different questions. The second one is kyberPreferred()
+ * below, so a chain can keep Kyber as a fallback accelerator while routing through Uniswap.
+ */
+export const kyberEnabled = (): boolean => !!env.kyberBase && !!env.kyberRouter && CHAIN.data.kyberChain !== null;
+
+/** Should the aggregator be TRIED FIRST (Robinhood), or only as a fallback behind Uniswap (Arc)? */
+export const kyberPreferred = (): boolean => CHAIN.data.router === "kyber" && kyberEnabled();
 
 interface RouteData {
   routeSummary: any;
@@ -72,6 +89,34 @@ async function kyberBuild(routeSummary: any, sender: string, recipient: string, 
 export interface KyberSwapResult {
   tx: string;
   amountOut: bigint; // actual tokenOut received (balance delta)
+}
+
+/**
+ * "This swap is ALREADY IN THE MEMPOOL — do not retry it anywhere else."
+ *
+ * Everything kyberSwap does up to and including the security gates and the pre-send provider.call
+ * is free: a failure there spent nothing, so a caller is welcome to go route the swap itself. From
+ * sendTransaction onwards that is no longer true. waitTx() has a 75s HARD TIMEOUT (client.ts — it
+ * exists so an RPC flap can't deadlock the bot), and that timeout throws on a tx that may very well
+ * land a second later. chain/router.ts used to catch that throw like any other and hand the SAME
+ * amountIn to the next venue, which on the v3 token/<stable> open paths meant buying twice from one
+ * budget. This tag is how the two cases are told apart; router.ts rethrows instead of falling
+ * through when it is set.
+ */
+export class BroadcastedSwapError extends Error {
+  readonly broadcast = true;
+  constructor(
+    message: string,
+    readonly hash: string,
+  ) {
+    super(message);
+    this.name = "BroadcastedSwapError";
+  }
+}
+
+/** True for a failure that happened AFTER the input was committed on-chain. Never retry these. */
+export function isBroadcasted(e: unknown): boolean {
+  return !!e && typeof e === "object" && (e as { broadcast?: unknown }).broadcast === true;
 }
 
 /**
@@ -136,7 +181,13 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   // inclusion; only gasUsed is actually paid, so over-provisioning the limit costs nothing.
   const est = await provider.estimateGas({ to: env.kyberRouter, data: built.data, value, from: w.address }).catch(() => 300_000n);
   const tx = await w.sendTransaction({ to: env.kyberRouter, data: built.data, value, gasLimit: est * 2n, ...(await overrides()) });
-  await waitTx(tx, "kyber-swap");
+  // ── PAST THIS LINE THE INPUT IS COMMITTED. Anything that goes wrong from here is tagged so no
+  //    caller can "retry on the next venue" and spend `amountIn` a second time. See BroadcastedSwapError.
+  try {
+    await waitTx(tx, "kyber-swap");
+  } catch (e) {
+    throw new BroadcastedSwapError(`kyber-swap ${tx.hash} udah kekirim tapi konfirmasi gagal: ${(e as Error).message.slice(0, 120)}`, tx.hash);
+  }
   const after = await outBal();
   return { tx: tx.hash, amountOut: after > before ? after - before : 0n };
 }
