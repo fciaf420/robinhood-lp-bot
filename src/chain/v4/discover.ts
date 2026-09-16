@@ -33,12 +33,12 @@ export interface V4Pool {
 }
 
 function stateView(): ethers.Contract {
-  if (!C.v4StateView) throw new Error("v4StateView belum diset di config.contracts");
+  if (!C.v4StateView) throw new Error("v4StateView not set in config.contracts");
   return new ethers.Contract(C.v4StateView, STATEVIEW_ABI, provider);
 }
 
 // Last-good discovery cache. Blockscout getLogs is flaky and intermittently returns empty, which
-// makes live pools VANISH from the picker mid-session ("kadang ke-load, kadang enggak"). Once a
+// makes live pools VANISH from the picker mid-session ("sometimes loads, sometimes does not"). Once a
 // token's pools are discovered we keep serving them until a later successful scan refreshes the set
 // — v4 pools persist on-chain, so a frozen set is never wrong, only slightly stale on `liquidity`.
 const v4EthCache = new Map<string, V4Pool[]>();
@@ -110,8 +110,7 @@ const MC3_ABI = ["function aggregate3((address target,bool allowFailure,bytes ca
 /**
  * Verify PoolKeys are live (price > 0) and return them with liquidity. BATCHES getSlot0 + getLiquidity
  * through Multicall3 — 1 eth_call per ~40 pools instead of 2 RPC round-trips PER pool. A token with
- * 40-120 micro-pools used to fire 80-240 individual reads that stalled under RPC contention (the "scan
- * pool lama / RPC lambat" the operator hit). Falls back to per-pool reads if a Multicall3 batch reverts.
+ * 40-120 micro-pools used to fire 80-240 individual reads that stalled under RPC contention (the "slow pool scan / RPC lag" the operator hit). Falls back to per-pool reads if a Multicall3 batch reverts.
  */
 async function verify(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: string }>, quote: "eth" | "usd" = "eth"): Promise<V4Pool[]> {
   if (!keys.length) return [];
@@ -345,7 +344,7 @@ export async function nonEthV4Summary(token: string): Promise<string | null> {
   const qsyms = await Promise.all(quotes.slice(0, 3).map((q) => tokenMeta(q).then((m) => m.symbol).catch(() => q.slice(0, 8))));
   const fees = found.map((f) => f.fee).sort((a, b) => a - b);
   const feeRange = `${(fees[0]! / 10000).toFixed(2)}-${(fees[fees.length - 1]! / 10000).toFixed(2)}%`;
-  return `${found.length} pool v4 pair ${qsyms.join("/")} (fee ${feeRange}) — bukan ETH`;
+  return `${found.length} v4 pool(s) paired with ${qsyms.join("/")} (fee ${feeRange}) — not ETH`;
 }
 
 export function pickV4Pool(pools: V4Pool[], minLiquidity = 1n): V4Pool | null {

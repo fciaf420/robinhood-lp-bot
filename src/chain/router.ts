@@ -295,7 +295,7 @@ async function swapKyber(tokenIn: string, tokenOut: string, amountIn: bigint): P
   // read 0 — a flaky balanceOf, or a sell whose proceeds didn't cover the gas it burned. `amountIn`
   // is spent either way, so falling through to Uniswap here would buy/sell a SECOND time out of the
   // same budget. Surface it; the LP paths all catch.
-  throw new BroadcastedSwapError(`kyber ${k.tx} udah confirmed tapi amountOut 0 — input udah kepakai`, k.tx);
+  throw new BroadcastedSwapError(`kyber ${k.tx} already confirmed but amountOut 0 — input already spent`, k.tx);
 }
 
 /** The fallback chain for this chain, in order. */
@@ -335,7 +335,7 @@ export async function swapBest(tokenIn: string, tokenOut: string, amountIn: bigi
         log.info(`swap via ${r.venue} → ${r.amountOut}`);
         return r;
       }
-      reasons.push(`${venue}: nggak ada rute`);
+      reasons.push(`${venue}: no route`);
     } catch (e) {
       // A venue that failed AFTER committing its input on chain is NEVER retried. This is the one
       // case where "try the next venue" is not a rescue but a double-spend: kyberSwap broadcasts,
@@ -349,8 +349,8 @@ export async function swapBest(tokenIn: string, tokenOut: string, amountIn: bigi
       // calldata — we route it ourselves instead.
       const msg = (e as Error).message.slice(0, 120);
       reasons.push(`${venue}: ${msg}`);
-      log.warn(`${venue} gagal (${msg}) → coba venue berikutnya`);
+      log.warn(`${venue} failed (${msg}) → trying next venue`);
     }
   }
-  throw new Error(`swap gagal di semua venue — ${reasons.join(" · ")}`);
+  throw new Error(`swap failed on all venues — ${reasons.join(" · ")}`);
 }

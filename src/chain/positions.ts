@@ -126,11 +126,11 @@ export async function openPosition(
   const mode: MintMode = opts.mode === "inrange" ? "inrange" : "single";
   // A wrapped-native-paired v3 pool cannot exist without a WETH9 (Arc). Fail here with the real
   // reason instead of letting the zero address flow into getPool/approve.
-  if (!hasWrapped()) throw new Error(`chain ini gak punya wrapped native — pair ${natSym()} v3 mustahil, pakai pool /${stableSym()}`);
+  if (!hasWrapped()) throw new Error(`this chain has no wrapped native — ${natSym()} v3 pair is impossible, use a /${stableSym()} pool`);
   const w = wallet();
   const st = await getPoolState(poolAddr);
   if (!st.wethIsToken0 && !isWrappedNative(st.token1)) {
-    throw new Error("pool ini bukan pair WETH");
+    throw new Error("this pool is not a WETH pair");
   }
   // GAS FLOOR (not a cap). A no-op on any chain that HAS a wrapped native — which is the only
   // kind of chain that can reach this WETH-paired path at all — so Robinhood sizing is unchanged.
@@ -196,7 +196,7 @@ async function openSingleSide(
     };
     try {
       const sim = await npm.mint!.staticCall(params);
-      if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil");
+      if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit too small");
       const tx = await npm.mint!(params, await overrides());
       const rc = await tx.wait();
       const tokenId = tokenIdFromReceipt(rc);
@@ -214,8 +214,8 @@ async function openSingleSide(
         entryMcap,
         depositEth: fmtNat(depositAmt),
         side: st.wethIsToken0
-          ? "ETH nunggu → beli token pas MCAP turun"
-          : "ETH nunggu → beli token pas MCAP naik",
+          ? "ETH waiting → buy token when MCAP drops"
+          : "ETH waiting → buy token when MCAP rises",
         liquidity: sim.liquidity.toString(),
       };
     } catch (e) {
@@ -223,7 +223,7 @@ async function openSingleSide(
       if (attempt < 2) await sleep(1500);
     }
   }
-  throw new Error(`mint gagal 3×: ${errShort(lastErr)}`);
+  throw new Error(`mint failed 3×: ${errShort(lastErr)}`);
 }
 
 async function openInRange(
@@ -254,7 +254,7 @@ async function openInRange(
   // WETH-value of token this straddling range wants (98% of the split so leftover stays WETH,
   // not stuck token). Buy ONLY the shortfall, and via the KyberSwap aggregator (best route across
   // every DEX/fee-tier/hook) — NOT the farmed fee tier, which would bleed price impact and land
-  // the position lopsided ("input 0.01 → liq cuma setengah"). Cap at 90% so the WETH side pairs.
+  // the position lopsided ("input 0.01 → liq only half"). Cap at 90% so the WETH side pairs.
   const frac = swapFraction * 0.98;
   const targetTokenWeth = (depositAmt * BigInt(Math.round(frac * 1e6))) / 1_000_000n;
   let wethToSwap = targetTokenWeth > haveWethValue ? targetTokenWeth - haveWethValue : 0n;
@@ -264,7 +264,7 @@ async function openInRange(
   let swapHash: string | undefined;
   if (wethToSwap >= DUST_NAT_WEI) {
     const sw = await swapWethToTokenBest(tokenReal, wethToSwap, st.fee);
-    if (sw.amountOut <= 0n) throw new Error("swap WETH → token tidak menghasilkan token (pool kering?)");
+    if (sw.amountOut <= 0n) throw new Error("swap WETH → token yielded no tokens (pool dry?)");
     swapHash = sw.tx;
   } else {
     wethToSwap = 0n; // enough token already on hand — LP straight from balance
@@ -272,7 +272,7 @@ async function openInRange(
 
   // actual token balance now (reused inventory + anything just swapped)
   const tokenGot: bigint = await erc.balanceOf!(w.address).catch(() => 0n);
-  if (tokenGot <= 0n) throw new Error("token balance 0 — nggak ada yang bisa di-LP");
+  if (tokenGot <= 0n) throw new Error("token balance 0 — nothing to LP");
 
   if ((await erc.allowance!(w.address, C.positionManager)) < tokenGot) {
     await (await erc.approve!(C.positionManager, ethers.MaxUint256, await overrides())).wait();
@@ -292,7 +292,7 @@ async function openInRange(
     deadline: deadline(),
   };
   const sim = await npm.mint!.staticCall(params);
-  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil");
+  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit too small");
   const tx = await npm.mint!(params, await overrides());
   const rc = await tx.wait();
   const tokenId = tokenIdFromReceipt(rc);
@@ -322,7 +322,7 @@ async function openInRange(
     entryMcap,
     swappedPct,
     depositEth: fmtNat(costBasis),
-    side: `IN RANGE — langsung makan fee (≈${swappedPct}% modal jadi token)`,
+    side: `IN RANGE — earning fees immediately (≈${swappedPct}% of capital converted to token)`,
     liquidity: sim.liquidity.toString(),
   };
 }
@@ -387,7 +387,7 @@ export async function openV3StableInRange(pool: PoolInfo, amountEthStr: string):
   const st = await getPoolState(pool.pool);
   const c0 = st.token0;
   const c1 = st.token1;
-  if (!isStableQuote(c0) && !isStableQuote(c1)) throw new Error(`pool ini bukan pair ${stableSym()}`);
+  if (!isStableQuote(c0) && !isStableQuote(c1)) throw new Error(`this pool is not a ${stableSym()} pair`);
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   // GAS FLOOR (not a cap): on a chain with no wrapped native, capital and gas are one balance,
   // so the size is clamped to (balance − reserve). With a wrapped native this is a no-op.
@@ -415,8 +415,8 @@ export async function openV3StableInRange(pool: PoolInfo, amountEthStr: string):
     const have: bigint = await new ethers.Contract(stableAddr(), ERC20_ABI, provider).balanceOf!(w.address).catch(() => 0n);
     if (have < need) {
       throw new Error(
-        `saldo ${stableSym()} ERC-20 ${ethers.formatUnits(have, STABLE_DEC)} < butuh ${ethers.formatUnits(need, STABLE_DEC)} — ` +
-          `di chain ini modal LP dibayar pake ${stableSym()} ERC-20, bukan saldo native.`,
+        `${stableSym()} ERC-20 balance ${ethers.formatUnits(have, STABLE_DEC)} < needed ${ethers.formatUnits(need, STABLE_DEC)} — ` +
+          `on this chain LP capital is paid with ${stableSym()} ERC-20, not native balance.`,
       );
     }
   }
@@ -455,12 +455,12 @@ export async function openV3StableInRange(pool: PoolInfo, amountEthStr: string):
     if (amountIn <= 0n) return;
     const label = isStableQuote(addr) ? stableSym() : "token";
     // swapBest throws only when EVERY venue declined, and its message names each one's reason —
-    // strictly more diagnosable than the old "gagal beli X via Kyber", which was also what you got
+    // strictly more diagnosable than the old "failed to buy X via Kyber", which was also what you got
     // on a chain that has no Kyber to fail.
     const r = await swapBest(payWith, ethers.getAddress(addr), amountIn).catch((e: Error) => {
-      throw new Error(`gagal beli ${label}: ${e.message.slice(0, 160)}`);
+      throw new Error(`failed to buy ${label}: ${e.message.slice(0, 160)}`);
     });
-    if (r.amountOut <= 0n) throw new Error(`gagal beli ${label} — rute kosong`);
+    if (r.amountOut <= 0n) throw new Error(`failed to buy ${label} — empty route`);
     swapHash = r.tx;
   };
   const px = await nativeUsd().catch(() => 0);
@@ -479,7 +479,7 @@ export async function openV3StableInRange(pool: PoolInfo, amountEthStr: string):
   if (!nativeIsStableQuote()) await acquire(usdgAddr, buyUsdgWei);
 
   const [bal0, bal1] = await Promise.all([bal(c0), bal(c1)]);
-  if (bal0 <= 0n || bal1 <= 0n) throw new Error("salah satu sisi balance 0 setelah swap (pool kering?)");
+  if (bal0 <= 0n || bal1 <= 0n) throw new Error("one side has balance 0 after swap (pool dry?)");
 
   // 3) approve both sides to the NPM
   for (const [a, need] of [[c0, bal0], [c1, bal1]] as const) {
@@ -503,7 +503,7 @@ export async function openV3StableInRange(pool: PoolInfo, amountEthStr: string):
     deadline: deadline(),
   };
   const sim = await npm.mint!.staticCall(params);
-  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil");
+  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit too small");
   const tx = await npm.mint!(params, await overrides());
   const rc = await tx.wait();
   const tokenId = tokenIdFromReceipt(rc);
@@ -533,7 +533,7 @@ export async function openV3StableInRange(pool: PoolInfo, amountEthStr: string):
     entryMcap: 0,
     swappedPct: 100,
     depositEth: fmtNat(total), // the CLAMPED size, not the request — the card must show what landed
-    side: `IN RANGE ${tokSym}/${stableSym()} — fee ${(st.fee / 10000).toFixed(2)}% jalan langsung`,
+    side: `IN RANGE ${tokSym}/${stableSym()} — fee ${(st.fee / 10000).toFixed(2)}% earning immediately`,
     liquidity: sim.liquidity.toString(),
   };
 }
@@ -553,7 +553,7 @@ export async function openV3StableSingleSide(pool: PoolInfo, amountEthStr: strin
   // old test named KyberSwap, which made an unconfigured aggregator look like the same failure as
   // a chain that structurally cannot do this.
   if (!hasWrapped() && !nativeIsStableQuote()) {
-    throw new Error(`chain tanpa wrapped native & native bukan ${stableSym()} — nggak ada cara beli sisi ${stableSym()} dari budget native.`);
+    throw new Error(`chain without wrapped native & native is not ${stableSym()} — no way to buy ${stableSym()} side from native budget.`);
   }
   const w = wallet();
   const st = await getPoolState(pool.pool);
@@ -561,7 +561,7 @@ export async function openV3StableSingleSide(pool: PoolInfo, amountEthStr: strin
   const c1 = st.token1;
   const usdgIs0 = isStableQuote(c0);
   const usdgIs1 = isStableQuote(c1);
-  if (!usdgIs0 && !usdgIs1) throw new Error(`pool ini bukan pair ${stableSym()}`);
+  if (!usdgIs0 && !usdgIs1) throw new Error(`this pool is not a ${stableSym()} pair`);
   const usdgAddr = usdgIs0 ? c0 : c1;
   const npm = new ethers.Contract(C.positionManager, NPM_ABI, w);
   // GAS FLOOR (not a cap) — see openV3StableInRange.
@@ -599,9 +599,9 @@ export async function openV3StableSingleSide(pool: PoolInfo, amountEthStr: strin
     // Only reachable WITH a wrapped native (the guard at the top of this function), so the pay
     // side is WETH and the amount is native wei — no rescale, same call the live bot makes today.
     const r = await swapBest(C.weth, ethers.getAddress(usdgAddr), buyWethWei).catch((e: Error) => {
-      throw new Error(`gagal beli ${stableSym()}: ${e.message.slice(0, 160)}`);
+      throw new Error(`failed to buy ${stableSym()}: ${e.message.slice(0, 160)}`);
     });
-    if (r.amountOut <= 0n) throw new Error(`gagal beli ${stableSym()} — rute kosong`);
+    if (r.amountOut <= 0n) throw new Error(`failed to buy ${stableSym()} — empty route`);
     swapHash = r.tx;
   }
   const heldNow: bigint = await usdgC.balanceOf!(w.address).catch(() => 0n);
@@ -610,7 +610,7 @@ export async function openV3StableSingleSide(pool: PoolInfo, amountEthStr: strin
   // Robinhood once). On a stable-native chain px is the constant 1, so the KNOWN branch always runs.
   const bought = heldNow > held0 ? heldNow - held0 : 0n;
   const usdgBal = targetUsdgRaw > 0n ? (heldNow > targetUsdgRaw ? targetUsdgRaw : heldNow) : bought;
-  if (usdgBal <= 0n) throw new Error(`${stableSym()} balance 0 (gak ada ${stableSym()} di wallet & gagal beli)`);
+  if (usdgBal <= 0n) throw new Error(`${stableSym()} balance 0 (no ${stableSym()} in wallet & failed to buy)`);
 
   // fresh tick + single-side range on the all-stable side (buffer so a moving price doesn't cross it)
   const pc = new ethers.Contract(pool.pool, POOL_ABI, provider);
@@ -647,7 +647,7 @@ export async function openV3StableSingleSide(pool: PoolInfo, amountEthStr: strin
     deadline: deadline(),
   };
   const sim = await npm.mint!.staticCall(params);
-  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit terlalu kecil buat range ini");
+  if (sim.liquidity === 0n) throw new Error("liquidity 0 — deposit too small for this range");
   const tx = await npm.mint!(params, await overrides());
   const rc = await tx.wait();
   const tokenId = tokenIdFromReceipt(rc);
@@ -670,7 +670,7 @@ export async function openV3StableSingleSide(pool: PoolInfo, amountEthStr: strin
     entryMcap: 0,
     swappedPct: 0,
     depositEth: fmtNat(total), // the CLAMPED size, not the request
-    side: `SINGLE-SIDE ${stableSym()} — parkir ${stableSym()}, beli ${tokSym} cuma kalo masuk range (rug-safe)`,
+    side: `SINGLE-SIDE ${stableSym()} — park ${stableSym()}, buy ${tokSym} only when in range (rug-safe)`,
     liquidity: sim.liquidity.toString(),
   };
 }
@@ -843,7 +843,7 @@ export async function listPositions(): Promise<PositionRow[]> {
         chainId: chainId(),
       };
     } catch (e) {
-      log.warn(`skip posisi index ${i}: ${errShort(e)}`); // no longer a silent skip
+      log.warn(`skip position index ${i}: ${errShort(e)}`); // no longer a silent skip
       return null;
     }
     })
@@ -1091,7 +1091,7 @@ export async function closePosition(
       tokenRug: swapToken && tokenStuck > 0 ? tokenStuck : 0,
     });
   } catch (e) {
-    log.warn(`ledger append gagal (close tetap sukses): ${errShort(e)}`);
+    log.warn(`ledger append failed (close still succeeded): ${errShort(e)}`);
   }
 
   log.info(`close #${tokenId} ${tokSym} pnl=${pnlEthReal?.toFixed(6) ?? "?"} ${natSym()}`);
@@ -1256,7 +1256,7 @@ export async function closeV3StablePosition(tokenId: string, opts: { swapToken?:
       tokenRug: swapToken && tokenStuck > 0 ? tokenStuck : 0,
     });
   } catch (e) {
-    log.warn(`ledger append gagal (${stableSym()} close tetap sukses): ${errShort(e)}`);
+    log.warn(`ledger append failed (${stableSym()} close still succeeded): ${errShort(e)}`);
   }
 
   log.info(`close v3 ${stableSym()} #${tokenId} ${tokSym}/${stableSym()} pnl=${pnlEth?.toFixed(6) ?? "?"} ${natSym()}`);

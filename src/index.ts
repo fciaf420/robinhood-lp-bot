@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   const release = acquireLock();
 
   const shutdown = (sig: string) => {
-    log.info(`${sig} — matiin bersih…`);
+    log.info(`${sig} — shutting down cleanly…`);
     stop();
     release();
     // give in-flight Telegram calls a beat, then exit

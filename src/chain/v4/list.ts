@@ -176,7 +176,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
   const owned = await nftTokenIds(C.v4PositionManager, w.address).catch(() => null);
   let ids: string[] = owned ?? [];
   if (owned === null) {
-    log.warn("/list: enum NFT gagal (rate-limit / indexer nggak ada?) — andalin deps lokal (posisi web-UI bisa ke-skip sementara)");
+    log.warn("/list: NFT enumeration failed (rate-limit / no indexer?) — relying on local deps (web-UI positions may be temporarily skipped)");
   }
   ids = [...new Set([...ids, ...Object.keys(deps)])];
   // Drop tokenIds the ledger already knows are CLOSED — deps accumulates every historical mint
@@ -197,7 +197,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
 
   // Pre-filter via Multicall3: read getPositionLiquidity for ALL ids in ONE eth_call and drop the
   // CLOSED (0-liq) NFTs the wallet accumulates (30+). Otherwise /list pays 2 reads PER dead NFT — that
-  // is what made "Memuat posisi" crawl. Only the surviving OPEN ids get the full per-position read below.
+  // is what made "Loading positions" crawl. Only the surviving OPEN ids get the full per-position read below.
   let openIds = ids;
   try {
     // Multicall3 address resolved in config.ts (profile, else canonical CREATE2).
@@ -239,7 +239,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
         }
       }
       if (owner.toLowerCase() !== w.address.toLowerCase() || liquidity === 0n) {
-        if (isFresh) log.info(`/list: skip fresh #${tokenId} (liq ${liquidity} owner ${owner.slice(0, 10)}) — baru dibuka tapi kosong/lag`);
+        if (isFresh) log.info(`/list: skip fresh #${tokenId} (liq ${liquidity} owner ${owner.slice(0, 10)}) — just opened but empty/lagging`);
         return null;
       }
 

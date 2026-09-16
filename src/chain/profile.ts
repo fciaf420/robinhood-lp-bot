@@ -29,7 +29,7 @@ const log = logger("profile");
 
 /** EVM address, validated but NOT normalised — the strings are compared with .toLowerCase()
  *  all over the codebase and are passed to ethers.getAddress() where a checksum is needed. */
-const Addr = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "bukan alamat EVM (0x + 40 hex)");
+const Addr = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "not an EVM address (0x + 40 hex)");
 
 const ExplorerSchema = z.object({
   url: z.string().url(), // human link base: `${url}/tx/${hash}`
@@ -158,7 +158,7 @@ export const ChainProfileSchema = z
     // The token/stable path is the ONLY path that works on a chain without a wrapped native,
     // so a profile with no usd quote would leave Arc unable to open anything.
     if (!p.quotes.some((q) => q.class === "usd")) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quotes"], message: "butuh minimal 1 quote dengan class 'usd'" });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quotes"], message: "need at least 1 quote with class 'usd'" });
     }
     if (p.native.wrapped && p.contracts.weth && p.native.wrapped.toLowerCase() !== p.contracts.weth.toLowerCase()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["native", "wrapped"], message: "native.wrapped != contracts.weth" });
@@ -166,7 +166,7 @@ export const ChainProfileSchema = z
     // v4NativeCurrency means "a pool key may hold the 0x0 sentinel". Without a wrapped native the
     // 18-vs-6 decimal mismatch is exactly what Uniswap's Arc playbook says to avoid.
     if (p.venues.v4NativeCurrency && !p.native.wrapped) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["venues", "v4NativeCurrency"], message: "tidak boleh true di chain tanpa wrapped native" });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["venues", "v4NativeCurrency"], message: "must not be true on a chain without wrapped native" });
     }
   });
 
@@ -181,17 +181,17 @@ function load(): ChainProfile {
   try {
     raw = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (e) {
-    throw new Error(`profil chain "${CHAIN_KEY}" tidak terbaca (${file}): ${(e as Error).message}`);
+    throw new Error(`chain profile "${CHAIN_KEY}" could not be read (${file}): ${(e as Error).message}`);
   }
   const parsed = ChainProfileSchema.safeParse(raw);
   if (!parsed.success) {
     log.error(`chains/${CHAIN_KEY}.json invalid`, parsed.error.flatten().fieldErrors);
-    throw new Error(`chains/${CHAIN_KEY}.json gagal validasi — cek field di atas.`);
+    throw new Error(`chains/${CHAIN_KEY}.json failed validation — check the fields above.`);
   }
   // RH_CHAIN picks the file AND the data/ dir; the key inside must agree or the process would
   // write chain A's positions into chain B's directory (or worse, sign with B's addresses).
   if (parsed.data.key !== CHAIN_KEY) {
-    throw new Error(`chains/${CHAIN_KEY}.json punya key "${parsed.data.key}" — harus "${CHAIN_KEY}".`);
+    throw new Error(`chains/${CHAIN_KEY}.json has key "${parsed.data.key}" — must be "${CHAIN_KEY}".`);
   }
   return parsed.data;
 }
@@ -221,7 +221,7 @@ export function quoteAssets(): QuoteAsset[] {
  *  exist by the schema refinement, so callers don't need a null branch. */
 export function stableQuote(): QuoteAsset {
   const q = CHAIN.quotes.find((x) => x.class === "usd");
-  if (!q) throw new Error(`profil ${CHAIN.key} tanpa quote 'usd'`); // unreachable: see superRefine
+  if (!q) throw new Error(`profile ${CHAIN.key} missing 'usd' quote`); // unreachable: see superRefine
   return q;
 }
 

@@ -44,7 +44,7 @@ export interface V2Pool {
 const ZERO = "0x0000000000000000000000000000000000000000";
 
 export function v2Factory(): ethers.Contract {
-  if (!C.v2Factory) throw new Error("v2Factory belum diset di config.contracts");
+  if (!C.v2Factory) throw new Error("v2Factory not set in config.contracts");
   return new ethers.Contract(C.v2Factory, V2_FACTORY_ABI, provider);
 }
 
@@ -61,7 +61,7 @@ export async function getPairAddress(token: string): Promise<string | null> {
 
 /** Why v2 is unavailable on this chain, for a user-facing message. */
 export function v2UnsupportedReason(): string | null {
-  return hasWrapped() ? null : `v2 di bot ini cuma pair wrapped-native; chain ini gak punya wrapped ${natSym()}`;
+  return hasWrapped() ? null : `v2 in this bot only pairs wrapped-native; this chain has no wrapped ${natSym()}`;
 }
 
 /** Read a token/WETH v2 pool state, or null if the pair doesn't exist / is empty. */

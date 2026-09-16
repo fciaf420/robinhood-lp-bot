@@ -42,9 +42,9 @@ let lastPolicy = "";
 function logPolicyOnce(a: typeof cfg.autoLp): void {
   const off = [capOff(a.maxOpen) ? "maxOpen" : null, capOff(a.maxPerHour) ? "maxPerHour" : null, capOff(a.dailyCapEth) ? "dailyCap" : null].filter(Boolean);
   const line =
-    `auto-LP policy: ${off.length ? `cap MATI (unlimited): ${off.join(", ")}` : "semua cap aktif"} · ` +
-    `cadangan gas ${gasReserveNat()} ${natSym()} ditahan (FLOOR, bukan cap)` +
-    (gmgnSupported() ? "" : ` · GMGN nggak ada di chain ini → gate honeypot/tax TIDAK dievaluasi`);
+    `auto-LP policy: ${off.length ? `cap OFF (unlimited): ${off.join(", ")}` : "all caps active"} · ` +
+    `gas reserve ${gasReserveNat()} ${natSym()} held (FLOOR, not cap)` +
+    (gmgnSupported() ? "" : ` · no GMGN on this chain → honeypot/tax gates NOT evaluated`);
   if (line === lastPolicy) return;
   lastPolicy = line;
   log.info(line);
@@ -100,18 +100,18 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   };
 
   // 1. source allowed
-  if (!a.sources.includes(candidate.source)) return skip(`source ${candidate.source} tidak diizinkan`);
+  if (!a.sources.includes(candidate.source)) return skip(`source ${candidate.source} not allowed`);
 
   // 1b. OOR cooldown (#2) — skip a token that's been OOR-closed too many times (never fills)
-  if (inOorCooldown(candidate.token)) return skip(`OOR cooldown ${oorCooldownLeftMin(candidate.token)}m (kebuka-tutup terus)`);
+  if (inOorCooldown(candidate.token)) return skip(`OOR cooldown ${oorCooldownLeftMin(candidate.token)}m (keeps opening-closing)`);
 
   // 2. LLM verdict gate — action is a THRESHOLD (ape > watch > skip), not an exact match, so
   //    requireAction="watch" accepts watch-or-better (an "ape" also passes).
   if (a.requireLlm) {
-    if (!verdict?.llm) return skip("tidak ada verdict LLM");
+    if (!verdict?.llm) return skip("no LLM verdict");
     const rank = (x: string): number => (x === "ape" ? 2 : x === "watch" ? 1 : 0);
     if (rank(verdict.llm.action) < rank(a.requireAction)) return skip(`action ${verdict.llm.action} < ${a.requireAction}`);
-    if (verdict.llm.score < a.minScore) return skip(`skor ${verdict.llm.score} < ${a.minScore}`);
+    if (verdict.llm.score < a.minScore) return skip(`score ${verdict.llm.score} < ${a.minScore}`);
   }
 
   // 3. GMGN hard filters (defense beyond the LLM)
@@ -123,18 +123,18 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   // So the gate is SKIPPED and the skip is RECORDED in `unchecked`, all the way to the alert.
   const g = verdict?.gmgn ?? null;
   const requireGmgn = a.requireGmgn && gmgnSupported();
-  if (requireGmgn && !g) return skip("GMGN wajib tapi tidak tersedia");
+  if (requireGmgn && !g) return skip("GMGN required but not available");
   if (g) {
     if (g.isHoneypot === "yes" || (g.isHoneypot as unknown) === true) return skip("GMGN honeypot");
     const tax = Math.max((g.buyTax ?? 0) * 100, (g.sellTax ?? 0) * 100);
     if (tax > a.maxTaxPct) return skip(`tax ${tax.toFixed(1)}% > ${a.maxTaxPct}%`);
   } else if (a.requireGmgn) {
-    log.warn(`${candidate.symbol}: requireGmgn dipaksa OFF (chain tanpa GMGN) — gate honeypot/tax ${a.maxTaxPct}% TIDAK dijalankan`);
+    log.warn(`${candidate.symbol}: requireGmgn forced OFF (chain without GMGN) — honeypot/tax ${a.maxTaxPct}% gates NOT run`);
   }
 
   // 4. liquidity floor
   const liq = g?.liquidityUsd ?? candidate.liq ?? 0;
-  if (liq < a.minLiqUsd) return skip(`likuiditas $${liq.toFixed(0)} < $${a.minLiqUsd}`);
+  if (liq < a.minLiqUsd) return skip(`liquidity $${liq.toFixed(0)} < $${a.minLiqUsd}`);
 
   // 5. caps: concurrent, per-hour, daily
   const now = Date.now();
@@ -152,15 +152,15 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
   const tok = candidate.token.toLowerCase();
   const held = [...v3rows, ...v4rows].some((r) => ((r as { tokenAddr?: string }).tokenAddr ?? "").toLowerCase() === tok);
   const justOpened = st.opens.some((o) => o.token.toLowerCase() === tok && now - o.ts < 15 * 60_000);
-  if (held || justOpened) return skip(`sudah ada posisi ${candidate.symbol} — 1 token = 1 posisi`);
+  if (held || justOpened) return skip(`already have position ${candidate.symbol} — 1 token = 1 position`);
   // Each cap is skipped entirely at 0 (see capOff). The per-token dedup above is NOT a cap and has
   // no off switch — two positions in one token is a mistake at any deposit size.
-  if (!capOff(a.maxOpen) && openPositions >= a.maxOpen) return skip(`posisi terbuka ${openPositions} ≥ maxOpen ${a.maxOpen}`);
+  if (!capOff(a.maxOpen) && openPositions >= a.maxOpen) return skip(`open positions ${openPositions} ≥ maxOpen ${a.maxOpen}`);
   const lastHour = st.opens.filter((o) => now - o.ts < 3600_000).length;
-  if (!capOff(a.maxPerHour) && lastHour >= a.maxPerHour) return skip(`${lastHour} open/jam ≥ maxPerHour ${a.maxPerHour}`);
+  if (!capOff(a.maxPerHour) && lastHour >= a.maxPerHour) return skip(`${lastHour} open/hr ≥ maxPerHour ${a.maxPerHour}`);
   const spentToday = st.opens.reduce((s, o) => s + o.sizeEth, 0);
   if (!capOff(a.dailyCapEth) && spentToday + a.sizeEth > a.dailyCapEth)
-    return skip(`cap harian: ${spentToday.toFixed(4)}+${a.sizeEth} > ${a.dailyCapEth} ${natSym()}`);
+    return skip(`daily cap: ${spentToday.toFixed(4)}+${a.sizeEth} > ${a.dailyCapEth} ${natSym()}`);
 
   // 6. wallet has funds — with the GAS RESERVE held back (chain profile `native.gasReserve`).
   //
@@ -176,27 +176,27 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     const wantWei = parseNat(natAmountStr(a.sizeEth));
     const spendableWei = reserveForGas(natWei) + wrappedWei;
     if (spendableWei < wantWei)
-      return skip(`saldo bisa dipakai ${fmtNat(spendableWei)} ${natSym()} < size ${a.sizeEth} (cadangan gas ${gasReserveNat()} ditahan)`);
-    if (natWei < gasReserveWei()) return skip(`${natSym()} native < cadangan gas ${gasReserveNat()}`);
+      return skip(`usable balance ${fmtNat(spendableWei)} ${natSym()} < size ${a.sizeEth} (gas reserve ${gasReserveNat()} held)`);
+    if (natWei < gasReserveWei()) return skip(`${natSym()} native < gas reserve ${gasReserveNat()}`);
   }
 
   // Serialize the tx sequence on the shared wallet: take the wallet lock BEFORE qualify + the multi-tx
   // open, release in finally. Blocks the nonce collision (two opens 2s apart shared a nonce → "nonce
   // has already been used" / revert, token already bought = stuck). Also mutually excludes auto-close.
-  if (!acquireWallet()) return skip("wallet lagi kirim tx lain (serialize anti nonce-collision)");
+  if (!acquireWallet()) return skip("wallet sending another tx (serialize anti nonce-collision)");
   try {
     // 7. prefer a FARMABLE 3-5% pool
     const { qualifyCandidate } = await import("../chain/candidate.js");
     const q = await qualifyCandidate(candidate.token).catch(() => null);
 
     // 8. OPEN. Mode via cfg.autoLp.mode (/set alpmode single|inrange): "single" = park the quote asset
-    //    (rug-safe) · "inrange" = both-sided NOW (fee langsung, holds token → rug = loss).
+    //    (rug-safe) · "inrange" = both-sided NOW (fee immediately, holds token → rug = loss).
     const inRange = a.mode === "inrange";
     const modeLabel = inRange ? "in-range" : "single-side";
     const size = natAmountStr(a.sizeEth);
     // Every AUTO-OPEN line carries the unchecked gates. An operator reading the log must be able to
     // see that a position was opened WITHOUT a tax/honeypot verdict, not infer it from the chain.
-    const uncheckedTag = unchecked.length ? ` · ⚠️ belum dicek: ${unchecked.join(",")}` : "";
+    const uncheckedTag = unchecked.length ? ` · ⚠️ not checked: ${unchecked.join(",")}` : "";
     let result: OpenLike;
     if (q) {
       const m = await import("../chain/v4/mint.js");
@@ -218,7 +218,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     } else if (hasWrapped()) {
       const pools = await findPools(candidate.token).catch(() => []);
       const pool = pickLpPool(pools);
-      if (!pool) return skip(`tidak ada pool 3-5% (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
+      if (!pool) return skip(`no pool 3-5% (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
       log.info(`AUTO-OPEN ${candidate.symbol} ${size} ${natSym()} ${modeLabel} v3 fee ${pool.fee}${uncheckedTag}`);
       result = await openPosition(candidate.token, pool.pool, size, { mode: inRange ? "inrange" : "single" });
     } else {
@@ -227,7 +227,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
       // WETH-only branch above: adding stable pools there would silently widen what auto-LP opens.
       const pools = await findStableQuotePools(candidate.token).catch(() => []);
       const pool = pickLpPool(pools);
-      if (!pool) return skip(`tidak ada pool 3-5% (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
+      if (!pool) return skip(`no pool 3-5% (v4) / v3 fee ≥ ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`);
       log.info(`AUTO-OPEN ${candidate.symbol} ${size} ${natSym()} ${modeLabel} v3 stable fee ${pool.fee}${uncheckedTag}`);
       result = inRange ? await openV3StableInRange(pool, size) : await openV3StableSingleSide(pool, size);
     }
@@ -235,7 +235,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     save(st);
     return { opened: true, reason: "opened", token: candidate.token, symbol: candidate.symbol, sizeEth: a.sizeEth, result, unchecked };
   } catch (e) {
-    return skip(`open gagal: ${(e as Error).message.slice(0, 100)}`);
+    return skip(`open failed: ${(e as Error).message.slice(0, 100)}`);
   } finally {
     releaseWallet();
   }

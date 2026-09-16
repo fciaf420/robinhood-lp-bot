@@ -39,7 +39,7 @@ export async function bsFetch<T = any>(pathq: string, timeoutMs = 20_000, tries 
   if (!ENABLED) {
     if (!warnedDisabled) {
       warnedDisabled = true;
-      log.warn(`explorer chain ${CHAIN.key} bukan Blockscout (kind=${CHAIN.explorer.kind}) — fitur REST pakai fallback RPC (chain/indexer.ts).`);
+      log.warn(`explorer for chain ${CHAIN.key} is not Blockscout (kind=${CHAIN.explorer.kind}) — REST features use RPC fallback (chain/indexer.ts).`);
     }
     return null;
   }

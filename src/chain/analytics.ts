@@ -105,7 +105,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
 
   // null = "can't know" (no indexer / backend failed) — NOT "no transfers". See chain/indexer.ts.
   const capKnown = txl !== null;
-  if (!capKnown) indexerNote("txHistory", "arus modal (setor/tarik) di /pnl nggak bisa dihitung — angka LP realized dari ledger tetap akurat");
+  if (!capKnown) indexerNote("txHistory", "capital flows (deposit/withdrawal) in /pnl cannot be calculated — LP realized figures from ledger remain accurate");
 
   let capIn = 0;
   let capOut = 0;
@@ -143,7 +143,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
 
   // current value: native + quote asset + every token valued via real sell quote + open LP
   const tk = await addressTokens(w.address);
-  if (tk === null) indexerNote("addressTokens", "isi dompet (token nyangkut) nggak kebaca — nilai token dihitung 0");
+  if (tk === null) indexerNote("addressTokens", "wallet contents (stuck tokens) cannot be read — token value counted as 0");
   let quoteHeld = 0;
   let tokensEth = 0;
   let graveyardCount = 0;
@@ -221,7 +221,7 @@ export async function lifetimePnl(force = false): Promise<LifetimePnl> {
     capKnown,
     partial: historyIsBounded(),
   };
-  if (!capKnown) log.warn(`/pnl di ${natSym()}-chain ini tanpa indexer: arus modal nggak kehitung (capKnown=false), nilai sekarang tetap akurat.`);
+  if (!capKnown) log.warn(`/pnl on this ${natSym()}-chain without indexer: capital flows not counted (capKnown=false), current value still accurate.`);
   cache = { v: result, at: Date.now() };
   return result;
 }

@@ -243,7 +243,7 @@ function readRaw(file: string, required: boolean): Raw {
     const v: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
     return isObj(v) ? v : {};
   } catch (e) {
-    if (required) throw new Error(`config.json tidak terbaca: ${(e as Error).message}`);
+    if (required) throw new Error(`config.json unreadable: ${(e as Error).message}`);
     return {}; // overlay is optional — absent means "no per-chain override"
   }
 }
@@ -269,7 +269,7 @@ function load(): Config {
   const parsed = ConfigSchema.safeParse(merged);
   if (!parsed.success) {
     log.error("config.json invalid", parsed.error.flatten().fieldErrors);
-    throw new Error("config.json gagal validasi — cek field di atas.");
+    throw new Error("config.json failed validation — check fields above.");
   }
   return parsed.data;
 }
@@ -363,26 +363,26 @@ export const env = {
 };
 
 if (ignoredEnv.length) {
-  log.warn(`chain ${CHAIN_KEY}: ${ignoredEnv.join(", ")} diabaikan (itu RPC chain lain) — pakai ${CHAIN_KEY.toUpperCase()}_RPC_URL.`);
+  log.warn(`chain ${CHAIN_KEY}: ${ignoredEnv.join(", ")} ignored (those are other chain's RPCs) — use ${CHAIN_KEY.toUpperCase()}_RPC_URL.`);
 }
 if (!CHAIN.data.kyberChain && (process.env.KYBERSWAP_ROUTER_ADDRESS || "").trim()) {
-  log.warn(`chain ${CHAIN_KEY}: KYBERSWAP_ROUTER_ADDRESS diabaikan — profil bilang Kyber belum support chain ini (router "${CHAIN.data.router}").`);
+  log.warn(`chain ${CHAIN_KEY}: KYBERSWAP_ROUTER_ADDRESS ignored — profile says Kyber doesn't support this chain yet (router "${CHAIN.data.router}").`);
 }
 if (!CHAIN.sequencer && /^(1|true|yes|on)$/i.test(process.env.RH_FAST_SUBMIT?.trim() || "")) {
-  log.warn(`chain ${CHAIN_KEY}: RH_FAST_SUBMIT diabaikan — chain ini nggak punya sequencer.`);
+  log.warn(`chain ${CHAIN_KEY}: RH_FAST_SUBMIT ignored — this chain has no sequencer.`);
 }
 
 /** Fail fast at startup if a required secret is missing or malformed. */
 export function assertSecrets(): void {
-  if (!env.tgToken) throw new Error("RH_TG_TOKEN belum diset di .env");
-  if (!env.walletKey) throw new Error("RH_WALLET_KEY belum diset di .env");
+  if (!env.tgToken) throw new Error("RH_TG_TOKEN not set in .env");
+  if (!env.walletKey) throw new Error("RH_WALLET_KEY not set in .env");
   if (!/^0x[0-9a-fA-F]{64}$/.test(env.walletKey)) {
-    throw new Error("RH_WALLET_KEY format salah — harus 0x + 64 hex.");
+    throw new Error("RH_WALLET_KEY bad format — must be 0x + 64 hex.");
   }
   if (!env.ownerChat) {
     log.warn(
-      "RH_TG_CHAT belum diset — bot akan mengunci ke chat PERTAMA yang kirim /start, " +
-        "lalu menolak yang lain. Set RH_TG_CHAT di .env untuk mengunci permanen.",
+      "RH_TG_CHAT not set — bot will lock to the FIRST chat that sends /start, " +
+        "then reject others. Set RH_TG_CHAT in .env to lock permanently.",
     );
   }
 }

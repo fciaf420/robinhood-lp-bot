@@ -90,7 +90,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
   // transfers to sum and every position would reconstruct as depEth=0 → a fabricated 0-basis
   // ledger entry. Better to return "nothing to rebuild" than to invent history.
   if (!hasWrapped()) {
-    onProgress("chain ini nggak punya wrapped native — backfill v3 lewat log WETH nggak berlaku.");
+    onProgress("this chain has no wrapped native — v3 backfill via WETH logs does not apply.");
     const existing = readLedger();
     return { rebuilt: 0, total: existing.length };
   }
@@ -115,7 +115,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
     const lg: any = await fetch(`${blockscout}/api/v2/transactions/${t.hash}/logs`, {
       signal: AbortSignal.timeout(20_000),
     }).then((x) => x.json()).catch(() => null);
-    if (++done % 30 === 0) onProgress(`baca event… ${done}/${npmTxs.length}`);
+    if (++done % 30 === 0) onProgress(`reading events… ${done}/${npmTxs.length}`);
     const ts = Number(t.timeStamp) * 1000;
     for (const l of lg?.items ?? []) {
       if (l.address?.hash?.toLowerCase() !== NPM_L) continue;
@@ -177,7 +177,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
   });
 
   const ids = Object.keys(P).filter((id) => P[id]!.closedAt && P[id]!.col0 + P[id]!.col1 > 0n);
-  onProgress(`nilai ${ids.length} posisi tertutup…`);
+  onProgress(`valuing ${ids.length} closed positions…`);
 
   interface Raw {
     id: string; p: Agg; tokAddr: string; tm: { symbol: string; decimals: number };

@@ -61,14 +61,14 @@ export async function gmgnAvailable(): Promise<boolean> {
   // query `--chain arc`, get an empty row back, and read it as "no flags = safe".
   if (!gmgnSupported()) {
     available = false;
-    log.info(`GMGN nggak cover chain ${CHAIN.name} — gate honeypot/tax/holder JADI UNKNOWN, bukan "aman"`);
+    log.info(`GMGN doesn't cover chain ${CHAIN.name} — honeypot/tax/holder gates become UNKNOWN, not "safe"`);
     return false;
   }
   const r = await new Promise<boolean>((resolve) => {
     execFile("gmgn-cli", ["config", "--check"], { timeout: 8000, windowsHide: true }, (err) => resolve(!err));
   });
   available = r;
-  if (!r) log.info("gmgn-cli tidak tersedia / belum dikonfigurasi — enrichment GMGN dilewati");
+  if (!r) log.info("gmgn-cli not available / not configured — GMGN enrichment skipped");
   return r;
 }
 

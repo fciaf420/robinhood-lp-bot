@@ -152,7 +152,7 @@ export async function budgetForOpen(wantWei: bigint): Promise<bigint> {
   const spendable = reserveForGas(bal);
   if (spendable <= 0n) {
     throw new Error(
-      `saldo ${natSym()} ${fmtNat(bal)} <= cadangan gas ${gasReserveNat()} — nggak ada modal yang aman dipakai (nanti gak bisa nutup posisi).`,
+      `${natSym()} balance ${fmtNat(bal)} <= gas reserve ${gasReserveNat()} — no capital safe to use (would not be able to close position).`,
     );
   }
   if (wantWei <= spendable) return wantWei;

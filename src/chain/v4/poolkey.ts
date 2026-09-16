@@ -74,7 +74,7 @@ export function sortCurrencies(a: string, b: string): [string, string] {
  */
 export function nativePoolKey(token: string, fee: number): PoolKey {
   if (!v4NativeCurrencyAllowed()) {
-    throw new Error("chain ini nggak ngizinin currency native (0x0) di PoolKey v4 — pakai quote ERC-20.");
+    throw new Error("this chain does not allow native currency (0x0) in v4 PoolKey — use ERC-20 quote.");
   }
   const t = ethers.getAddress(token);
   const [currency0, currency1] = sortCurrencies(NATIVE, t); // native (0x0) is currency0

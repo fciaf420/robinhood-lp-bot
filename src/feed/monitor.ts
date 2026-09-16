@@ -151,7 +151,7 @@ export class FeedMonitor {
       const meta = await tokenMeta(ev.token).catch(() => null);
       const safe = await safetyCheck(ev.token, cfg.watch.maxTaxPct).catch(() => null);
       if (!safe || !safe.ok) {
-        log.info(`new token ${meta?.symbol ?? k.slice(0, 8)} ditolak: ${safe?.reason ?? "cek gagal"}`);
+        log.info(`new token ${meta?.symbol ?? k.slice(0, 8)} rejected: ${safe?.reason ?? "check failed"}`);
         return;
       }
       let poolExists = false;
@@ -173,7 +173,7 @@ export class FeedMonitor {
         poolExists,
       });
     } catch (e) {
-      log.warn(`vet new token gagal: ${(e as Error).message}`);
+      log.warn(`vet new token failed: ${(e as Error).message}`);
     }
   }
 
@@ -217,7 +217,7 @@ export class FeedMonitor {
         ...(closeError ? { closeError } : {}),
       });
     } catch (e) {
-      log.debug(`range check ${k.slice(0, 8)} gagal: ${(e as Error).message}`);
+      log.debug(`range check ${k.slice(0, 8)} failed: ${(e as Error).message}`);
     } finally {
       this.inflight.delete("range:" + k);
     }
@@ -244,7 +244,7 @@ export class FeedMonitor {
       }
       this.posTokens = toks;
     } catch (e) {
-      log.warn(`refresh positions gagal: ${(e as Error).message}`);
+      log.warn(`refresh positions failed: ${(e as Error).message}`);
     }
   }
 
@@ -269,12 +269,12 @@ export class FeedMonitor {
    */
   private async warmSeed(): Promise<void> {
     if (indexerKind() !== "blockscout") {
-      log.info("warm-seed dilewat — chain ini nggak punya katalog token (feed bakal anggep semua token baru di siklus pertama)");
+      log.info("warm-seed skipped — this chain has no token catalog (feed will treat all tokens as new on first cycle)");
       return;
     }
-    log.info("warm-seed seen-set dari katalog token…");
+    log.info("warm-seed seen-set from token catalog…");
     for (const t of (await tokenCatalog(800).catch(() => null)) ?? []) this.seen.add(t.address.toLowerCase());
     this.persistSeen();
-    log.info(`seen-set: ${this.seen.size} token`);
+    log.info(`seen-set: ${this.seen.size} tokens`);
   }
 }

@@ -6,10 +6,10 @@
 
 export const MENU_KEYBOARD = {
   keyboard: [
-    ["📋 Posisi", "📒 Ledger", "💰 PnL"],
-    ["🧪 Screen", "🔍 Scan", "📸 Kartu"],
+    ["📋 Positions", "📒 Ledger", "💰 PnL"],
+    ["🧪 Screen", "🔍 Scan", "📸 Card"],
     ["🔄 Swap", "📡 Feed", "👁 Watch"],
-    ["🤖 Auto", "👛 Wallet", "⚙️ Setting"],
+    ["🤖 Auto", "👛 Wallet", "⚙️ Settings"],
     ["🗑 Close All", "💸 Sell", "❔ Help"],
   ],
   resize_keyboard: true,
@@ -17,7 +17,7 @@ export const MENU_KEYBOARD = {
 };
 
 const MENU_MAP: Record<string, string> = {
-  "📋 Posisi": "/list",
+  "📋 Positions": "/list",
   "📒 Ledger": "/ledger",
   "💰 PnL": "/pnl",
   "📡 Feed": "/feed",
@@ -25,10 +25,10 @@ const MENU_MAP: Record<string, string> = {
   "🤖 Auto": "/auto",
   "🧪 Screen": "/screen",
   "🔍 Scan": "/scan",
-  "📸 Kartu": "/card",
+  "📸 Card": "/card",
   "🔄 Swap": "/swap",
   "👛 Wallet": "/wallet",
-  "⚙️ Setting": "/settings",
+  "⚙️ Settings": "/settings",
   "🗑 Close All": "/closeall",
   "💸 Sell": "/sell",
   "❔ Help": "/help",

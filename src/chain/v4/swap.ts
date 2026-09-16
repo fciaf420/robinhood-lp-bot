@@ -45,7 +45,7 @@ function poolKeyTuple(pk: PoolKey) {
 }
 
 function universalRouter(): string {
-  if (!C.universalRouter) throw new Error("universalRouter belum ada di profil chain — swap v4 nggak bisa jalan.");
+  if (!C.universalRouter) throw new Error("universalRouter not set in chain profile — v4 swap cannot run.");
   return C.universalRouter;
 }
 
@@ -137,7 +137,7 @@ export async function swapV4Single(
   // — an UNPROTECTED swap. That is pre-existing behaviour on the live native path and is left
   // alone deliberately: hard-failing here would kill an open every time the Quoter hiccups, and
   // the caller already treats amountOut == 0 as "swap failed". It is logged so it is never silent.
-  if (quoted <= 0n) log.warn(`quoter v4 balik 0 untuk pool ${pk.fee} — swap jalan TANPA floor slippage`);
+  if (quoted <= 0n) log.warn(`v4 quoter returned 0 for pool ${pk.fee} — swap running WITHOUT slippage floor`);
   const minOut = minOutWithSlippage(quoted);
   const data = buildSwapCalldata(pk, zeroForOne, amountIn, minOut);
   const value = nativeIn ? amountIn : 0n;
@@ -161,7 +161,7 @@ export async function swapV4Single(
   // fee back from the receipt or every native-out swap under-reports its own proceeds, which the
   // ledger would then book as a loss. Native IN is unaffected: the output is a token balance.
   if (nativeOut && rc) delta += rc.gasUsed * (rc.gasPrice ?? 0n);
-  if (delta <= 0n) log.warn(`swap v4 ${tx.hash} delta 0 — cek receipt`);
+  if (delta <= 0n) log.warn(`swap v4 ${tx.hash} delta 0 — check receipt`);
   return { tx: tx.hash, amountOut: delta };
 }
 
@@ -175,7 +175,7 @@ export async function swapV4Single(
  */
 export async function swapEthToTokenV4(pk: PoolKey, amountInWei: bigint): Promise<V4SwapResult> {
   if (!v4NativeCurrencyAllowed()) {
-    throw new Error("chain ini nggak punya pool v4 ber-currency native — pakai swapV4Single dengan quote ERC-20.");
+    throw new Error("this chain has no v4 pool with native currency — use swapV4Single with ERC-20 quote.");
   }
   const zeroForOne = pk.currency0.toLowerCase() === NATIVE; // native(c0) → token(c1)
   return swapV4Single(pk, zeroForOne, amountInWei);

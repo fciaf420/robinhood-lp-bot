@@ -65,7 +65,7 @@ export function scanSources(): ScanSource[] {
   if (raw.length) {
     const ok = raw.filter((x): x is ScanSource => (ALL_SOURCES as string[]).includes(x));
     const bad = raw.filter((x) => !(ALL_SOURCES as string[]).includes(x));
-    if (bad.length) log.warn(`scan.sources nggak dikenal, dilewat: ${bad.join(", ")} (valid: ${ALL_SOURCES.join(", ")})`);
+    if (bad.length) log.warn(`scan.sources unrecognized, skipping: ${bad.join(", ")} (valid: ${ALL_SOURCES.join(", ")})`);
     if (ok.length) return ok;
   }
   return CHAIN.data.gmgn ? ["gmgn-trending"] : ["onchain-new", "volume-spike"];
@@ -78,7 +78,7 @@ export function startScan(h?: ScanHooks): void {
   void tick();
   timer = setInterval(() => void tick(), cfg.scan.intervalMin * 60_000);
   log.info(
-    `hunt ON — tiap ${cfg.scan.intervalMin}m · sumber ${scanSources().join("+")} · fee ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}-${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}% · vol≥$${cfg.scan.minVolUsd} · skor≥${cfg.scan.minScore}`,
+    `hunt ON — every ${cfg.scan.intervalMin}m · sources ${scanSources().join("+")} · fee ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}-${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}% · vol≥$${cfg.scan.minVolUsd} · score≥${cfg.scan.minScore}`,
   );
 }
 
@@ -107,7 +107,7 @@ async function tick(): Promise<void> {
   try {
     await runScan();
   } catch (e) {
-    log.warn(`scan gagal: ${(e as Error).message.slice(0, 90)}`);
+    log.warn(`scan failed: ${(e as Error).message.slice(0, 90)}`);
   }
 }
 
@@ -130,7 +130,7 @@ interface Hit {
 
 /**
  * Tokens we ALREADY hold a position in — don't re-alert / risk a duplicate add (the operator asked:
- * "kalau udah ada posisi di token-nya, skip"). maybeAutoLp already dedupes the auto-add, but this also
+ * "if there's already a position in the token, skip"). maybeAutoLp already dedupes the auto-add, but this also
  * silences the noisy repeat ALERT (and the manual "LP <token>" tap that would open a 2nd position).
  */
 async function heldTokens(): Promise<Set<string>> {
@@ -202,10 +202,10 @@ async function fromOnchain(now: number, srcs: ScanSource[], cooled: (addr: strin
   // thing that puts them there. Enabling one without the other is a configuration that can never
   // produce a candidate, which is worth saying out loud rather than looking like a quiet chain.
   if (srcs.includes("volume-spike") && !srcs.includes("onchain-new") && poolUniverseStats().pools === 0)
-    log.warn("sumber volume-spike aktif tapi universe pool kosong — nyalain juga onchain-new biar ada yang diisi");
+    log.warn("volume-spike source active but pool universe empty — enable onchain-new too so there's something to fill");
   if (srcs.includes("volume-spike")) {
     const spikes = await spikePools({ probe: 24 }).catch((e: Error) => {
-      log.warn(`volume-spike gagal: ${e.message.slice(0, 70)}`);
+      log.warn(`volume-spike failed: ${e.message.slice(0, 70)}`);
       return [];
     });
     for (const p of spikes) ordered.push({ sighting: p, source: "volume-spike", spikeX: p.spikeX });
@@ -214,7 +214,7 @@ async function fromOnchain(now: number, srcs: ScanSource[], cooled: (addr: strin
     // Look back further than one interval so a scan that errored (or a short restart) doesn't
     // leave a hole in the feed; scanNewPools dedupes against the persistent universe anyway.
     const fresh = await scanNewPools({ lookbackMin: Math.max(30, s.intervalMin * 4) }).catch((e: Error) => {
-      log.warn(`onchain-new gagal: ${e.message.slice(0, 70)}`);
+      log.warn(`onchain-new failed: ${e.message.slice(0, 70)}`);
       return [];
     });
     for (const p of fresh) ordered.push({ sighting: p, source: "onchain-new", spikeX: 0 });
@@ -295,7 +295,7 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
   const skippedHeld = new Set<string>();
   // One predicate for both paths: out of alert cooldown AND not already an open position. Checked
   // BEFORE the expensive pool discovery, not after, so a held token costs nothing to skip — the
-  // operator's rule ("kalau udah ada posisi di token-nya, skip") is unchanged, only cheaper.
+  // operator's rule ("if there's already a position in the token, skip") is unchanged, only cheaper.
   const cooled = (addr: string): boolean => {
     const k = addr.toLowerCase();
     if (held.has(k)) {
@@ -311,7 +311,7 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
   ]);
   const scanned = parts.reduce((n, p) => n + p.scanned, 0);
   stats.lastScanned = scanned;
-  if (skippedHeld.size) log.info(`skip ${skippedHeld.size} kandidat — udah ada posisi di token itu`);
+  if (skippedHeld.size) log.info(`skip ${skippedHeld.size} candidates — already have position in that token`);
   prune(probed, now, probeTtlMs() * 4);
   prune(alerted, now, Math.max(6 * 3600_000, s.cooldownMin * 60_000 * 4));
 
@@ -323,7 +323,7 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
     if (seen.has(k)) continue;
     seen.add(k);
     if (held.has(k)) {
-      log.info(`skip kandidat ${q.r.token.symbol} — udah ada posisi di token itu`);
+      log.info(`skip candidate ${q.r.token.symbol} — already have position in that token`);
       continue;
     }
     alerted.set(k, now);
@@ -331,13 +331,13 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
     stats.alerts++;
     const mc = q.r.token.marketCap ?? 0;
     log.info(
-      `kandidat ${q.r.token.symbol} [${q.r.source}] · mcap ${mc > 0 ? `$${(mc / 1e3).toFixed(0)}k` : "?"} · pool ${(q.pool.fee / 10000).toFixed(2)}% vol $${(q.pool.volUsd / 1e3).toFixed(1)}k fees $${q.pool.feesUsd.toFixed(0)} · spike ${q.pool.spikeX.toFixed(1)}x · skor ${q.r.score}` +
-        (q.r.unchecked.length ? ` · BELUM DICEK: ${q.r.unchecked.join(",")}` : ""),
+      `candidate ${q.r.token.symbol} [${q.r.source}] · mcap ${mc > 0 ? `$${(mc / 1e3).toFixed(0)}k` : "?"} · pool ${(q.pool.fee / 10000).toFixed(2)}% vol $${(q.pool.volUsd / 1e3).toFixed(1)}k fees $${q.pool.feesUsd.toFixed(0)} · spike ${q.pool.spikeX.toFixed(1)}x · score ${q.r.score}` +
+        (q.r.unchecked.length ? ` · NOT CHECKED: ${q.r.unchecked.join(",")}` : ""),
     );
     hooks?.onCandidate(q.r, q.pool);
   }
   stats.lastFound = found;
   const uni = srcs.some((x) => x === "onchain-new" || x === "volume-spike") ? ` · universe ${poolUniverseStats().pools} pool` : "";
-  log.info(`hunt scan [${srcs.join("+")}]: ${scanned} kandidat → ${found} lolos (pool ${(s.feeMinPpm / 10000).toFixed(0)}-${(s.feeMaxPpm / 10000).toFixed(0)}% rame)${uni}`);
+  log.info(`hunt scan [${srcs.join("+")}]: ${scanned} candidates → ${found} passed (pool ${(s.feeMinPpm / 10000).toFixed(0)}-${(s.feeMaxPpm / 10000).toFixed(0)}% active)${uni}`);
   return { found, scanned };
 }

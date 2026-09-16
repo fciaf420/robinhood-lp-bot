@@ -80,8 +80,8 @@ function communityGrade(t: GmgnTrendToken): { grade: ScreenResult["community"]; 
   const flags: string[] = [];
   const socials = [t.twitter, t.website, t.telegram].filter(Boolean).length;
   const recycled = t.twitterDup >= 3 || t.telegramDup >= 3 || t.websiteDup >= 3;
-  if (t.twitterChanged) flags.push("⚠️ twitter di-rename");
-  if (recycled) flags.push("⚠️ sosial daur-ulang");
+  if (t.twitterChanged) flags.push("⚠️ twitter renamed");
+  if (recycled) flags.push("⚠️ recycled socials");
   if (!t.twitter) flags.push("no X");
   if (!t.website) flags.push("no web");
   if (t.ctoFlag) flags.push("CTO");
@@ -132,7 +132,7 @@ function systemPrompt(): string {
     "Weigh: (1) utility vs meme — real product/use-case beats a joke coin; (2) community clarity — genuine, active, non-recycled socials; (3) FOMO/thesis — is the momentum backed by smart money + a real narrative, or an empty pump about to fade?",
     "Given hard numbers already passed the mcap/volume gate. Be skeptical of thin liquidity, recycled socials, high dev/sniper holdings.",
     dataCaveat(), // "" on a fully-covered chain → Robinhood's prompt is unchanged
-    'Respond ONLY as compact JSON: {"score": <0-100 conviction>, "action": "ape"|"watch"|"skip", "summary": "<satu kalimat bahasa Indonesia, <160 char: util/meme + thesis + FOMO verdict>"}.',
+    'Respond ONLY as compact JSON: {"score": <0-100 conviction>, "action": "ape"|"watch"|"skip", "summary": "<one sentence, <160 chars: util/meme + thesis + FOMO verdict>"}.',
   ]
     .filter(Boolean)
     .join(" ");
@@ -140,7 +140,7 @@ function systemPrompt(): string {
 
 function llmPrompt(t: GmgnTrendToken, kind: string, community: string): string {
   return (
-    "Nilai token trending ini:\n" +
+    "Score this trending token:\n" +
     JSON.stringify(
       {
         name: t.name,
@@ -229,7 +229,7 @@ export async function screenTokens(
 
   if (opts.llm) await attachLlm(trimmed, opts.llmTop ?? 10, (r) => llmPrompt(r.token, r.kind, r.community));
 
-  log.info(`screen: ${scanned} trending → ${survivors.length} lolos (flap -${excludedFlap}, unsafe -${excludedUnsafe})`);
+  log.info(`screen: ${scanned} trending → ${survivors.length} passed (flap -${excludedFlap}, unsafe -${excludedUnsafe})`);
   return { results: trimmed, scanned, excludedFlap, excludedUnsafe, gmgnOff };
 }
 
@@ -256,7 +256,7 @@ export interface OnchainCandidate {
  * listed separately from GMGN_ONLY_GATES because it degrades for a different reason: GMGN carries
  * the socials, but so would any social indexer — it isn't a security measurement.
  */
-const ONCHAIN_UNCHECKED = [...GMGN_ONLY_GATES, "socials/komunitas", "mcap/holders"];
+const ONCHAIN_UNCHECKED = [...GMGN_ONLY_GATES, "socials/community", "mcap/holders"];
 
 /**
  * FOMO from on-chain numbers only. Deliberately a DIFFERENT function from fomoScore(): that one
@@ -284,15 +284,15 @@ function onchainSanity(c: OnchainCandidate): { pts: number; flags: string[] } {
   if (c.liqUsd > 0) {
     pts += 6;
     const ratio = c.vol24h / c.liqUsd;
-    if (ratio > 50) flags.push(`⚠️ vol/liq ${ratio.toFixed(0)}× (pola wash)`);
+    if (ratio > 50) flags.push(`⚠️ vol/liq ${ratio.toFixed(0)}× (wash pattern)`);
     else pts += 3;
   } else {
     // v4's singleton PoolManager reports $0 TVL for live pools, so this is common and NOT a red
     // flag on its own — but it does mean the anti-wash check could not run.
-    flags.push("liq ? (TVL nggak kebaca)");
+    flags.push("liq ? (TVL unreadable)");
   }
   if (c.ageMs != null && c.ageMs >= 15 * 60_000) pts += 3;
-  else if (c.ageMs != null) flags.push(`pool baru ${Math.round(c.ageMs / 60_000)}m`);
+  else if (c.ageMs != null) flags.push(`new pool ${Math.round(c.ageMs / 60_000)}m`);
   return { pts, flags };
 }
 
@@ -355,7 +355,7 @@ function carrier(c: OnchainCandidate): GmgnTrendToken {
 
 function onchainLlmPrompt(c: OnchainCandidate, r: ScreenResult): string {
   return (
-    "Nilai kandidat LP ini. Datanya MURNI on-chain — tidak ada data GMGN/sosial untuk token ini:\n" +
+    "Score this LP candidate. Data is PURELY on-chain — no GMGN/social data for this token:\n" +
     JSON.stringify(
       {
         name: c.name,
@@ -408,7 +408,7 @@ export async function screenOnchainCandidates(cands: OnchainCandidate[], opts: S
       // The "not checked" warning is flags[0] deliberately: notify.ts renders only the FIRST FOUR
       // flags, and the one thing that must never be truncated out of an alert is the fact that the
       // token's safety gates were never run.
-      flags: [`⚠️ belum dicek: ${ONCHAIN_UNCHECKED.join(", ")}`, `🔎 ${c.venue} ${(c.fee / 10000).toFixed(2)}% · vol ${c.volSource}`, ...sflags],
+      flags: [`⚠️ not checked: ${ONCHAIN_UNCHECKED.join(", ")}`, `🔎 ${c.venue} ${(c.fee / 10000).toFixed(2)}% · vol ${c.volSource}`, ...sflags],
       unchecked: [...ONCHAIN_UNCHECKED],
       source: c.source,
     });
@@ -422,6 +422,6 @@ export async function screenOnchainCandidates(cands: OnchainCandidate[], opts: S
       return c ? onchainLlmPrompt(c, r) : llmPrompt(r.token, r.kind, r.community);
     });
   }
-  log.info(`screen on-chain: ${cands.length} kandidat → ${trimmed.length} (tanpa GMGN: ${ONCHAIN_UNCHECKED.length} gate UNKNOWN)`);
+  log.info(`screen on-chain: ${cands.length} candidates → ${trimmed.length} (without GMGN: ${ONCHAIN_UNCHECKED.length} gates UNKNOWN)`);
   return trimmed;
 }

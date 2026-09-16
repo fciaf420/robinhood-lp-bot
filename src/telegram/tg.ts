@@ -27,7 +27,7 @@ export function lockOwner(chatId: string | number): void {
     owner = id;
     cfg.telegramChatId = id;
     persist();
-    log.info(`owner terkunci ke chat ${id} (set RH_TG_CHAT untuk permanen)`);
+    log.info(`owner locked to chat ${id} (set RH_TG_CHAT for permanent)`);
   }
 }
 
@@ -57,7 +57,7 @@ export function send(text: string, extra: Extra = {}): Promise<any> {
   if (!owner) return Promise.resolve(null); // nothing to send to yet
   // NOTE: do NOT auto-attach the reply keyboard here — a message sent with a reply keyboard
   // CANNOT be edited later ("message can't be edited"), which breaks every send-then-edit
-  // flow (/list "Memuat posisi…" → results). The keyboard is is_persistent (set on /start)
+  // flow (/list "Loading positions…" → results). The keyboard is is_persistent (set on /start)
   // and re-affirmed only on final, non-edited responses via sendMenu().
   return call("sendMessage", {
     chat_id: owner,
@@ -102,7 +102,7 @@ export async function sendPhoto(png: Buffer, caption?: string, extra: Extra = {}
     const r = await fetch(`${BASE}/sendPhoto`, { method: "POST", body: fd, signal: AbortSignal.timeout(45_000) });
     return await r.json();
   } catch (e) {
-    log.warn(`sendPhoto gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`sendPhoto failed: ${(e as Error).message.slice(0, 80)}`);
     return null;
   }
 }
@@ -116,7 +116,7 @@ export async function downloadTgFile(fileId: string): Promise<Buffer | null> {
     const r = await fetch(`https://api.telegram.org/file/bot${env.tgToken}/${fp}`, { signal: AbortSignal.timeout(30_000) });
     return Buffer.from(await r.arrayBuffer());
   } catch (e) {
-    log.warn(`downloadTgFile gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`downloadTgFile failed: ${(e as Error).message.slice(0, 80)}`);
     return null;
   }
 }

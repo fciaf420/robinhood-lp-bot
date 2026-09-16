@@ -57,7 +57,7 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
   const unsupported = v2UnsupportedReason();
   if (unsupported) throw new Error(unsupported);
   const pool = await readV2Pool(token);
-  if (!pool) throw new Error("tidak ada pool v2/WETH dengan likuiditas");
+  if (!pool) throw new Error("no v2/WETH pool with liquidity");
   const meta = await tokenMeta(token);
   // No budgetForOpen() clamp here: this path only runs on a chain WITH a wrapped native, where
   // the clamp is a no-op by construction (the budget comes from WETH, not the gas float).
@@ -79,9 +79,9 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
 
   // 2) swap the optimal WETH fraction → token (via the pair directly)
   const swapIn = zapSwapAmount(pool.wethReserve, deposit);
-  if (swapIn <= 0n) throw new Error("zap amount 0 — deposit terlalu kecil / pool aneh");
+  if (swapIn <= 0n) throw new Error("zap amount 0 — deposit too small / pool abnormal");
   const tokenOut = getAmountOut(swapIn, pool.wethReserve, pool.tokenReserve);
-  if (tokenOut <= 0n) throw new Error("swap zap: output 0 (pool kering?)");
+  if (tokenOut <= 0n) throw new Error("swap zap: output 0 (pool dry?)");
 
   const pair = pairContract(pool.pair, w);
   // transfer WETH into the pair, then swap out the token to our wallet
@@ -91,26 +91,26 @@ export async function openV2(token: string, amountEthStr: string): Promise<V2Ope
   try {
     await pair.swap!.staticCall(amount0Out, amount1Out, w.address, "0x");
   } catch (e) {
-    throw new Error(`simulasi swap v2 revert: ${short(e)}`);
+    throw new Error(`v2 swap simulation revert: ${short(e)}`);
   }
   const swapTx = await pair.swap!(amount0Out, amount1Out, w.address, "0x", gas);
   await swapTx.wait();
 
   // 3) add liquidity: transfer both sides in the CURRENT reserve ratio, then mint
   const fresh = await readV2Pool(token);
-  if (!fresh) throw new Error("pool hilang setelah swap");
+  if (!fresh) throw new Error("pool disappeared after swap");
   const wethLeft = deposit - swapIn;
   const tokBal: bigint = await erc.balanceOf!(w.address);
   const tokUse = tokBal < tokenOut ? tokBal : tokenOut; // use what we actually received
   const { addWeth, addTok } = ratioAmounts(wethLeft, tokUse, fresh);
-  if (addWeth <= 0n || addTok <= 0n) throw new Error("jumlah add-liquidity 0");
+  if (addWeth <= 0n || addTok <= 0n) throw new Error("add-liquidity amount 0");
 
   await (await weth.transfer!(pool.pair, addWeth, gas)).wait();
   await (await erc.transfer!(pool.pair, addTok, gas)).wait();
   try {
     await pair.mint!.staticCall(w.address);
   } catch (e) {
-    throw new Error(`simulasi mint v2 revert: ${short(e)}`);
+    throw new Error(`v2 mint simulation revert: ${short(e)}`);
   }
   const mintTx = await pair.mint!(w.address, gas);
   const rc = await mintTx.wait();

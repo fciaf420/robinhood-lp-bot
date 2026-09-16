@@ -123,14 +123,14 @@ const usableEth = (b: { weth: string; eth: string }): number =>
   Number(b.weth) + Math.max(0, Number(b.eth) - gasReserve());
 
 /**
- * "Saldo bisa di-LP" line. On a chain with a wrapped native the budget is WETH + (native − reserve)
+ * "LP-able balance" line. On a chain with a wrapped native the budget is WETH + (native − reserve)
  * and BOTH are worth showing; without one (Arc) there is no WETH balance at all, so printing
  * "WETH 0.0000" next to the real number is just noise that invites the wrong conclusion.
  */
 const balanceLine = (b: { weth: string; eth: string }): string =>
   hasWrapped()
-    ? `Saldo bisa di-LP: <b>${usableEth(b).toFixed(5)} ${NAT_SYM}</b>  <i>(${WRAP_SYM} ${Number(b.weth).toFixed(4)} + ${NAT_SYM} ${Number(b.eth).toFixed(4)})</i>`
-    : `Saldo bisa di-LP: <b>${usableEth(b).toFixed(5)} ${NAT_SYM}</b>  <i>(saldo ${Number(b.eth).toFixed(4)} − cadangan gas ${gasReserve()})</i>`;
+    ? `LP-able balance: <b>${usableEth(b).toFixed(5)} ${NAT_SYM}</b>  <i>(${WRAP_SYM} ${Number(b.weth).toFixed(4)} + ${NAT_SYM} ${Number(b.eth).toFixed(4)})</i>`
+    : `LP-able balance: <b>${usableEth(b).toFixed(5)} ${NAT_SYM}</b>  <i>(balance ${Number(b.eth).toFixed(4)} − gas reserve ${gasReserve()})</i>`;
 
 /**
  * A computed NATIVE amount → a parseUnits-safe decimal string. A raw JS float such as
@@ -147,22 +147,22 @@ const toEthStr = (n: number): string | null => {
 // ══════════ open flow ══════════
 
 export async function onCA(addr: string): Promise<void> {
-  await send(`🔎 <b>Cari pool v3 + v4</b> di ${esc(CHAIN_NAME)}\n<code>${addr}</code>`);
+  await send(`🔎 <b>Finding v3 + v4 pools</b> on ${esc(CHAIN_NAME)}\n<code>${addr}</code>`);
   let meta: TokenMeta;
   const all: UPool[] = [];
   // Hard-cap each read so one slow/unresponsive source (a stalled RPC, Blockscout getLogs "suka
-  // lama", or a price API) can't hang the whole "Cari pool" — after `ms` we use the fallback. The
+  // lama", or a price API) can't hang the whole "Find pool" — after `ms` we use the fallback. The
   // underlying promise keeps running, so nothing bad gets cached on our side.
   let timedOut = false; // a source hit its cap → the "no pool" result may be a false negative (RPC slow)
   const to = <T>(p: Promise<T>, ms: number, fb: T): Promise<T> =>
     Promise.race([p, new Promise<T>((r) => setTimeout(() => { timedOut = true; r(fb); }, ms))]);
   try {
     // tokenMeta drives token decimals for LP math, so we can't proceed on a guess. It was previously
-    // awaited UNGUARDED here — a stalled RPC read froze the flow right after the "Cari pool" message
+    // awaited UNGUARDED here — a stalled RPC read froze the flow right after the "Find pool" message
     // (ethers only aborts an RPC after minutes). Cap it; on timeout, bail with a retry hint.
     const m = await to(tokenMeta(addr).catch(() => null), 8000, null);
     if (!m) {
-      await send(`⌛ RPC lambat — metadata token belum kebaca. Paste ulang sebentar lagi.`);
+      await send(`⌛ RPC slow — token metadata not readable yet. Try pasting again shortly.`);
       return;
     }
     meta = m;
@@ -178,11 +178,11 @@ export async function onCA(addr: string): Promise<void> {
       to(findPools(addr).catch(() => [] as PoolInfo[]), 8000, [] as PoolInfo[]),
       to(findStableQuotePools(addr).catch(() => [] as PoolInfo[]), 8000, [] as PoolInfo[]),
       // v4 = the focus. RPC getLogs (cache-first, usually <1s); give a COLD full-range scan generous
-      // room to finish so pools aren't missed ("tidak terdeteksi semua") by a premature timeout.
+      // room to finish so pools aren't missed ("not all detected") by a premature timeout.
       to(discoverV4Pools(addr).catch(() => [] as V4Pool[]), 22000, [] as V4Pool[]),
       to(discoverV4StablePools(addr).catch(() => [] as V4Pool[]), 22000, [] as V4Pool[]),
     ]);
-    log.info(`Cari pool ${meta.symbol}: v3 ${v3.length + v3usd.length} · v4 ${v4.length + v4usd.length} · dex ${dex.size}${timedOut ? " · ⚠️TIMEOUT" : ""}`);
+    log.info(`Find pool ${meta.symbol}: v3 ${v3.length + v3usd.length} · v4 ${v4.length + v4usd.length} · dex ${dex.size}${timedOut ? " · ⚠️TIMEOUT" : ""}`);
     // Enrich each pool with DexScreener 24h VOLUME (matched by pool address for v2/v3, by poolId for
     // v4). v4 standing TVL isn't readable behind a singleton PoolManager (getLiquidity is a
     // dust snapshot, DexScreener reads $0), so VOLUME is the real high-fee-farming signal.
@@ -201,14 +201,14 @@ export async function onCA(addr: string): Promise<void> {
     for (const p of v4) mk("v4", p.fee, NAT_SYM, v4TvlUsd(p, px), p.poolId, { v4: p });
     for (const p of v4usd) mk("v4", p.fee, STABLE_SYM, v4TvlUsd(p, px), p.poolId, { v4: p });
   } catch (e) {
-    await send(`❌ Gagal baca token/pool: ${short(e, 80)}`);
+    await send(`❌ Failed to read token/pool: ${short(e, 80)}`);
     return;
   }
   if (!all.length) {
     await send(
       timedOut
-        ? `⌛ RPC lambat — pool ${esc(meta.symbol)} belum kebaca semua. Paste ulang sebentar lagi (percobaan ke-2 lebih cepet — hasilnya di-cache).`
-        : `⚠️ Tidak ada pool ${esc(meta.symbol)} (${esc(venueList())}). Belum bisa LP.`,
+        ? `⌛ RPC slow — not all ${esc(meta.symbol)} pools could be read. Try pasting again shortly (2nd attempt is faster — results are cached).`
+        : `⚠️ No pool found for ${esc(meta.symbol)} (${esc(venueList())}). Cannot LP yet.`,
     );
     return;
   }
@@ -218,7 +218,7 @@ export async function onCA(addr: string): Promise<void> {
   const min = cfg.lp.minPoolTvlUsd;
   const active = (p: UPool) => Math.max(p.tvl, p.vol);
   // v4 liq/vol read unreliably ($0) behind a singleton PoolManager, so DON'T hide v4 by the
-  // liq/vol floor — that dropped real pools ("tidak terdeteksi semua"). Show EVERY v4 pool; the dust
+  // liq/vol floor — that dropped real pools ("not all detected"). Show EVERY v4 pool; the dust
   // filter applies only to v3 (reliable metrics). Busiest (most 24h vol) first, then highest fee.
   const MAX_SHOW = 14;
   let pools = all
@@ -228,7 +228,7 @@ export async function onCA(addr: string): Promise<void> {
   let note = "";
   if (!pools.length) {
     pools = [...all].sort((a, b) => active(b) - active(a)).slice(0, 3);
-    note = `\n⚠️ Semua pool < ${fmtUsdShort(min)} liq &amp; vol — nampilin 3 teraktif (tipis, hati-hati).`;
+    note = `\n⚠️ All pools < ${fmtUsdShort(min)} liq &amp; vol — showing 3 most active (thin, be careful).`;
   }
   const dropped = all.length - pools.length;
   pending = { token: addr, meta, pools };
@@ -258,11 +258,11 @@ export async function onCA(addr: string): Promise<void> {
   for (let i = 0; i < pools.length; i += 5) {
     numBtns.push(pools.slice(i, i + 5).map((_, j) => ({ text: `${i + j + 1}`, callback_data: `pool:${i + j}` })));
   }
-  const dropLine = dropped > 0 && !note ? ` · +${dropped} disembunyiin` : "";
+  const dropLine = dropped > 0 && !note ? ` · +${dropped} hidden` : "";
   await send(
-    `🦄 <b>Pool ${esc(meta.symbol)}</b>  ·  ${pools.length} pool  ·  urut volume${dropLine}${note}\n\n` +
+    `🦄 <b>Pool ${esc(meta.symbol)}</b>  ·  ${pools.length} pool  ·  sorted by volume${dropLine}${note}\n\n` +
       `${body}\n\n` +
-      `<i>🔥 = ada volume nyata (worth) · n/a = belum ke-index (sepi/baru).\nPilih nomer di bawah 👇</i>`,
+      `<i>🔥 = has real volume (worth it) · n/a = not indexed yet (quiet/new).\nPick a number below 👇</i>`,
     { reply_markup: { inline_keyboard: numBtns } },
   );
 }
@@ -283,13 +283,13 @@ export async function onPick(idx: number, mid: number): Promise<void> {
   const tokUi = tokRaw > 0n ? Number(tokRaw) / 10 ** pending.meta.decimals : 0;
   pending.heldTokenUi = tokUi;
   // Stable already in the wallet → offer a one-tap single-side that funds ENTIRELY from it (no
-  // native input, no native→stable swap). This is the "kalo udah ada USDG, gak usah input 0.001 buat
+  // native input, no native→stable swap). This is the "if you already have USDG, no need to input 0.001 for
   // swap" flow, and it reads USDC on Arc from the same code path.
   // fmtStable(), not formatUnits(_, 6): the width is the profile's, not a literal.
   const usdgUi = Number(fmtStable(usdgRaw));
 
   // for a v4 dual-side (in-range) mint, compute the ETH that BALANCES the held token so the
-  // two sides fill evenly (no swap, minimal leftover) — this is the "hitungan sama" the user wants
+  // two sides fill evenly (no swap, minimal leftover) — this is the "balanced calc" the user wants
   // native-paired v4 only: a "held-token-balancing" native amount is meaningless on a stable pool
   // (both sides are funded from native via the router), and computing it there mis-reads the pool
   // price → garbage.
@@ -306,28 +306,28 @@ export async function onPick(idx: number, mid: number): Promise<void> {
 
   const reuseLine =
     tokUi > 0 && (p.version === "v4" || p.version === "v2")
-      ? `♻️ <b>${tokUi.toPrecision(4)} ${esc(pending.meta.symbol)}</b> udah di wallet — bakal <b>dipake ulang</b> (nggak beli lagi).`
+      ? `♻️ <b>${tokUi.toPrecision(4)} ${esc(pending.meta.symbol)}</b> already in wallet — will be <b>reused</b> (no re-buy).`
       : "";
-  const balLine = balanced > 0 ? `⚖️ Buat <b>dual-side seimbang</b> sama token itu: pasang <b>~${balanced.toFixed(5)} ${NAT_SYM}</b>.` : "";
+  const balLine = balanced > 0 ? `⚖️ For a <b>balanced dual-side</b> with that token: deposit <b>~${balanced.toFixed(5)} ${NAT_SYM}</b>.` : "";
   const showUsdgBtn = isUsdPool && usdgUi >= 1;
   const usdgLine = showUsdgBtn
-    ? `💵 <b>$${usdgUi.toFixed(2)} ${STABLE_SYM}</b> udah di wallet — tap tombol buat <b>single-side tanpa swap / tanpa input</b>.`
+    ? `💵 <b>$${usdgUi.toFixed(2)} ${STABLE_SYM}</b> already in wallet — tap button for <b>single-side without swap / without input</b>.`
     : "";
   const kbRows: { text: string; callback_data: string }[][] = [];
-  if (balanced > 0) kbRows.push([{ text: `⚖️ Dual-side seimbang (~${balanced.toFixed(4)}${NAT_TAG})`, callback_data: "ballp" }]);
+  if (balanced > 0) kbRows.push([{ text: `⚖️ Balanced dual-side (~${balanced.toFixed(4)}${NAT_TAG})`, callback_data: "ballp" }]);
   // callback_data "usdgw" is a FROZEN wire value — see bot.ts. Only the label is chain-aware.
-  if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side pakai ${STABLE_SYM} wallet ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
+  if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side using ${STABLE_SYM} wallet ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
   const extra = kbRows.length ? { reply_markup: { inline_keyboard: kbRows } } : {};
   await edit(
     mid,
     [
-      `<b>${esc(pending.meta.symbol)}</b> · <b>${p.version.toUpperCase()}</b> fee ${(p.fee / 10000).toFixed(2)}% dipilih.`,
+      `<b>${esc(pending.meta.symbol)}</b> · <b>${p.version.toUpperCase()}</b> fee ${(p.fee / 10000).toFixed(2)}% selected.`,
       b ? balanceLine(b) : "",
       reuseLine,
       balLine,
       usdgLine,
       ``,
-      `💬 <b>Ketik jumlah ${NAT_SYM}</b> yang mau di-LP (contoh: <code>0.005</code>)${kbRows.length ? " — atau tap tombol di bawah." : ""}`,
+      `💬 <b>Type ${NAT_SYM} amount</b> to LP (e.g.: <code>0.005</code>)${kbRows.length ? " — or tap a button below." : ""}`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -343,7 +343,7 @@ export async function onBalancedLp(mid: number): Promise<void> {
   if (!amt || (b && Number(amt) > usableEth(b) + 1e-9)) {
     pending.awaitingAmount = true;
     await send(
-      `⚠️ Nilai dual-side seimbang (${pending.balancedEth}) nggak valid / lebih gede dari saldo (${b ? usableEth(b).toFixed(5) : "?"} ${NAT_SYM}). Ketik jumlah ${NAT_SYM} manual aja (contoh: <code>0.005</code>).`,
+      `⚠️ Balanced dual-side value (${pending.balancedEth}) invalid / exceeds balance (${b ? usableEth(b).toFixed(5) : "?"} ${NAT_SYM}). Type ${NAT_SYM} amount manually (e.g.: <code>0.005</code>).`,
     );
     return;
   }
@@ -357,7 +357,7 @@ export async function onBalancedLp(mid: number): Promise<void> {
  * wallet — no native amount to type, no native→stable swap. Sizes the position to the full held
  * stable by passing its native-equivalent as the budget; the mint fn computes
  * target = amount×nativeUsd and reuses the held stable (buys nothing). Only native for gas is
- * needed. This is the "udah ada USDG → gak usah input 0.001 buat swap" flow.
+ * needed. This is the "already have USDG → no need to input 0.001 for swap" flow.
  *
  * ONE code path, two chains: the stable is USDG on Robinhood and the 6-dec USDC predeploy on Arc,
  * both read from the profile — the copy below says whichever this chain actually uses.
@@ -366,7 +366,7 @@ export async function onUseWalletStable(mid: number): Promise<void> {
   if (!pending?.chosen) return;
   const isUsd = pending.chosen.v4?.quote === "usd" || pending.chosen.v3?.quote === "usd";
   if (!isUsd) {
-    await send(`Pool ini bukan pair ${STABLE_SYM} — pakai input ${NAT_SYM} biasa.`);
+    await send(`This pool is not a ${STABLE_SYM} pair — use regular ${NAT_SYM} input.`);
     return;
   }
   const [usdgRaw, b, px] = await Promise.all([
@@ -376,15 +376,15 @@ export async function onUseWalletStable(mid: number): Promise<void> {
   ]);
   const usdgUi = Number(fmtStable(usdgRaw));
   if (usdgUi < 1) {
-    await send(`${STABLE_SYM} di wallet cuma $${usdgUi.toFixed(2)} — kurang buat single-side. Input ${NAT_SYM} manual aja.`);
+    await send(`${STABLE_SYM} in wallet only $${usdgUi.toFixed(2)} — not enough for single-side. Input ${NAT_SYM} manually.`);
     return;
   }
   if (b && Number(b.eth) < gasReserve()) {
-    await send(`⚠️ ${NAT_SYM} native ${Number(b.eth).toFixed(5)} &lt; cadangan gas ${gasReserve()} — mint tetep butuh gas. Isi dikit ${NAT_SYM} native dulu.`);
+    await send(`⚠️ ${NAT_SYM} native ${Number(b.eth).toFixed(5)} &lt; gas reserve ${gasReserve()} — minting still needs gas. Top up some ${NAT_SYM} native first.`);
     return;
   }
   if (!(px > 0)) {
-    await send(`⚠️ Harga ${NAT_SYM}/USD lagi gak kebaca — coba lagi bentar (butuh buat sizing ${STABLE_SYM}).`);
+    await send(`⚠️ ${NAT_SYM}/USD price currently unreadable — try again shortly (needed for sizing ${STABLE_SYM}).`);
     return;
   }
   // USD → native-equivalent budget so the mint fn's target ≈ held stable → reuse buys nothing (no
@@ -393,7 +393,7 @@ export async function onUseWalletStable(mid: number): Promise<void> {
   pending.ethAmt = toEthStr(usdgUi / px) ?? String(usdgUi / px);
   pending.awaitingAmount = false;
   const feePct = (pending.chosen.fee / 10000).toFixed(2);
-  await edit(mid, `⏳ <b>Single-side ${STABLE_SYM} pakai $${usdgUi.toFixed(2)} dari wallet…</b> (no swap · fee ${feePct}%)`);
+  await edit(mid, `⏳ <b>Single-side ${STABLE_SYM} using $${usdgUi.toFixed(2)} from wallet…</b> (no swap · fee ${feePct}%)`);
   if (pending.chosen.version === "v4") return onMintV4(mid, "v4us");
   return onMintV3Stable(mid, true);
 }
@@ -402,13 +402,13 @@ export async function onAmount(text: string): Promise<void> {
   if (!pending?.awaitingAmount || !pending.chosen) return;
   const eth = parseFloat(text);
   if (!(eth > 0)) {
-    await send(`Masukin angka ${NAT_SYM} yang bener, contoh: 0.005`);
+    await send(`Enter a valid ${NAT_SYM} amount, e.g.: 0.005`);
     return;
   }
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
     await send(
-      `⚠️ Kegedean. Yang bisa di-LP cuma ${usableEth(b).toFixed(5)} ${NAT_SYM} (${hasWrapped() ? `${WRAP_SYM} ${Number(b.weth).toFixed(4)} + ${NAT_SYM} ${Number(b.eth).toFixed(4)}, ` : ""}sisain gas). Ketik lebih kecil.`,
+      `⚠️ Too much. LP-able balance is only ${usableEth(b).toFixed(5)} ${NAT_SYM} (${hasWrapped() ? `${WRAP_SYM} ${Number(b.weth).toFixed(4)} + ${NAT_SYM} ${Number(b.eth).toFixed(4)}, ` : ""}reserving gas). Type a smaller amount.`,
     );
     return;
   }
@@ -416,7 +416,7 @@ export async function onAmount(text: string): Promise<void> {
     // Without a wrapped native there is nothing to unwrap — the only fix is a deposit, so don't
     // suggest a step that can't be taken on this chain.
     await send(
-      `⚠️ ${NAT_SYM} native cuma ${Number(b.eth).toFixed(5)} — kurang buat gas (butuh min ${gasReserve()}). Isi sedikit ${NAT_SYM} native${hasWrapped() ? `, ATAU unwrap dikit ${WRAP_SYM} → ${NAT_SYM}` : ""}.`,
+      `⚠️ ${NAT_SYM} native only ${Number(b.eth).toFixed(5)} — not enough for gas (need min ${gasReserve()}). Add some ${NAT_SYM} native${hasWrapped() ? `, OR unwrap some ${WRAP_SYM} → ${NAT_SYM}` : ""}.`,
     );
     return;
   }
@@ -427,11 +427,11 @@ export async function onAmount(text: string): Promise<void> {
   if (pending.chosen.version === "v2") {
     await send(
       [
-        `<b>Konfirmasi LP · Uniswap v2</b>`,
+        `<b>Confirm LP · Uniswap v2</b>`,
         `${esc(pending.meta.symbol)} · fee <b>0.30%</b> · deposit <b>${eth} ${NAT_SYM}</b> · full-range`,
         ``,
-        `🎯 v2 selalu <b>both-sided 50/50</b>: bot swap ~separuh ${NAT_SYM} → ${esc(pending.meta.symbol)}, sisanya jadi pasangan LP. <b>Fee jalan LANGSUNG.</b>`,
-        `⚠️ Langsung pegang token (rug = rugi ~separuh). Nggak ada single-side di v2.`,
+        `🎯 v2 is always <b>both-sided 50/50</b>: bot swaps ~half ${NAT_SYM} → ${esc(pending.meta.symbol)}, the rest becomes the LP pair. <b>Fee starts IMMEDIATELY.</b>`,
+        `⚠️ Immediately holds token (rug = lose ~half). No single-side in v2.`,
       ].join("\n"),
       {
         reply_markup: {
@@ -452,12 +452,12 @@ export async function onAmount(text: string): Promise<void> {
     if (isUsd) {
       await send(
         [
-          `<b>Konfirmasi LP · Uniswap v4 · ${STABLE_SYM}</b> 🦄`,
+          `<b>Confirm LP · Uniswap v4 · ${STABLE_SYM}</b> 🦄`,
           `${esc(pending.meta.symbol)}/${STABLE_SYM} · fee <b>${feePct}%</b> · deposit <b>${eth} ${NAT_SYM}</b>`,
           ``,
-          `🎯 <b>In-range (farming)</b> — beli ${STABLE_SYM} + ${esc(pending.meta.symbol)} dari ${NAT_SYM} (${ROUTER_LABEL}), mint both-sided. <b>Fee ${feePct}% jalan LANGSUNG.</b> Langsung pegang token (rug = rugi).`,
+          `🎯 <b>In-range (farming)</b> — buy ${STABLE_SYM} + ${esc(pending.meta.symbol)} from ${NAT_SYM} (${ROUTER_LABEL}), mint both-sided. <b>Fee ${feePct}% starts IMMEDIATELY.</b> Immediately holds token (rug = loss).`,
           ``,
-          `🛡 <b>Single-side ${STABLE_SYM}</b> — parkir <b>${STABLE_SYM} doang (0 token)</b>, range di sisi ${STABLE_SYM}. Fee cuma pas ${esc(pending.meta.symbol)} <b>PUMP</b> masuk range. Rug-safe: kalo token dump, ${STABLE_SYM} lo utuh.`,
+          `🛡 <b>Single-side ${STABLE_SYM}</b> — park <b>${STABLE_SYM} only (0 token)</b>, range on ${STABLE_SYM} side. Fee only when ${esc(pending.meta.symbol)} <b>PUMP</b> into range. Rug-safe: if token dumps, your ${STABLE_SYM} stays intact.`,
         ].join("\n"),
         {
           reply_markup: {
@@ -473,12 +473,12 @@ export async function onAmount(text: string): Promise<void> {
     }
     await send(
       [
-        `<b>Konfirmasi mint · Uniswap v4</b> 🦄`,
+        `<b>Confirm mint · Uniswap v4</b> 🦄`,
         `${esc(pending.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ${NAT_SYM}</b> · pair native ${NAT_SYM}`,
         ``,
-        `🎯 <b>In-range (farming)</b> — beli token via rute terbaik (${ROUTER_LABEL}), mint di sekitar harga. <b>Fee ${feePct}% jalan LANGSUNG.</b> Tapi langsung pegang token (rug = rugi ~separuh).`,
+        `🎯 <b>In-range (farming)</b> — buy token via best route (${ROUTER_LABEL}), mint around current price. <b>Fee ${feePct}% starts IMMEDIATELY.</b> But immediately holds token (rug = lose ~half).`,
         ``,
-        `🛡 <b>Single-side ${NAT_SYM}</b> — parkir ${NAT_SYM}, range di atas harga. Fee cuma pas harga NAIK masuk range. Aman dari rug.`,
+        `🛡 <b>Single-side ${NAT_SYM}</b> — park ${NAT_SYM}, range above price. Fee only when price RISES into range. Safe from rug.`,
       ].join("\n"),
       {
         reply_markup: {
@@ -498,12 +498,12 @@ export async function onAmount(text: string): Promise<void> {
     const feePct = (pending.chosen.fee / 10000).toFixed(2);
     await send(
       [
-        `<b>Konfirmasi LP · Uniswap v3 · ${STABLE_SYM}</b>`,
+        `<b>Confirm LP · Uniswap v3 · ${STABLE_SYM}</b>`,
         `${esc(pending.meta.symbol)}/${STABLE_SYM} · fee <b>${feePct}%</b> · deposit <b>${eth} ${NAT_SYM}</b>`,
         ``,
-        `🎯 <b>In-range (farming)</b> — beli ${STABLE_SYM} + ${esc(pending.meta.symbol)} dari ${NAT_SYM} (${ROUTER_LABEL}), mint both-sided. <b>Fee ${feePct}% jalan LANGSUNG.</b> Langsung pegang token (rug = rugi).`,
+        `🎯 <b>In-range (farming)</b> — buy ${STABLE_SYM} + ${esc(pending.meta.symbol)} from ${NAT_SYM} (${ROUTER_LABEL}), mint both-sided. <b>Fee ${feePct}% starts IMMEDIATELY.</b> Immediately holds token (rug = loss).`,
         ``,
-        `🛡 <b>Single-side ${STABLE_SYM}</b> — parkir <b>${STABLE_SYM} doang (0 token)</b>, range di sisi ${STABLE_SYM}. Fee cuma pas ${esc(pending.meta.symbol)} <b>PUMP</b> masuk range. Rug-safe: kalo token dump, ${STABLE_SYM} lo utuh.`,
+        `🛡 <b>Single-side ${STABLE_SYM}</b> — park <b>${STABLE_SYM} only (0 token)</b>, range on ${STABLE_SYM} side. Fee only when ${esc(pending.meta.symbol)} <b>PUMP</b> into range. Rug-safe: if token dumps, your ${STABLE_SYM} stays intact.`,
       ].join("\n"),
       {
         reply_markup: {
@@ -527,16 +527,16 @@ export async function onAmount(text: string): Promise<void> {
   const rng = (p: typeof pS): string => (p ? `${fmtMcap(p.rangeMcapLow)} → ${fmtMcap(p.rangeMcapHigh)}` : "?");
   await send(
     [
-      `<b>Konfirmasi mint · Uniswap v3</b>`,
+      `<b>Confirm mint · Uniswap v3</b>`,
       `${esc(pending.meta.symbol)} · fee ${(pending.chosen.fee / 10000).toFixed(2)}% · deposit <b>${eth} ${NAT_SYM}</b> · width ${cfg.lp.widthPct}%`,
       pS ? `📊 MCAP now: <b>${fmtMcap(pS.mcapNow)}</b>` : "",
       ``,
       `🛡 <b>Single-side ${NAT_SYM}</b> — range ${rng(pS)}`,
-      `   0% token. Fee jalan cuma kalau MCAP masuk range. Aman dari rug.`,
+      `   0% token. Fee only earned when MCAP enters range. Safe from rug.`,
       ``,
       `🎯 <b>In-range</b> — range ${rng(pI)}`,
-      `   swap ~<b>${pI?.swapPct ?? "?"}%</b> modal → ${esc(pending.meta.symbol)} duluan. Fee LANGSUNG jalan,`,
-      `   tapi lu langsung pegang token (rug = rugi ${pI?.swapPct ?? "?"}% instan).`,
+      `   swap ~<b>${pI?.swapPct ?? "?"}%</b> capital → ${esc(pending.meta.symbol)} first. Fee starts IMMEDIATELY,`,
+      `   but you immediately hold token (rug = instant ${pI?.swapPct ?? "?"}% loss).`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -583,7 +583,7 @@ export async function onMint(mid: number, action = "single"): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ Mint gagal: ${short(e, 160)}`);
+    await send(`❌ Mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -601,7 +601,7 @@ async function onMintV3Stable(mid: number, single = false): Promise<void> {
       [
         `✅ <b>${esc(sym)}/${STABLE_SYM} #${r.tokenId ?? "?"}</b> [v3] ${single ? `🛡 SINGLE-SIDE ${STABLE_SYM}` : "🎯 IN-RANGE (farming)"}`,
         r.wrapHash ? `wrap: <a href="${explorerTx(r.wrapHash)}">tx</a>` : "",
-        r.swapHash ? `beli ${STABLE_SYM} (${ROUTER_LABEL}): <a href="${explorerTx(r.swapHash)}">tx</a>` : "",
+        r.swapHash ? `buy ${STABLE_SYM} (${ROUTER_LABEL}): <a href="${explorerTx(r.swapHash)}">tx</a>` : "",
         `pool fee <b>${feePct}%</b> · range tick ${r.tickLower}..${r.tickUpper}`,
         `deposit ${r.depositEth}${NAT_TAG} · ${esc(r.side)}`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
@@ -610,7 +610,7 @@ async function onMintV3Stable(mid: number, single = false): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ Mint gagal: ${short(e, 160)}`);
+    await send(`❌ Mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -622,7 +622,7 @@ async function onMintV4(mid: number, action: string): Promise<void> {
   const v4pool = pending.chosen.v4;
   const usdgSingle = isUsd && action === "v4us";
   const inR = isUsd ? !usdgSingle : action === "v4r" || action === "inrange"; // native: v4r/inrange = farming
-  await edit(mid, `⏳ <b>Minting v4 ${pending.ethAmt} ${NAT_SYM}…</b> ${usdgSingle ? `(${ROUTER_LABEL} → ${STABLE_SYM} → single-side)` : isUsd ? `(${ROUTER_LABEL} → ${STABLE_SYM}+token → mint)` : inR ? "(swap → Permit2 → mint in-range)" : "(simulasi → mint single-side)"}`);
+  await edit(mid, `⏳ <b>Minting v4 ${pending.ethAmt} ${NAT_SYM}…</b> ${usdgSingle ? `(${ROUTER_LABEL} → ${STABLE_SYM} → single-side)` : isUsd ? `(${ROUTER_LABEL} → ${STABLE_SYM}+token → mint)` : inR ? "(swap → Permit2 → mint in-range)" : "(simulate → mint single-side)"}`);
   try {
     const { openV4SingleSide, openV4InRange, openV4StableInRange, openV4StableSingleSide } = await import("../chain/v4/mint.js");
     const r = usdgSingle
@@ -641,13 +641,13 @@ async function onMintV4(mid: number, action: string): Promise<void> {
         `pool fee <b>${(r.fee / 10000).toFixed(2)}%</b> · range tick ${r.tickLower}..${r.tickUpper}`,
         `deposit ${r.depositEth}${NAT_TAG}`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
-        `Tutup: <code>/v4close ${r.tokenId}</code>`,
+        `Close: <code>/v4close ${r.tokenId}</code>`,
       ]
         .filter(Boolean)
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ v4 mint gagal: ${short(e, 160)}`);
+    await send(`❌ v4 mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -672,7 +672,7 @@ async function onMintV2(mid: number): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ v2 LP gagal: ${short(e, 160)}`);
+    await send(`❌ v2 LP failed: ${short(e, 160)}`);
   }
 }
 
@@ -694,7 +694,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
     return;
   }
   if (!mid) {
-    const m = await send("⏳ Memuat posisi…");
+    const m = await send("⏳ Loading positions…");
     mid = m?.result?.message_id ?? null;
   }
   const out = (txt: string, extra?: Record<string, unknown>) => (mid ? edit(mid, txt, extra) : send(txt, extra));
@@ -717,7 +717,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
   const rows = rowsRes.r;
   const refreshBtn = [{ text: "🔄 Refresh", callback_data: "refresh" }];
   if (!rows.length && !v4rows.length) {
-    await out("Tidak ada posisi LP terbuka (v3/v4).", { reply_markup: { inline_keyboard: [refreshBtn] } });
+    await out("No open LP positions (v3/v4).", { reply_markup: { inline_keyboard: [refreshBtn] } });
     return;
   }
   const px = await nativeUsd().catch(() => 0);
@@ -737,16 +737,16 @@ export async function onList(mid: number | null = null, force = false): Promise<
     T.push(`${tokenEmoji(r.tokenSym)} ${r.pair ?? `${r.tokenSym}/${WRAP_SYM}`}  ·  fee ${(r.fee / 10000).toFixed(2)}%  ·  #${r.tokenId}`);
     T.push(`   ${tag}`);
     T.push("   " + "─".repeat(34));
-    T.push(`   ${padR("modal", 7)} ${padL(r.depEth != null ? r.depEth.toFixed(6) + NAT_TAG : "—", 11)}  ${padL(r.depEth != null ? usd(r.depEth) : "—", 9)}`);
-    T.push(`   ${padR("nilai", 7)} ${padL(r.valEth.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(r.valEth), 9)}`);
+    T.push(`   ${padR("capital", 7)} ${padL(r.depEth != null ? r.depEth.toFixed(6) + NAT_TAG : "—", 11)}  ${padL(r.depEth != null ? usd(r.depEth) : "—", 9)}`);
+    T.push(`   ${padR("value", 7)} ${padL(r.valEth.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(r.valEth), 9)}`);
     T.push(`   ${padR("fee", 7)} ${padL(r.feeEth.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(r.feeEth), 9)}`);
-    T.push(`   ${padR("umur", 7)} ${padL(fmtAge(r.ageMs) + (r.ageSource === "onchain" ? " ⛓" : ""), 11)}  ${rate}`);
+    T.push(`   ${padR("age", 7)} ${padL(fmtAge(r.ageMs) + (r.ageSource === "onchain" ? " ⛓" : ""), 11)}  ${rate}`);
     T.push(`   ${padR("MCAP", 7)} ${padL(fmtMcap(r.mcapNow), 11)}  ${r.entryMcap ? "entry " + fmtMcap(r.entryMcap) : "—"}`);
     if (r.rangeMcapHigh > 0) T.push(`   ${padR("range", 7)} ${fmtMcap(r.rangeMcapLow)} → ${fmtMcap(r.rangeMcapHigh)}`);
     if (r.pnlEth != null) {
       T.push(`   ${padR("PnL", 7)} ${padL(sg(r.pnlEth, 6) + NAT_TAG, 11)}  ${padL((r.pnlEth >= 0 ? "+" : "-") + "$" + Math.abs(r.pnlEth * px).toFixed(2), 9)}  ${sg(r.pnlPct ?? 0, 1)}%`);
     } else {
-      T.push(`   ${padR("PnL", 7)} — (deposit tak tercatat)`);
+      T.push(`   ${padR("PnL", 7)} — (deposit not recorded)`);
     }
   });
 
@@ -761,12 +761,12 @@ export async function onList(mid: number | null = null, force = false): Promise<
     const id = dupe[r.tokenSym]! > 1 ? ` #${r.tokenId}` : "";
     btns.push([{ text: `Close ${r.tokenSym}${id}${p}`, callback_data: `close:${r.tokenId}` }]);
   });
-  if (rows.length > 1) btns.push([{ text: `🗑🗑 CLOSE ALL (${rows.length} posisi)`, callback_data: "closeall" }]);
+  if (rows.length > 1) btns.push([{ text: `🗑🗑 CLOSE ALL (${rows.length} positions)`, callback_data: "closeall" }]);
 
   // ── v4 positions block ──
   const T4: string[] = [];
   if (v4rows.length) {
-    T4.push(`🦄 UNISWAP v4 · ${v4rows.length} posisi`);
+    T4.push(`🦄 UNISWAP v4 · ${v4rows.length} positions`);
     T4.push("─".repeat(37));
     v4rows.forEach((r, i) => {
       const vEth = px ? r.valueUsd / px : 0;
@@ -780,11 +780,11 @@ export async function onList(mid: number | null = null, force = false): Promise<
       if (i) T4.push("");
       T4.push(`${tokenEmoji(r.sym)} ${r.pair}  ·  fee ${(r.fee / 10000).toFixed(2)}%  ·  #${r.tokenId}`);
       T4.push(`   ${r.inRange ? "🟢 IN RANGE" : "🔴 OUT OF RANGE"}${r.ethPaired ? "" : ` · non-${NAT_SYM} pair`}`);
-      T4.push(`   ${padR("nilai", 7)} $${r.valueUsd.toFixed(2)}`);
-      T4.push(`   ${padR("isi", 7)} ${r.amount0} ${r.sym0} + ${r.amount1} ${r.sym1}`);
+      T4.push(`   ${padR("value", 7)} $${r.valueUsd.toFixed(2)}`);
+      T4.push(`   ${padR("holds", 7)} ${r.amount0} ${r.sym0} + ${r.amount1} ${r.sym1}`);
       T4.push(`   ${padR("fee", 7)} $${r.feeUsd.toFixed(2)} earned`);
-      if (r.depEth != null) T4.push(`   ${padR("modal", 7)} ${r.depEth.toFixed(6)}${NAT_TAG} (${usd(r.depEth)})`);
-      T4.push(`   ${padR("umur", 7)} ${fmtAge(r.ageMs)}`);
+      if (r.depEth != null) T4.push(`   ${padR("capital", 7)} ${r.depEth.toFixed(6)}${NAT_TAG} (${usd(r.depEth)})`);
+      T4.push(`   ${padR("age", 7)} ${fmtAge(r.ageMs)}`);
     });
     const dupe4: Record<string, number> = {};
     v4rows.forEach((r) => (dupe4[r.sym] = (dupe4[r.sym] || 0) + 1));
@@ -803,10 +803,10 @@ export async function onList(mid: number | null = null, force = false): Promise<
   const totalCount = rows.length + v4rows.length;
   const S: string[] = [];
   if (totalCount > 1) {
-    S.push(`TOTAL ${totalCount} posisi  ·  v3 ${rows.length} · v4 ${v4rows.length}`);
+    S.push(`TOTAL ${totalCount} positions  ·  v3 ${rows.length} · v4 ${v4rows.length}`);
     S.push("─".repeat(37));
-    S.push(`${padR("modal", 7)} ${padL(totDep.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(totDep), 9)}`);
-    S.push(`${padR("nilai", 7)} ${padL(totEth.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(totEth), 9)}`);
+    S.push(`${padR("capital", 7)} ${padL(totDep.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(totDep), 9)}`);
+    S.push(`${padR("value", 7)} ${padL(totEth.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(totEth), 9)}`);
     S.push(`${padR("fee", 7)} ${padL(totFee.toFixed(6) + NAT_TAG, 11)}  ${padL(usd(totFee), 9)}`);
     S.push(`${padR("PnL", 7)} ${padL(sg(totPnl, 6) + NAT_TAG, 11)}  ${padL((totPnl >= 0 ? "+" : "-") + "$" + Math.abs(totPnl * px).toFixed(2), 9)}`);
   }
@@ -815,7 +815,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
   // The chain name is in the header on purpose: /list is the screen the operator acts on, and two
   // bots in two chats render identical-looking position lists. A rate badge is only meaningful when
   // the native currency ISN'T a dollar — "· USDC $1" would be noise.
-  const head = `📋 <b>Posisi LP</b> · ${esc(CHAIN_NAME)}${px && !NAT_IS_USD ? ` · ${NAT_SYM} $${px.toFixed(0)}` : ""} · <i>${jam}</i>`;
+  const head = `📋 <b>LP Positions</b> · ${esc(CHAIN_NAME)}${px && !NAT_IS_USD ? ` · ${NAT_SYM} $${px.toFixed(0)}` : ""} · <i>${jam}</i>`;
   const body =
     (rows.length ? pre(T.join("\n")) : "") +
     (T4.length ? pre(T4.join("\n")) : "") +
@@ -846,15 +846,15 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   const sum = ledgerSummary();
 
   if (!allEntries.length && !v4hist.length) {
-    await out("⏳ <b>Ledger kosong — rebuild dari on-chain…</b>");
+    await out("⏳ <b>Ledger empty — rebuilding from on-chain…</b>");
     try {
       await backfillLedger();
     } catch (e) {
-      await out(`❌ Rebuild gagal: ${short(e, 90)}`);
+      await out(`❌ Rebuild failed: ${short(e, 90)}`);
       return;
     }
     if (!readLedger().length) {
-      await out("📒 Belum ada posisi LP yang pernah ditutup.\n<i>Keisi otomatis tiap lu close posisi.</i>");
+      await out("📒 No LP positions have been closed yet.\n<i>Auto-filled each time you close a position.</i>");
       return;
     }
     return onLedger(page, mid);
@@ -889,20 +889,20 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
         // stable-quoted pools → show USD (the natural unit); the native amount is secondary
         const at = e.ethUsdAtClose || px || 0;
         const $ = (eth: number) => "$" + (eth * at).toFixed(2);
-        T.push(`   modal ${$(e.depEth ?? 0)} → balik ${$(e.outEth ?? 0)}`);
+        T.push(`   capital ${$(e.depEth ?? 0)} → returned ${$(e.outEth ?? 0)}`);
         if (e.pnlEth != null) T.push(`   PnL ${e.pnlUsd != null ? money(e.pnlUsd) : $(e.pnlEth)}  (${sg(e.pnlEth, 5)}${NAT_TAG})  ${sg(e.pnlPct ?? 0, 1)}%`);
-        else T.push(`   PnL — (modal tak tercatat)`);
+        else T.push(`   PnL — (capital not recorded)`);
       } else {
-        T.push(`   modal ${(e.depEth ?? 0).toFixed(5)}${NAT_TAG} → balik ${(e.outEth ?? 0).toFixed(5)}${NAT_TAG}`);
+        T.push(`   capital ${(e.depEth ?? 0).toFixed(5)}${NAT_TAG} → returned ${(e.outEth ?? 0).toFixed(5)}${NAT_TAG}`);
         if (e.pnlEth != null) T.push(`   PnL ${sg(e.pnlEth, 5)}${NAT_TAG}  ${e.pnlUsd != null ? money(e.pnlUsd) : "—"}  ${sg(e.pnlPct ?? 0, 1)}%`);
-        else T.push(`   PnL — (modal tak tercatat)`);
+        else T.push(`   PnL — (capital not recorded)`);
       }
-      if ((e.unsoldEth ?? 0) > 0) T.push(`   🪙 nyangkut ~${(e.unsoldEth ?? 0).toFixed(5)}${NAT_TAG} (blm dijual)`);
+      if ((e.unsoldEth ?? 0) > 0) T.push(`   🪙 stuck ~${(e.unsoldEth ?? 0).toFixed(5)}${NAT_TAG} (unsold)`);
     } else if (row.v4h) {
       const c = row.v4h;
       T.push(`⬜ ${tokenEmoji(c.pair)} ${c.pair} · v4 🦄   ${n}/${combined.length}`);
       T.push(`   ${when(c.closedAt)} · #${c.tokenId} · fee ${(c.fee / 10000).toFixed(2)}%`);
-      T.push(`   PnL — (histori sblm tracking${c.depEth != null ? `, modal ${c.depEth.toFixed(5)}${NAT_TAG}` : ""})`);
+      T.push(`   PnL — (history before tracking${c.depEth != null ? `, capital ${c.depEth.toFixed(5)}${NAT_TAG}` : ""})`);
     }
   });
 
@@ -911,12 +911,12 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   const nV2 = allEntries.filter((e) => e.version === "v2").length;
   const net = sum.pnlEth + sum.unsoldEth;
   const S: string[] = [];
-  S.push(`${combined.length} DITUTUP · ${nV3} v3 · ${nV4} v4${nV2 ? ` · ${nV2} v2` : ""}`);
+  S.push(`${combined.length} CLOSED · ${nV3} v3 · ${nV4} v4${nV2 ? ` · ${nV2} v2` : ""}`);
   S.push("─".repeat(34));
-  S.push(`${padR("menang", 9)} ${sum.wins}W / ${sum.losses}L · ${sum.winRate.toFixed(0)}%`);
-  S.push(`${padR("modal", 9)} ${sum.depEth.toFixed(5)}${NAT_TAG} · fee ${sum.feeEth.toFixed(5)}${NAT_TAG}`);
+  S.push(`${padR("W/L", 9)} ${sum.wins}W / ${sum.losses}L · ${sum.winRate.toFixed(0)}%`);
+  S.push(`${padR("capital", 9)} ${sum.depEth.toFixed(5)}${NAT_TAG} · fee ${sum.feeEth.toFixed(5)}${NAT_TAG}`);
   S.push(`${padR("REALIZED", 9)} ${sg(sum.pnlEth, 5)}${NAT_TAG} · ${money(sum.pnlUsd)}`);
-  if (sum.unsoldEth > 0) S.push(`${padR("nyangkut", 9)} +${sum.unsoldEth.toFixed(5)}${NAT_TAG} · +$${(sum.unsoldEth * px).toFixed(2)}`);
+  if (sum.unsoldEth > 0) S.push(`${padR("stuck", 9)} +${sum.unsoldEth.toFixed(5)}${NAT_TAG} · +$${(sum.unsoldEth * px).toFixed(2)}`);
   S.push(`${padR("NET", 9)} ${sg(net, 5)}${NAT_TAG} · ${money(net * px)}`);
 
   const nav: object[] = [];
@@ -924,9 +924,9 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   nav.push({ text: `${page + 1}/${pages}`, callback_data: `lg:${page}` });
   if (page < pages - 1) nav.push({ text: "Next ▶️", callback_data: `lg:${page + 1}` });
 
-  const head = `📒 <b>Ledger LP</b> · ${combined.length} posisi ditutup`;
+  const head = `📒 <b>Ledger LP</b> · ${combined.length} positions closed`;
   const foot = v4hist.length
-    ? `<i>Stats gabung v3+v4+v2. ${v4hist.length} posisi v4 LAMA blm direkonstruksi — tap 🔄 Rebuild.</i>`
+    ? `<i>Stats combined v3+v4+v2. ${v4hist.length} old v4 positions not yet reconstructed — tap 🔄 Rebuild.</i>`
     : "";
   // 📸 card button per closed position on this page (positions with recorded PnL)
   const cardBtns: object[] = [];
@@ -942,7 +942,7 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
       inline_keyboard: [
         nav,
         ...cardBtns,
-        [{ text: "📸 Kartu portfolio", callback_data: "card" }, { text: "🔄 Rebuild on-chain", callback_data: "lgrb" }],
+        [{ text: "📸 Portfolio card", callback_data: "card" }, { text: "🔄 Rebuild on-chain", callback_data: "lgrb" }],
       ],
     },
   });
@@ -951,15 +951,15 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
 export async function onLedgerRebuild(mid: number): Promise<void> {
   ledgerHistCache = null; // force a fresh on-chain scan
   try {
-    const prog = (msg: string) => void edit(mid, `⏳ <b>Rebuild ledger dari on-chain</b>\n<i>${esc(msg)}</i>`).catch(() => {});
+    const prog = (msg: string) => void edit(mid, `⏳ <b>Rebuilding ledger from on-chain</b>\n<i>${esc(msg)}</i>`).catch(() => {});
     const r = await backfillLedger(prog);
     // v4 positions closed before tracking → reconstruct realized PnL from archive (historical price)
     const { backfillLedgerV4 } = await import("../chain/v4/backfill.js");
     const r4 = await backfillLedgerV4(prog).catch(() => ({ rebuilt: 0 }));
-    await edit(mid, `✅ Rebuild selesai — v3: ${r.rebuilt} · v4: ${r4.rebuilt} direkonstruksi dari on-chain.`);
+    await edit(mid, `✅ Rebuild complete — v3: ${r.rebuilt} · v4: ${r4.rebuilt} reconstructed from on-chain.`);
     await onLedger(0);
   } catch (e) {
-    await edit(mid, `❌ Rebuild gagal: ${short(e, 100)}`);
+    await edit(mid, `❌ Rebuild failed: ${short(e, 100)}`);
   }
 }
 
@@ -969,12 +969,12 @@ export async function onLedgerRebuild(mid: number): Promise<void> {
 
 export async function onScreen(arg?: string): Promise<void> {
   // /screen IS the GMGN screener — there is no on-chain substitute for its tax/holder/honeypot
-  // fields. Refusing up front beats a "GMGN nggak balikin data" that reads like a transient outage.
+  // fields. Refusing up front beats a "GMGN returned no data" that reads like a transient outage.
   const { gmgnSupported } = await import("../radar/gmgn.js");
   if (!gmgnSupported()) {
     await send(
-      `🧪 <b>GMGN nggak nyover ${esc(CHAIN_NAME)}</b> — gate honeypot/tax/top-10/rug nggak bisa dievaluasi di sini.\n` +
-        `Pakai <code>/hunt now</code> (kandidat on-chain: pool baru + lonjakan volume). Skor maksimalnya lebih rendah, emang disengaja — yang nggak kecek nggak dikasih poin.`,
+      `🧪 <b>GMGN does not cover ${esc(CHAIN_NAME)}</b> — honeypot/tax/top-10/rug gates cannot be evaluated here.\n` +
+        `Use <code>/hunt now</code> (on-chain candidates: new pools + volume spikes). Max score is lower by design — unchecked items get no points.`,
     );
     return;
   }
@@ -985,20 +985,20 @@ export async function onScreen(arg?: string): Promise<void> {
     const { screenTokens } = await import("../radar/screen.js");
     const { results, scanned, excludedFlap, excludedUnsafe } = await screenTokens({ llm: useLlm });
     if (!scanned) {
-      await edit(mid, "🧪 GMGN nggak balikin data trending (CLI belum aktif / rate-limit). Coba lagi.");
+      await edit(mid, "🧪 GMGN returned no trending data (CLI not active / rate-limited). Try again.");
       return;
     }
     if (!results.length) {
-      await edit(mid, `🧪 Nggak ada token lolos filter.\n<i>scan ${scanned} · buang ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`);
+      await edit(mid, `🧪 No tokens passed the filter.\n<i>scan ${scanned} · dropped ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`);
       return;
     }
     const kindTag = (k: string) => (k === "util" ? "🛠 util" : k === "meme" ? "🐸 meme" : "❓ unclear");
-    const commTag = (c: string) => (c === "clear" ? "🟢 komun jelas" : c === "thin" ? "🟡 komun tipis" : "🔴 komun sus");
+    const commTag = (c: string) => (c === "clear" ? "🟢 clear community" : c === "thin" ? "🟡 thin community" : "🔴 suspicious community");
     const T: string[] = [];
     results.forEach((r, i) => {
       const t = r.token;
       if (i) T.push("");
-      T.push(`${i + 1}. ${tokenEmoji(t.symbol)} ${t.symbol}  ·  ${kindTag(r.kind)}  ·  skor ${r.score}${r.verdict ? " · " + r.verdict.toUpperCase() : ""}`);
+      T.push(`${i + 1}. ${tokenEmoji(t.symbol)} ${t.symbol}  ·  ${kindTag(r.kind)}  ·  score ${r.score}${r.verdict ? " · " + r.verdict.toUpperCase() : ""}`);
       T.push(`   ${commTag(r.community)} · FOMO ${r.fomo}`);
       T.push(`   mcap ${fmtMcap(t.marketCap)} · vol ${fmtMcap(t.volume)} · liq ${fmtMcap(t.liquidity)}`);
       const turn = t.liquidity > 0 ? (t.volume / t.liquidity).toFixed(0) + "×" : "?";
@@ -1006,7 +1006,7 @@ export async function onScreen(arg?: string): Promise<void> {
       if (r.thesis) T.push(`   💡 ${r.thesis}`);
       if (r.flags.length) T.push(`   🚩 ${r.flags.join(" · ")}`);
     });
-    const head = `🧪 <b>Screen GMGN 24h</b> — ${results.length} kandidat\n<i>scan ${scanned} · buang ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`;
+    const head = `🧪 <b>Screen GMGN 24h</b> — ${results.length} candidates\n<i>scan ${scanned} · dropped ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`;
     // LP shortcut buttons for the top 6
     const btns = results.slice(0, 6).map((r) => [
       { text: `${tokenEmoji(r.token.symbol)} LP ${r.token.symbol} (${r.score})`, callback_data: `ca:${r.token.address}` },
@@ -1014,7 +1014,7 @@ export async function onScreen(arg?: string): Promise<void> {
     btns.push([{ text: "🔄 Refresh", callback_data: "screen" }]);
     await edit(mid, head + "\n" + pre(T.join("\n")), { reply_markup: { inline_keyboard: btns } });
   } catch (e) {
-    await edit(mid, `❌ Screen gagal: ${short(e, 120)}`);
+    await edit(mid, `❌ Screen failed: ${short(e, 120)}`);
   }
 }
 
@@ -1028,13 +1028,13 @@ export async function onScan(): Promise<void> {
     });
     const { handleSpike } = await import("./pipeline.js");
     if (!hits.length) {
-      await edit(mid, "🔍 Nggak ada token yang lolos filter barusan.\n<i>(butuh 2 scan buat ngukur kenaikan — coba lagi bentar)</i>");
+      await edit(mid, "🔍 No tokens passed the filter just now.\n<i>(needs 2 scans to measure increase — try again shortly)</i>");
       return;
     }
-    await edit(mid, `🔍 <b>${hits.length} token</b> lolos:`);
+    await edit(mid, `🔍 <b>${hits.length} token(s)</b> passed:`);
     for (const h of hits) await handleSpike(h);
   } catch (e) {
-    await edit(mid, `❌ Scan gagal: ${short(e, 90)}`);
+    await edit(mid, `❌ Scan failed: ${short(e, 90)}`);
   }
 }
 
@@ -1058,28 +1058,28 @@ export async function onWatch(arg?: string): Promise<void> {
   }
   const T = [
     `${padR("status", 12)} ${isWatchOn() ? "ON" : "OFF"}`,
-    `${padR("scan tiap", 12)} ${w.intervalSec}s`,
+    `${padR("scan every", 12)} ${w.intervalSec}s`,
     `${padR("vol 5m min", 12)} $${(w.minVol5m / 1000).toFixed(0)}k`,
-    `${padR("naik min", 12)} ${w.riseFactor}× vs scan sebelumnya`,
+    `${padR("rise min", 12)} ${w.riseFactor}× vs previous scan`,
     `${padR("vol 1h min", 12)} $${(w.minVol1h / 1000).toFixed(0)}k`,
-    `${padR("likuid min", 12)} $${(w.minLiqUsd / 1000).toFixed(0)}k`,
-    `${padR("tax maks", 12)} ${w.maxTaxPct}%`,
-    `${padR("cooldown", 12)} ${w.cooldownMin} menit/token`,
-    `${padR("RPC", 12)} ${usingOwnWatchRpc ? "terpisah (khusus scan)" : "numpang RPC LP"}`,
+    `${padR("liq min", 12)} $${(w.minLiqUsd / 1000).toFixed(0)}k`,
+    `${padR("max tax", 12)} ${w.maxTaxPct}%`,
+    `${padR("cooldown", 12)} ${w.cooldownMin} min/token`,
+    `${padR("RPC", 12)} ${usingOwnWatchRpc ? "separate (scan-only)" : "shared LP RPC"}`,
   ];
   const top = await topVolumeNow(3).catch(() => []);
   if (top.length) {
     T.push("");
-    T.push("VOL 5m TERTINGGI SEKARANG");
+    T.push("TOP VOL 5m RIGHT NOW");
     for (const t of top) {
       const pass = t.vol5m >= w.minVol5m;
       T.push(`  ${pass ? "✓" : " "} ${padR(t.symbol.slice(0, 10), 11)} $${(t.vol5m / 1000).toFixed(0)}k`);
     }
     const gap = w.minVol5m / Math.max(top[0]!.vol5m, 1);
-    T.push(gap > 1 ? `  → ambang ${gap.toFixed(1)}× di atas puncak: SEPI` : `  → ada yang lewat ambang`);
+    T.push(gap > 1 ? `  → threshold ${gap.toFixed(1)}× above peak: QUIET` : `  → some passed the threshold`);
   }
   await send(
-    `👁 <b>Volume Watch</b>${pre(T.join("\n"))}<code>/watch on</code> · <code>/watch off</code> · <code>/scan</code> (cek sekarang)\nUbah: <code>/set vol5m 200000</code> · <code>/set rise 2</code> · <code>/set liq 100000</code>`,
+    `👁 <b>Volume Watch</b>${pre(T.join("\n"))}<code>/watch on</code> · <code>/watch off</code> · <code>/scan</code> (check now)\nChange: <code>/set vol5m 200000</code> · <code>/set rise 2</code> · <code>/set liq 100000</code>`,
   );
 }
 
@@ -1090,8 +1090,8 @@ export async function onFeed(arg?: string): Promise<void> {
   // so say that instead of flipping cfg.feed.enabled on and leaving a monitor that can never start.
   if (arg === "on" && !sequencerEnabled()) {
     await send(
-      `📡 Feed monitor butuh sequencer — <b>${esc(CHAIN_NAME)}</b> nggak punya (validator L1, finality langsung).\n` +
-        `Pakai <code>/watch</code> (scanner volume) + <code>/hunt</code> buat deteksi token baru di chain ini.`,
+      `📡 Feed monitor requires sequencer — <b>${esc(CHAIN_NAME)}</b> does not have one (validator L1, instant finality).\n` +
+        `Use <code>/watch</code> (volume scanner) + <code>/hunt</code> to detect new tokens on this chain.`,
     );
     return;
   }
@@ -1099,7 +1099,7 @@ export async function onFeed(arg?: string): Promise<void> {
     cfg.feed.enabled = true;
     persist();
     await startFeed();
-    await send("📡 Feed monitor <b>ON</b> — deteksi token baru + posisi out-of-range real-time.");
+    await send("📡 Feed monitor <b>ON</b> — detecting new tokens + out-of-range positions in real-time.");
     return;
   }
   if (arg === "off") {
@@ -1122,11 +1122,11 @@ export async function onFeed(arg?: string): Promise<void> {
     `${padR("radar LLM", 16)} ${r.enabled ? (env.openrouterKey ? "on" : "on (no key!)") : "off"}`,
     `${padR("radar model", 16)} ${env.openrouterModel}`,
     `${padR("radar GMGN", 16)} ${r.useGmgn ? "on" : "off"}`,
-    `${padR("fast-submit", 16)} ${!sequencerEnabled() ? `n/a (${CHAIN_NAME} gak punya sequencer)` : env.fastSubmit ? "ON → sequencer" : "off (via RPC)"}`,
+    `${padR("fast-submit", 16)} ${!sequencerEnabled() ? `n/a (${CHAIN_NAME} has no sequencer)` : env.fastSubmit ? "ON → sequencer" : "off (via RPC)"}`,
     ``,
-    `${padR("token dikenal", 16)} ${s.seen}`,
-    `${padR("posisi dipantau", 16)} ${s.positions}`,
-    `${padR("token baru", 16)} ${s.newTokens}`,
+    `${padR("tokens known", 16)} ${s.seen}`,
+    `${padR("positions tracked", 16)} ${s.positions}`,
+    `${padR("new tokens", 16)} ${s.newTokens}`,
     `${padR("alert range", 16)} ${s.rangeAlerts}`,
   ];
   await send(
@@ -1135,8 +1135,8 @@ export async function onFeed(arg?: string): Promise<void> {
       `Toggle: <code>/set newtoken 1</code> · <code>/set posmon 1</code> · <code>/set autoclose 0</code>\n` +
       `Radar: <code>/set radar 1</code> · <code>/set gmgn 1</code>\n` +
       (sequencerEnabled()
-        ? `<i>⚠️ Lokal (Telkomsel) butuh RH_FEED_IP=172.66.147.70. fast-submit: RH_FAST_SUBMIT=1. radar: RH_OPENROUTER_KEY.</i>`
-        : `<i>⚠️ ${esc(CHAIN_NAME)} nggak punya sequencer → feed &amp; fast-submit MATI di sini. radar: RH_OPENROUTER_KEY.</i>`),
+        ? `<i>⚠️ Local (Telkomsel) needs RH_FEED_IP=172.66.147.70. fast-submit: RH_FAST_SUBMIT=1. radar: RH_OPENROUTER_KEY.</i>`
+        : `<i>⚠️ ${esc(CHAIN_NAME)} has no sequencer → feed &amp; fast-submit DISABLED here. radar: RH_OPENROUTER_KEY.</i>`),
   );
 }
 
@@ -1147,28 +1147,28 @@ export async function onV4(ca?: string): Promise<void> {
   // key is forbidden (Arc). Probing the native path there would always come back empty.
   const v4Quote = CHAIN.venues.v4NativeCurrency ? NAT_SYM : STABLE_SYM;
   if (!ca || !/^0x[a-fA-F0-9]{40}$/.test(ca)) {
-    await send(`Format: <code>/v4 0x…</code> (CA token) — liat pool v4/${v4Quote} + fee + likuiditas.`);
+    await send(`Format: <code>/v4 0x…</code> (CA token) — view v4/${v4Quote} + fee + liquidity.`);
     return;
   }
-  const m = await send(`🔎 Cek pool v4 <code>${ca}</code>…`);
+  const m = await send(`🔎 Checking v4 pool <code>${ca}</code>…`);
   const mid = m?.result?.message_id;
   try {
     const { discoverV4Pools, discoverV4StablePools, pickV4Pool } = await import("../chain/v4/discover.js");
     const meta = await tokenMeta(ca).catch(() => null);
     const pools = CHAIN.venues.v4NativeCurrency ? await discoverV4Pools(ca) : await discoverV4StablePools(ca);
     if (!pools.length) {
-      await edit(mid, `Nggak ada pool v4/${v4Quote} buat ${meta?.symbol ?? "token"} ini.`);
+      await edit(mid, `No v4 pool found for /${v4Quote} for ${meta?.symbol ?? "token"}.`);
       return;
     }
     const T = pools
       .sort((a, b) => b.fee - a.fee)
-      .map((p) => `  ${padR((p.fee / 10000).toFixed(2) + "%", 7)} ${p.liquidity > 0n ? "✅ ada likuiditas" : "— kosong"}  tick ${p.tick}`);
+      .map((p) => `  ${padR((p.fee / 10000).toFixed(2) + "%", 7)} ${p.liquidity > 0n ? "✅ has liquidity" : "— empty"}  tick ${p.tick}`);
     const pick = pickV4Pool(pools);
     await edit(
       mid,
       `🦄 <b>Pool v4/${v4Quote} · ${esc(meta?.symbol ?? "?")}</b>${pre(T.join("\n"))}` +
-        (pick ? `Target LP (fee tertinggi + likuid): <b>${(pick.fee / 10000).toFixed(2)}%</b>\n` : "") +
-        `<i>Mint/close v4 = Fase 2 (lagi dibangun). Sekarang deteksi doang.</i>`,
+        (pick ? `Target LP (highest fee + liquid): <b>${(pick.fee / 10000).toFixed(2)}%</b>\n` : "") +
+        `<i>Mint/close v4 = Phase 2 (under construction). Detection only for now.</i>`,
     );
   } catch (e) {
     await edit(mid, `❌ ${short(e, 90)}`);
@@ -1180,16 +1180,16 @@ export async function onV4(ca?: string): Promise<void> {
 export async function onV4Lp(text: string): Promise<void> {
   const [, ca, ethStr] = text.split(/\s+/);
   if (!ca || !/^0x[a-fA-F0-9]{40}$/.test(ca) || !ethStr || !(parseFloat(ethStr) > 0)) {
-    await send(`Format: <code>/v4lp 0x… 0.001</code> — buka LP v4 single-side ${NAT_SYM} di pool fee-tertinggi.`);
+    await send(`Format: <code>/v4lp 0x… 0.001</code> — open v4 single-side LP ${NAT_SYM} in the highest-fee pool.`);
     return;
   }
   const eth = parseFloat(ethStr);
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
-    await send(`⚠️ Kegedean. Bisa di-LP cuma ${usableEth(b).toFixed(5)} ${NAT_SYM}.`);
+    await send(`⚠️ Too large. LP-able balance is only ${usableEth(b).toFixed(5)} ${NAT_SYM}.`);
     return;
   }
-  const m = await send(`⏳ <b>Mint v4 ${eth} ${NAT_SYM}…</b> (discover pool → simulasi → mint native ${NAT_SYM})`);
+  const m = await send(`⏳ <b>Mint v4 ${eth} ${NAT_SYM}…</b> (discover pool → simulate → mint native ${NAT_SYM})`);
   const mid = m?.result?.message_id;
   try {
     const { openV4SingleSide } = await import("../chain/v4/mint.js");
@@ -1197,15 +1197,15 @@ export async function onV4Lp(text: string): Promise<void> {
     await edit(
       mid,
       [
-        `✅ <b>v4 LP dibuka</b> #${r.tokenId ?? "?"} 🦄`,
+        `✅ <b>v4 LP opened</b> #${r.tokenId ?? "?"} 🦄`,
         `pool fee <b>${(r.fee / 10000).toFixed(2)}%</b> · single-side ${NAT_SYM}`,
         `range tick ${r.tickLower}..${r.tickUpper} · deposit ${r.depositEth}${NAT_TAG}`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
-        `Tutup: <code>/v4close ${r.tokenId}</code>`,
+        `Close: <code>/v4close ${r.tokenId}</code>`,
       ].join("\n"),
     );
   } catch (e) {
-    await edit(mid, `❌ v4 mint gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ v4 mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -1225,12 +1225,12 @@ export async function onV4Close(text: string): Promise<void> {
       mid,
       [
         `✅ <b>v4 #${tokenId} closed</b> · pool fee ${(r.fee / 10000).toFixed(2)}%`,
-        `Balik: ${r.recv0 > 0 ? `${r.recv0.toFixed(6)} ${r.sym0}` : ""}${r.recv0 > 0 && r.recv1 > 0 ? " + " : ""}${r.recv1 > 0 ? `${r.recv1.toFixed(6)} ${r.sym1}` : ""}`,
+        `Returned: ${r.recv0 > 0 ? `${r.recv0.toFixed(6)} ${r.sym0}` : ""}${r.recv0 > 0 && r.recv1 > 0 ? " + " : ""}${r.recv1 > 0 ? `${r.recv1.toFixed(6)} ${r.sym1}` : ""}`,
         r.feeEth > 0 ? `🧲 fee earned: <b>${r.feeEth.toFixed(6)}${NAT_TAG}</b>` : "",
         r.sweptEth && r.sweptEth > 0
-          ? `💱 proceeds → <b>+${r.sweptEth.toFixed(6)}${NAT_TAG}</b> (auto-swap ke ${NAT_SYM})${r.sweepHash ? ` · <a href="${explorerTx(r.sweepHash)}">tx</a>` : ""}`
+          ? `💱 proceeds → <b>+${r.sweptEth.toFixed(6)}${NAT_TAG}</b> (auto-swap to ${NAT_SYM})${r.sweepHash ? ` · <a href="${explorerTx(r.sweepHash)}">tx</a>` : ""}`
           : "",
-        r.forfeited ? `⚠️ <b>${esc(r.forfeited)}</b> nggak bisa ditarik (honeypot/rug) — direlakan, ${NAT_SYM} diselamatkan.` : "",
+        r.forfeited ? `⚠️ <b>${esc(r.forfeited)}</b> could not be withdrawn (honeypot/rug) — forfeited, ${NAT_SYM} salvaged.` : "",
         `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
       ]
         .filter(Boolean)
@@ -1243,7 +1243,7 @@ export async function onV4Close(text: string): Promise<void> {
     const v4quote = stableRe.test(r.pair) && (NAT_IS_USD || !nativeRe.test(r.pair)) ? ("usd" as const) : ("eth" as const);
     await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct });
   } catch (e) {
-    await edit(mid, `❌ v4 close gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ v4 close failed: ${short(e, 160)}`);
   }
 }
 
@@ -1257,13 +1257,13 @@ export async function onV4Collect(tokenId: string): Promise<void> {
     await edit(
       mid,
       [
-        `✅ <b>Fee di-claim · v4 #${tokenId}</b>`,
-        got ? `Dapet: ${got}` : `Nggak ada fee buat di-claim.`,
+        `✅ <b>Fee claimed · v4 #${tokenId}</b>`,
+        got ? `Received: ${got}` : `No fee to claim.`,
         `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
       ].join("\n"),
     );
   } catch (e) {
-    await edit(mid, `❌ Claim fee gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ Fee claim failed: ${short(e, 160)}`);
   }
 }
 
@@ -1282,7 +1282,7 @@ export async function onV2Close(pair: string): Promise<void> {
       mid,
       [
         `✅ <b>v2 ${esc(r.sym)}/${WRAP_SYM} closed</b>`,
-        `Balik: <b>${r.recvEth.toFixed(6)} ${NAT_SYM}</b>${r.soldToken ? " (token dijual balik)" : r.recvToken > 0 ? ` + ${r.recvToken.toPrecision(6)} ${esc(r.sym)}` : ""}`,
+        `Returned: <b>${r.recvEth.toFixed(6)} ${NAT_SYM}</b>${r.soldToken ? " (token sold back)" : r.recvToken > 0 ? ` + ${r.recvToken.toPrecision(6)} ${esc(r.sym)}` : ""}`,
         r.pnlEth != null ? `PnL: ${r.pnlEth >= 0 ? "🟩 +" : "🟥 "}${r.pnlEth.toFixed(6)}${NAT_TAG}` : "",
         `burn: <a href="${explorerTx(r.txHash)}">tx</a>${r.swapHash ? ` · sell: <a href="${explorerTx(r.swapHash)}">tx</a>` : ""}`,
       ]
@@ -1291,7 +1291,7 @@ export async function onV2Close(pair: string): Promise<void> {
     );
     await sendCloseCard({ name: `${r.sym}/${WRAP_SYM}`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth });
   } catch (e) {
-    await edit(mid, `❌ v2 close gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ v2 close failed: ${short(e, 160)}`);
   }
 }
 
@@ -1310,11 +1310,11 @@ export async function onAuto(arg = ""): Promise<void> {
     const armed = a.tpPct > 0 || a.slPct > 0 || a.closeOor;
     await send(
       [
-        `🤖 <b>AUTO ON</b> ⚠️ (add + close, pakai dana real)`,
-        `• <b>Auto-add</b>: buka posisi kalau kandidat lolos radar + gate (source ${a.sources.join("/")}, ${a.requireAction}≥${a.minScore}, ${a.sizeEth}${NAT_TAG} ${a.mode}).`,
-        `• <b>Auto-close</b>: ${armed ? `TP ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"} · SL ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"} · OOR ${a.closeOor ? "on" : "off"} (cek tiap ${a.manageSec}s)` : "belum di-set — pakai <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on</code>"}`,
+        `🤖 <b>AUTO ON</b> ⚠️ (add + close, uses real funds)`,
+        `• <b>Auto-add</b>: open positions when candidates pass radar + gate (source ${a.sources.join("/")}, ${a.requireAction}≥${a.minScore}, ${a.sizeEth}${NAT_TAG} ${a.mode}).`,
+        `• <b>Auto-close</b>: ${armed ? `TP ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"} · SL ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"} · OOR ${a.closeOor ? "on" : "off"} (check every ${a.manageSec}s)` : "not set — use <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on</code>"}`,
         ``,
-        `Matiin: <code>/auto off</code>`,
+        `Disable: <code>/auto off</code>`,
       ].join("\n"),
     );
     return;
@@ -1323,7 +1323,7 @@ export async function onAuto(arg = ""): Promise<void> {
     a.enabled = false;
     persist();
     stopManage();
-    await send("🤖 <b>AUTO OFF</b>. Balik ke manual (notif + tombol). Threshold TP/SL/OOR tetep kesimpen.");
+    await send("🤖 <b>AUTO OFF</b>. Back to manual (notifications + buttons). TP/SL/OOR thresholds are preserved.");
     return;
   }
   if (cmd === "tp" || cmd === "sl") {
@@ -1337,15 +1337,15 @@ export async function onAuto(arg = ""): Promise<void> {
     persist();
     await send(
       cmd === "tp"
-        ? `🎯 Take-profit: ${v > 0 ? `posisi auto-close pas profit <b>≥ +${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (nyalain: /auto on)" : ""}`
-        : `🛑 Stop-loss: ${v > 0 ? `posisi auto-close pas rugi <b>≤ -${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (nyalain: /auto on)" : ""}`,
+        ? `🎯 Take-profit: ${v > 0 ? `positions auto-close when profit <b>≥ +${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (enable: /auto on)" : ""}`
+        : `🛑 Stop-loss: ${v > 0 ? `positions auto-close when loss <b>≤ -${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (enable: /auto on)" : ""}`,
     );
     return;
   }
   if (cmd === "oor") {
     a.closeOor = /^(on|1|true|yes)$/i.test(parts[1] ?? "");
     persist();
-    await send(`🚪 Auto-close out-of-range: <b>${a.closeOor ? "ON" : "OFF"}</b>.${a.closeOor && !a.enabled ? " (nyalain: /auto on)" : ""}`);
+    await send(`🚪 Auto-close out-of-range: <b>${a.closeOor ? "ON" : "OFF"}</b>.${a.closeOor && !a.enabled ? " (enable: /auto on)" : ""}`);
     return;
   }
 
@@ -1354,12 +1354,12 @@ export async function onAuto(arg = ""): Promise<void> {
   const T = [
     `${padR("status", 13)} ${a.enabled ? "🟢 ON" : "off"}`,
     `── auto-add ──`,
-    `${padR("ukuran", 13)} ${a.sizeEth}${NAT_TAG} · ${a.mode}`,
+    `${padR("size", 13)} ${a.sizeEth}${NAT_TAG} · ${a.mode}`,
     `${padR("trigger", 13)} ${a.requireAction} & skor ≥ ${a.minScore}`,
     `${padR("source", 13)} ${a.sources.join(", ")}`,
-    // 0 = UNLIMITED (radar/autolp.ts capOff). Printing a bare "0 posisi · 0/jam" reads as "nothing
+    // 0 = UNLIMITED (radar/autolp.ts capOff). Printing a bare "0 pos · 0/hr" reads as "nothing
     // may open", which is the exact opposite — the Arc profile ships all three at 0 on purpose.
-    `${padR("cap", 13)} ${capTxt(a.maxOpen, " posisi")} · ${capTxt(a.maxPerHour, "/jam")} · ${capTxt(a.dailyCapEth, NAT_TAG + "/hari")}`,
+    `${padR("cap", 13)} ${capTxt(a.maxOpen, " pos")} · ${capTxt(a.maxPerHour, "/hr")} · ${capTxt(a.dailyCapEth, NAT_TAG + "/day")}`,
     `── auto-close ──`,
     `${padR("take-profit", 13)} ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"}`,
     `${padR("stop-loss", 13)} ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"}`,
@@ -1367,34 +1367,34 @@ export async function onAuto(arg = ""): Promise<void> {
     `${padR("vol-fade", 13)} ${a.volFadeX > 0 ? `on (spike < ${a.volFadeX}× · age > ${a.vfadeMinAgeMin}m)` : "off"}`,
     `${padR("fee-velocity", 13)} ${a.minFeePerHourUsd > 0 ? `on (< $${a.minFeePerHourUsd}/h · age > ${a.feeGraceMin}m)` : "off"}`,
     `${padR("compound", 13)} ${a.compound ? `on (fee ≥ $${a.compoundMinUsd})` : "off"}`,
-    `${padR("cek tiap", 13)} ${a.manageSec}s`,
+    `${padR("check every", 13)} ${a.manageSec}s`,
     ``,
-    `${padR("hari ini", 13)} ${s.opensToday} open · ${s.spentToday.toFixed(4)}${NAT_TAG}`,
+    `${padR("today", 13)} ${s.opensToday} open · ${s.spentToday.toFixed(4)}${NAT_TAG}`,
   ];
   await send(
     `🤖 <b>Auto (add + close)</b>${pre(T.join("\n"))}` +
       `<code>/auto on</code> · <code>/auto off</code>\n` +
       `Close: <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on|off</code>\n` +
-      `Mode: <code>/set alpmode single</code> (rug-safe) · <code>/set alpmode inrange</code> (fee langsung)\n` +
+      `Mode: <code>/set alpmode single</code> (rug-safe, park quote) · <code>/set alpmode inrange</code> (both-sided, fee immediately)\n` +
       `♻️ OOR→recenter: <code>/set alprebalance rebalance</code> · 🔁 compound fee: <code>/set alpcompound 1</code> · <code>/set alpcompoundmin 0.5</code>\n` +
       `Add: <code>/set alpsize 0.001</code> · <code>/set alpscore 75</code> · <code>/set alpmaxopen 3</code>\n` +
-      `<i>⚠️ Tx otomatis pakai dana real. ${armed ? "Auto-close ARMED." : "Auto-close belum di-set."} Auto-add butuh radar (/set radar 1).` +
+      `<i>⚠️ Automatic txs use real funds. ${armed ? "Auto-close ARMED." : "Auto-close not set."} Auto-add requires radar (/set radar 1).` +
       // Two chain facts that change what "auto" MEANS here, so they belong on the auto screen:
       // (1) no GMGN → the honeypot/tax gates never ran, they did not pass; (2) the gas reserve is a
       //     floor the sizer always leaves behind, which on a stable-native chain is the LP capital too.
-      `${CHAIN.data.gmgn ? "" : ` ${esc(CHAIN_NAME)} gak ada GMGN → gate honeypot/tax TIDAK dievaluasi (unknown, bukan 0).`}` +
-      `${gasReserve() > 0 ? ` Cadangan gas ${gasReserve()} ${NAT_SYM} selalu ditahan (FLOOR, bukan cap).` : ""}</i>`,
+      `${CHAIN.data.gmgn ? "" : ` ${esc(CHAIN_NAME)} no GMGN → honeypot/tax gates NOT evaluated (unknown, not 0).`}` +
+      `${gasReserve() > 0 ? ` Gas reserve ${gasReserve()} ${NAT_SYM} always held back (FLOOR, not cap).` : ""}</i>`,
   );
 }
 
 // ══════════ close ══════════
 
 export async function onCloseAsk(tokenId: string, mid: number): Promise<void> {
-  await edit(mid, `Close #${tokenId} — fee/token-nya mau diapain?\n<i>(LP principal tetap balik jadi ${NAT_SYM})</i>`, {
+  await edit(mid, `Close #${tokenId} — what to do with fee/tokens?\n<i>(LP principal always returns as ${NAT_SYM})</i>`, {
     reply_markup: {
       inline_keyboard: [
         [{ text: `🔄 Swap token → ${NAT_SYM} (full ${NAT_SYM})`, callback_data: `cs:${tokenId}` }],
-        [{ text: `🪙 Simpen token (${WRAP_SYM} + token)`, callback_data: `ck:${tokenId}` }],
+        [{ text: `🪙 Keep token (${WRAP_SYM} + token)`, callback_data: `ck:${tokenId}` }],
       ],
     },
   });
@@ -1402,27 +1402,27 @@ export async function onCloseAsk(tokenId: string, mid: number): Promise<void> {
 
 export async function onClose(tokenId: string, mid: number, swapToken = true): Promise<void> {
   invalidateListCache();
-  await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? `(swap token→${NAT_SYM})` : "(simpen token)"}`);
+  await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? `(swap token→${NAT_SYM})` : "(keep token)"}`);
   try {
     const r = await closePosition(tokenId, { swapToken });
     const px = await nativeUsd().catch(() => 0);
     const pnl =
       r.pnlEth != null
         ? `\n💰 <b>PnL ${NAT_SYM}: ${r.pnlEth >= 0 ? "+" : ""}${r.pnlEth.toFixed(6)}${NAT_TAG}</b> (${r.pnlPct! >= 0 ? "+" : ""}${r.pnlPct!.toFixed(1)}%)\n💵 <b>PnL USD: ${r.pnlEth >= 0 ? "+" : ""}$${px ? (r.pnlEth * px).toFixed(2) : "?"}</b>`
-        : `\nPnL: — (deposit tak tercatat)`;
+        : `\nPnL: — (deposit not recorded)`;
     await send(
       [
         `✅ <b>Closed #${tokenId}</b>${px && !NAT_IS_USD ? ` · ${NAT_SYM} $${px.toFixed(0)}` : ""}`,
-        r.heldMs != null ? `⏱ di-hold <b>${fmtAge(r.heldMs)}</b>` : "",
-        `Tarik: ${r.recvWeth.toFixed(6)} ${r.wethSym}${r.recvToken > 0 ? ` + ${r.recvToken.toFixed(2)} ${r.tokenSym}` : ""}`,
+        r.heldMs != null ? `⏱ held <b>${fmtAge(r.heldMs)}</b>` : "",
+        `Withdrawn: ${r.recvWeth.toFixed(6)} ${r.wethSym}${r.recvToken > 0 ? ` + ${r.recvToken.toFixed(2)} ${r.tokenSym}` : ""}`,
         r.swappedWeth > 0
           ? `🔄 Swap ${r.tokenSym} → +${r.swappedWeth.toFixed(6)} ${esc(r.wethSym)}`
           : r.tokenStuck > 0
             ? swapToken
-              ? `⚠️ ${r.tokenStuck.toFixed(2)} ${r.tokenSym} gagal dijual (rug) — nyangkut`
-              : `🪙 ${r.tokenStuck.toFixed(2)} ${r.tokenSym} disimpen (senilai ~$${px ? ((r.valEth - r.recvWeth) * px).toFixed(2) : "?"})`
+              ? `⚠️ ${r.tokenStuck.toFixed(2)} ${r.tokenSym} failed to sell (rug) — stuck`
+              : `🪙 ${r.tokenStuck.toFixed(2)} ${r.tokenSym} kept (worth ~$${px ? ((r.valEth - r.recvWeth) * px).toFixed(2) : "?"})`
             : "",
-        `Total balik: <b>${r.valEth.toFixed(6)}${NAT_TAG} / $${px ? (r.valEth * px).toFixed(2) : "?"}</b>${r.depEth != null ? ` (deposit ${r.depEth.toFixed(6)}${NAT_TAG})` : ""}${pnl}`,
+        `Total returned: <b>${r.valEth.toFixed(6)}${NAT_TAG} / $${px ? (r.valEth * px).toFixed(2) : "?"}</b>${r.depEth != null ? ` (deposit ${r.depEth.toFixed(6)}${NAT_TAG})` : ""}${pnl}`,
         r.topUp ? `⛽ Top-up gas: unwrap ${r.topUp.unwrapped.toFixed(5)} ${WRAP_SYM} → ${NAT_SYM} native (${r.topUp.nativeAfter.toFixed(4)}${NAT_TAG})` : "",
         r.collectHash ? `tx: <a href="${explorerTx(r.collectHash)}">collect</a>${r.swapHash ? ` · <a href="${explorerTx(r.swapHash)}">swap</a>` : ""}` : "",
       ]
@@ -1434,7 +1434,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
     const isUsdgClose = r.wethSym === STABLE_SYM;
     await sendCloseCard({ name: `${r.tokenSym}/${isUsdgClose ? STABLE_SYM : WRAP_SYM}`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs });
   } catch (e) {
-    await send(`❌ Close gagal: ${short(e, 120)}`);
+    await send(`❌ Close failed: ${short(e, 120)}`);
   }
 }
 
@@ -1448,11 +1448,11 @@ export async function onCloseAll(): Promise<void> {
     return;
   }
   if (!rows.length) {
-    await send("Tidak ada posisi buat ditutup.");
+    await send("No positions to close.");
     return;
   }
   const px = await nativeUsd().catch(() => 0);
-  await send(`🗑🗑 <b>Menutup ${rows.length} posisi…</b> (satu per satu)`);
+  await send(`🗑🗑 <b>Closing ${rows.length} positions…</b> (one by one)`);
   let totPnl = 0, ok = 0, fail = 0;
   for (const row of rows) {
     try {
@@ -1464,12 +1464,12 @@ export async function onCloseAll(): Promise<void> {
       );
     } catch (e) {
       fail++;
-      await send(`❌ #${row.tokenId} gagal: ${short(e, 70)}`);
+      await send(`❌ #${row.tokenId} failed: ${short(e, 70)}`);
     }
   }
   await send(
     [
-      `🏁 <b>Close ALL selesai</b> — ${ok} sukses${fail ? `, ${fail} gagal` : ""}`,
+      `🏁 <b>Close ALL complete</b> — ${ok} success${fail ? `, ${fail} failed` : ""}`,
       `💰 Total PnL ${NAT_SYM}: <b>${totPnl >= 0 ? "+" : ""}${totPnl.toFixed(6)}${NAT_TAG}</b>`,
       px ? `💵 Total PnL USD: <b>${totPnl >= 0 ? "+" : ""}$${(totPnl * px).toFixed(2)}</b>` : "",
     ]
@@ -1499,9 +1499,9 @@ export async function onSwap(text: string): Promise<void> {
     // data.kyberChain === null → Arc), or it does and the router address just isn't configured.
     await send(
       CHAIN.data.kyberChain === null
-        ? `🔄 <b>/swap manual belum ada di ${esc(CHAIN_NAME)}</b> — KyberSwap nggak punya route API di chain ini.\n` +
-            `LP tetep jalan (router internal ${ROUTER_LABEL}); buat keluar dari token, tutup posisinya lewat /list.`
-        : "🔄 Swap butuh KyberSwap — <code>KYBERSWAP_ROUTER_ADDRESS</code> belum diset di .env.",
+        ? `🔄 <b>/swap manual not available on ${esc(CHAIN_NAME)}</b> — KyberSwap has no route API on this chain.\n` +
+            `LP still works (internal router ${ROUTER_LABEL}); to exit a token, close the position via /list.`
+        : "🔄 Swap requires KyberSwap — <code>KYBERSWAP_ROUTER_ADDRESS</code> not set in .env.",
     );
     return;
   }
@@ -1510,7 +1510,7 @@ export async function onSwap(text: string): Promise<void> {
 
 /** Auto-detect sellable tokens in the wallet → tap one → tap a %, no CA/amount typing. */
 async function onSwapMenu(): Promise<void> {
-  const m = await send("🔄 <b>Scan token di wallet…</b> <i>(ngecek rute jual tiap token, bisa ~10-20s)</i>");
+  const m = await send("🔄 <b>Scanning wallet tokens…</b> <i>(checking sell route per token, may take ~10-20s)</i>");
   const mid = m?.result?.message_id;
   swapFrom = null;
   const toks = await walletTokens().catch(() => [] as WalletToken[]);
@@ -1520,15 +1520,15 @@ async function onSwapMenu(): Promise<void> {
       mid,
       [
         "🔄 <b>Swap</b>",
-        "Nggak ada token (yang bisa dijual) kedetect di wallet.",
+        "No sellable tokens detected in wallet.",
         "",
-        `Beli / manual: <code>/swap &lt;jumlah&gt; &lt;dari&gt; &lt;ke&gt;</code> (dari/ke = <b>eth</b> = native ${NAT_SYM}, atau CA).`,
+        `Buy / manual: <code>/swap &lt;amt&gt; &lt;from&gt; &lt;to&gt;</code> (from/to = <b>eth</b> = native ${NAT_SYM}, or CA).`,
       ].join("\n"),
     );
     return;
   }
   const rows = toks.map((t) => [{ text: `${tokenEmoji(t.symbol)} ${t.symbol} · ${fmtAmt(t.ui)} ($${t.usd.toFixed(2)})`, callback_data: `swf:${t.addr}` }]);
-  await edit(mid, [`🔄 <b>Swap → ${NAT_SYM}</b>`, `Pilih token yang mau dijual (${toks.length} kedetect):`].join("\n"), {
+  await edit(mid, [`🔄 <b>Swap → ${NAT_SYM}</b>`, `Select token to sell (${toks.length} detected):`].join("\n"), {
     reply_markup: { inline_keyboard: rows },
   });
 }
@@ -1537,17 +1537,17 @@ async function onSwapMenu(): Promise<void> {
 export async function onSwapFrom(addr: string, mid: number): Promise<void> {
   const t = swapTokens.find((x) => x.addr.toLowerCase() === addr.toLowerCase());
   if (!t) {
-    await edit(mid, "Token nggak kebaca lagi — kirim /swap ulang.");
+    await edit(mid, "Token no longer readable — send /swap again.");
     return;
   }
   swapFrom = t;
   await edit(
     mid,
     [
-      `🔄 <b>Jual ${tokenEmoji(t.symbol)} ${esc(t.symbol)} → ${NAT_SYM}</b>`,
-      `Saldo: <b>${fmtAmt(t.ui)}</b> ($${t.usd.toFixed(2)}) · jual semua ≈ ${t.ethOut.toPrecision(4)} ${NAT_SYM}`,
+      `🔄 <b>Sell ${tokenEmoji(t.symbol)} ${esc(t.symbol)} → ${NAT_SYM}</b>`,
+      `Balance: <b>${fmtAmt(t.ui)}</b> ($${t.usd.toFixed(2)}) · sell all ≈ ${t.ethOut.toPrecision(4)} ${NAT_SYM}`,
       ``,
-      `Mau jual berapa persen?`,
+      `How much to sell?`,
     ].join("\n"),
     {
       reply_markup: {
@@ -1562,7 +1562,7 @@ export async function onSwapFrom(addr: string, mid: number): Promise<void> {
             { text: "💯 100%", callback_data: "swp:100" },
           ],
           [
-            { text: "🔙 Token lain", callback_data: "swap" },
+            { text: "🔙 Other token", callback_data: "swap" },
             { text: "❌ Cancel", callback_data: "cancel" },
           ],
         ],
@@ -1574,7 +1574,7 @@ export async function onSwapFrom(addr: string, mid: number): Promise<void> {
 /** Percentage picked (swp:<pct>) → quote via Kyber, show the ✅ Swap confirm. */
 export async function onSwapPct(pct: number, mid: number): Promise<void> {
   if (!swapFrom) {
-    await edit(mid, "Pilih token dulu — kirim /swap ulang.");
+    await edit(mid, "Pick a token first — send /swap again.");
     return;
   }
   const t = swapFrom;
@@ -1584,14 +1584,14 @@ export async function onSwapPct(pct: number, mid: number): Promise<void> {
   const bal = liveRaw > 0n ? liveRaw : t.raw;
   const amountIn = pct >= 100 ? bal : (bal * BigInt(pct)) / 100n;
   if (amountIn <= 0n) {
-    await edit(mid, "Saldo token 0 sekarang — mungkin udah kejual / kepake. Kirim /swap ulang.");
+    await edit(mid, "Token balance is 0 now — may have been sold / used. Send /swap again.");
     return;
   }
   const { kyberRoute, routeBreakdown, KYBER_NATIVE } = await import("../chain/kyber.js");
-  await edit(mid, `🔄 Cari rute ${pct}% ${esc(t.symbol)} → ${NAT_SYM}…`);
+  await edit(mid, `🔄 Finding route ${pct}% ${esc(t.symbol)} → ${NAT_SYM}…`);
   const route = await kyberRoute(t.addr, KYBER_NATIVE, amountIn).catch(() => null);
   if (!route) {
-    await edit(mid, `❌ ${ROUTER_LABEL} nggak nemu rute (likuiditas kering?).`);
+    await edit(mid, `❌ ${ROUTER_LABEL} found no route (liquidity dry?).`);
     return;
   }
   // fmtNat(): the route's output is NATIVE wei, whose width comes from the profile.
@@ -1602,9 +1602,9 @@ export async function onSwapPct(pct: number, mid: number): Promise<void> {
   await edit(
     mid,
     [
-      `🔄 <b>Jual ${pct}% ${esc(t.symbol)}</b> = ${fmtAmt(amtUi)} ${esc(t.symbol)}`,
+      `🔄 <b>Sell ${pct}% ${esc(t.symbol)}</b> = ${fmtAmt(amtUi)} ${esc(t.symbol)}`,
       `→ ~<b>${outUi.toPrecision(6)} ${NAT_SYM}</b>${px ? ` <i>($${(outUi * px).toFixed(2)})</i>` : ""}`,
-      `rute: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
+      `route: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
     ].join("\n"),
     { reply_markup: { inline_keyboard: [[{ text: "✅ Swap", callback_data: "swapdo" }, { text: "❌ Cancel", callback_data: "cancel" }]] } },
   );
@@ -1622,15 +1622,15 @@ async function onSwapManual(text: string): Promise<void> {
   const fromAddr = resolve(fromS);
   const toAddr = resolve(toS);
   if (!fromAddr || !toAddr) {
-    await send(`Dari/ke harus <b>${NAT_SYM.toLowerCase()}</b> (native) atau alamat kontrak (0x… 40 hex).`);
+    await send(`From/to must be <b>${NAT_SYM.toLowerCase()}</b> (native) or contract address (0x… 40 hex).`);
     return;
   }
   if (fromAddr.toLowerCase() === toAddr.toLowerCase()) {
-    await send("Dari & ke sama — nggak ada yang di-swap.");
+    await send("From & to are the same — nothing to swap.");
     return;
   }
   if (!(parseFloat(amtStr) > 0)) {
-    await send("Jumlah nggak valid, contoh: <code>0.01</code>");
+    await send("Invalid amount, e.g.: <code>0.01</code>");
     return;
   }
   const nativeIn = fromAddr.toLowerCase() === KYBER_NATIVE.toLowerCase();
@@ -1642,15 +1642,15 @@ async function onSwapManual(text: string): Promise<void> {
   try {
     amountIn = ethers.parseUnits(amtStr, fromMeta.decimals);
   } catch {
-    await send("Format jumlah salah.");
+    await send("Invalid amount format.");
     return;
   }
 
-  const m = await send(`🔄 Cari rute ${ROUTER_LABEL}…`);
+  const m = await send(`🔄 Finding route ${ROUTER_LABEL}…`);
   const mid = m?.result?.message_id;
   const route = await kyberRoute(fromAddr, toAddr, amountIn).catch(() => null);
   if (!route) {
-    await edit(mid, `❌ ${ROUTER_LABEL} nggak nemu rute buat pair ini (likuiditas kering?).`);
+    await edit(mid, `❌ ${ROUTER_LABEL} found no route for this pair (liquidity dry?).`);
     return;
   }
   const outRaw = BigInt(route.routeSummary.amountOut);
@@ -1661,7 +1661,7 @@ async function onSwapManual(text: string): Promise<void> {
     mid,
     [
       `🔄 <b>Swap ${esc(amtStr)} ${esc(fromMeta.symbol)} → ~${outUi.toPrecision(6)} ${esc(toMeta.symbol)}</b>${usd}`,
-      `rute: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
+      `route: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
     ].join("\n"),
     { reply_markup: { inline_keyboard: [[{ text: "✅ Swap", callback_data: "swapdo" }, { text: "❌ Cancel", callback_data: "cancel" }]] } },
   );
@@ -1676,21 +1676,21 @@ export async function onSwapDo(mid: number): Promise<void> {
     const { kyberSwap } = await import("../chain/kyber.js");
     const r = await kyberSwap(s.fromAddr, s.toAddr, s.amountIn);
     if (!r || r.amountOut <= 0n) {
-      await edit(mid, "❌ Swap gagal / output 0.");
+      await edit(mid, "❌ Swap failed / output 0.");
       return;
     }
     await edit(
       mid,
-      `✅ <b>Swap sukses</b> → +${Number(ethers.formatUnits(r.amountOut, s.toDec)).toPrecision(6)} ${esc(s.toSym)}\ntx: <a href="${explorerTx(r.tx)}">tx</a>`,
+      `✅ <b>Swap successful</b> → +${Number(ethers.formatUnits(r.amountOut, s.toDec)).toPrecision(6)} ${esc(s.toSym)}\ntx: <a href="${explorerTx(r.tx)}">tx</a>`,
     );
   } catch (e) {
-    await edit(mid, `❌ Swap gagal: ${short(e, 150)}`);
+    await edit(mid, `❌ Swap failed: ${short(e, 150)}`);
   }
 }
 
 // ══════════ 🎯 candidate hunter ══════════
 
-/** /hunt [on|off|now] — the quality-candidate scanner (fee 3-5% + rame + lolos screening). */
+/** /hunt [on|off|now] — the quality-candidate scanner (fee 3-5% + active txs + passed screening). */
 export async function onHunt(arg?: string): Promise<void> {
   const { startScan, stopScan, scanStatus, scanNow } = await import("../radar/scanLoop.js");
   const a = (arg ?? "").toLowerCase();
@@ -1698,7 +1698,7 @@ export async function onHunt(arg?: string): Promise<void> {
     cfg.scan.enabled = true;
     persist();
     startScan();
-    await send(`🎯 <b>Hunter ON</b> · ${esc(CHAIN_NAME)} — scan kandidat LP tiap ${cfg.scan.intervalMin} menit (fee 3-5% + tx rame + lolos screening).`);
+    await send(`🎯 <b>Hunter ON</b> · ${esc(CHAIN_NAME)} — scanning LP candidates every ${cfg.scan.intervalMin} min (fee 3-5% + active txs + passed screening).`);
     return;
   }
   if (a === "off") {
@@ -1710,13 +1710,13 @@ export async function onHunt(arg?: string): Promise<void> {
   }
   if (a === "now") {
     const { scanSources } = await import("../radar/scanLoop.js");
-    const m = await send(`🎯 Scan kandidat sekarang… <i>(source: ${esc(scanSources().join(" + "))}, bisa ~15-30s)</i>`);
+    const m = await send(`🎯 Scanning candidates now… <i>(source: ${esc(scanSources().join(" + "))}, may take ~15-30s)</i>`);
     const mid = m?.result?.message_id;
     try {
       const r = await scanNow();
-      await edit(mid, `🎯 Scan kelar — <b>${r.scanned}</b> kandidat mentah → <b>${r.found} lolos</b> (fee 3-5% + rame + screening).${r.found ? " Alert dikirim ↑" : " Gak ada yang lolos sekarang."}`);
+      await edit(mid, `🎯 Scan done — <b>${r.scanned}</b> raw candidates → <b>${r.found} passed</b> (fee 3-5% + active + screening).${r.found ? " Alerts sent ↑" : " None passed right now."}`);
     } catch (e) {
-      await edit(mid, `❌ Scan gagal: ${short(e, 100)}`);
+      await edit(mid, `❌ Scan failed: ${short(e, 100)}`);
     }
     return;
   }
@@ -1725,15 +1725,15 @@ export async function onHunt(arg?: string): Promise<void> {
   const { gmgnSupported } = await import("../radar/gmgn.js");
   await send(
     [
-      `🎯 <b>Hunter kandidat LP</b> · ${esc(CHAIN_NAME)} — ${st.on ? "🟢 ON" : "🔴 OFF"}`,
+      `🎯 <b>LP Candidate Hunter</b> · ${esc(CHAIN_NAME)} — ${st.on ? "🟢 ON" : "🔴 OFF"}`,
       `Source: <b>${esc(scanSources().join(" + "))}</b>`,
       // spread, not "" — the `` below is a deliberate blank line (see onHelp)
-      ...(gmgnSupported() ? [] : [`<i>⚠️ Tanpa GMGN di chain ini: gate honeypot/tax/holder TIDAK dievaluasi (unknown, bukan aman).</i>`]),
-      `Kriteria: pool <b>v4 fee ${(st.feeMinPpm / 10000).toFixed(0)}-${(st.feeMaxPpm / 10000).toFixed(0)}%</b> · vol ≥ $${(st.minVolUsd / 1000).toFixed(0)}k · skor ≥ ${st.minScore}`,
-      `Interval ${st.intervalMin} menit · cooldown ${st.cooldownMin} menit`,
+      ...(gmgnSupported() ? [] : [`<i>⚠️ No GMGN on this chain: honeypot/tax/holder gates NOT evaluated (unknown, not safe).</i>`]),
+      `Criteria: pool <b>v4 fee ${(st.feeMinPpm / 10000).toFixed(0)}-${(st.feeMaxPpm / 10000).toFixed(0)}%</b> · vol ≥ $${(st.minVolUsd / 1000).toFixed(0)}k · skor ≥ ${st.minScore}`,
+      `Interval ${st.intervalMin} min · cooldown ${st.cooldownMin} min`,
       st.scans > 0
-        ? `Scan terakhir: ${st.lastScanned} trending → <b>${st.lastFound}</b> kandidat · total ${st.alerts} alert`
-        : `Belum ada scan.`,
+        ? `Last scan: ${st.lastScanned} trending → <b>${st.lastFound}</b> candidates · total ${st.alerts} alert`
+        : `No scans yet.`,
       ``,
       `<code>/hunt on</code> · <code>/hunt off</code> · <code>/hunt now</code>`,
     ].join("\n"),
@@ -1744,36 +1744,36 @@ export async function onHunt(arg?: string): Promise<void> {
 
 /** Generate + send the whole-portfolio profit card (Meteora-style flex graphic). */
 export async function onCard(): Promise<void> {
-  const m = await send("📸 Bikin kartu profit…");
+  const m = await send("📸 Generating profit card…");
   const mid = m?.result?.message_id;
   try {
     const { renderCard, portfolioCardData } = await import("./card.js");
     const png = await renderCard(await portfolioCardData());
     await sendPhoto(png, `📊 <b>Profit LP Bot · ${esc(CHAIN_NAME)}</b> — share it 🚀`);
-    if (mid) await edit(mid, "📸 Kartu profit ↑");
+    if (mid) await edit(mid, "📸 Profit card ↑");
   } catch (e) {
-    if (mid) await edit(mid, `❌ Gagal bikin kartu: ${short(e, 100)}`);
+    if (mid) await edit(mid, `❌ Failed to generate card: ${short(e, 100)}`);
   }
 }
 
 /** Save a photo the owner sent as the profit-card background (assets/card-bg.jpg). */
 export async function onSetBg(fileId: string): Promise<void> {
-  const m = await send("🖼 Nyimpen background kartu…");
+  const m = await send("🖼 Saving card background…");
   const mid = m?.result?.message_id;
   try {
     const buf = await downloadTgFile(fileId);
     if (!buf) {
-      if (mid) await edit(mid, "❌ Gagal ambil gambar dari Telegram.");
+      if (mid) await edit(mid, "❌ Failed to download image from Telegram.");
       return;
     }
     mkdirSync("assets", { recursive: true });
     writeFileSync("assets/card-bg.jpg", buf);
-    if (mid) await edit(mid, "✅ Background kartu di-set. Ini preview-nya 👇");
+    if (mid) await edit(mid, "✅ Card background set. Preview below 👇");
     const { renderCard, portfolioCardData } = await import("./card.js");
     const png = await renderCard(await portfolioCardData());
-    await sendPhoto(png, "🎴 Background baru kepasang — <b>/card</b> kapan aja buat share.");
+    await sendPhoto(png, "🎴 New background applied — <b>/card</b> anytime to share.");
   } catch (e) {
-    if (mid) await edit(mid, `❌ Gagal set background: ${short(e, 100)}`);
+    if (mid) await edit(mid, `❌ Failed to set background: ${short(e, 100)}`);
   }
 }
 
@@ -1781,10 +1781,10 @@ export async function onSetBg(fileId: string): Promise<void> {
 export async function onCardFor(tokenId: string): Promise<void> {
   const e = readLedger().find((x) => x.tokenId === tokenId);
   if (!e) {
-    await send("❌ Posisi nggak ketemu di ledger.");
+    await send("❌ Position not found in ledger.");
     return;
   }
-  const m = await send("📸 Bikin kartu posisi…");
+  const m = await send("📸 Generating position card…");
   const mid = m?.result?.message_id;
   try {
     const { renderCard, closeCardData } = await import("./card.js");
@@ -1803,9 +1803,9 @@ export async function onCardFor(tokenId: string): Promise<void> {
       }),
     );
     await sendPhoto(png, `🎴 <b>${esc(e.pair ?? `${e.sym}/${WRAP_SYM}`)}</b> — share it 🚀`);
-    if (mid) await edit(mid, "📸 Kartu ↑");
+    if (mid) await edit(mid, "📸 Card ↑");
   } catch (err) {
-    if (mid) await edit(mid, `❌ Gagal bikin kartu: ${short(err, 100)}`);
+    if (mid) await edit(mid, `❌ Failed to generate card: ${short(err, 100)}`);
   }
 }
 
@@ -1831,20 +1831,20 @@ async function sendCloseCard(p: {
 }
 
 export async function onBriefing(): Promise<void> {
-  await send("📋 Nyusun briefing harian… (analisa LLM bisa ~1 menit)");
+  await send("📋 Composing daily briefing… (LLM analysis may take ~1 min)");
   const { runBriefing } = await import("./briefing.js");
   await runBriefing("manual");
 }
 
 export async function onPnl(): Promise<void> {
-  await send("📊 Menghitung PnL seumur hidup… (scan history + rug, ±20 detik)");
+  await send("📊 Calculating lifetime PnL… (scanning history + rugs, ±20 sec)");
   let r;
   try {
     // overall safety-net timeout so /pnl can't hang forever if Blockscout/RPC is slow (the per-token
     // quote timeout in analytics.ts handles the usual culprit; this bounds the total scan).
     r = await Promise.race([
       lifetimePnl(),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("scan &gt; 45s — Blockscout/RPC lambat, coba lagi")), 45_000)),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("scan &gt; 45s — Blockscout/RPC slow, try again")), 45_000)),
     ]);
   } catch (e) {
     await send(`❌ ${short(e, 90)}`);
@@ -1858,37 +1858,37 @@ export async function onPnl(): Promise<void> {
   const row = (lbl: string, eth: string, usd = "") => `${padR(lbl, 8)}${padL(eth, 12)}${usd ? "  " + padL(usd, 9) : ""}`;
 
   const T: string[] = [];
-  T.push(`LP REALIZED · ${sum.count} ditutup`);
+  T.push(`LP REALIZED · ${sum.count} closed`);
   T.push("─".repeat(31));
   T.push(row("PnL", sg(sum.pnlEth, 5) + NAT_TAG, money(sum.pnlUsd)));
-  T.push(row("menang", `${sum.winRate.toFixed(0)}% (${sum.wins}/${sum.losses})`));
+  T.push(row("W/L", `${sum.winRate.toFixed(0)}% (${sum.wins}/${sum.losses})`));
   T.push(row("fee", sum.feeEth.toFixed(5) + NAT_TAG));
   T.push("");
-  T.push(`ARUS WALLET (+arb)${r.partial ? " · window" : ""}`);
+  T.push(`WALLET FLOW (+arb)${r.partial ? " · window" : ""}`);
   T.push("─".repeat(31));
   // capKnown=false means this chain CANNOT reconstruct capital flow (no indexer → native transfers
   // emit no log). Printing 0.00000 there invents a figure; "n/a" says we don't know. valueNow is
   // measured on-chain and stays accurate either way.
   const cap = (v: number) => (r.capKnown ? v.toFixed(5) + NAT_TAG : "n/a");
   const capUsd = (v: number) => (r.capKnown ? $(v) : "");
-  T.push(row("setor", cap(r.capIn), capUsd(r.capIn)));
-  T.push(row("tarik", cap(r.capOut), capUsd(r.capOut)));
+  T.push(row("deposited", cap(r.capIn), capUsd(r.capIn)));
+  T.push(row("withdrawn", cap(r.capOut), capUsd(r.capOut)));
   T.push(row("nilai", r.valueNowEth.toFixed(5) + NAT_TAG, $(r.valueNowEth)));
   T.push(`  native ${r.nativeEth.toFixed(4)}${hasWrapped() ? `  ${WRAP_SYM} ${r.wethHeld.toFixed(4)}` : ""}`);
   T.push(`  LP ${r.openLpEth.toFixed(4)}${NAT_TAG}  token $${r.tokensUsd.toFixed(2)}`);
   T.push(row("net", r.capKnown ? sg(r.pnlEth, 5) + NAT_TAG : "n/a", r.capKnown ? money(r.pnlUsd) : ""));
 
   const grave = r.graveyardCount
-    ? `\n🪦 <b>${r.graveyardCount} token nyangkut</b> <i>(rug/likuiditas kering)</i>\n${pre(r.graveyard.join(", ") + (r.graveyardCount > r.graveyard.length ? " …" : ""))}`
+    ? `\n🪦 <b>${r.graveyardCount} stuck tokens</b> <i>(rug/liquidity dried up)</i>\n${pre(r.graveyard.join(", ") + (r.graveyardCount > r.graveyard.length ? " …" : ""))}`
     : "";
   await sendMenu(
-    `📊 <b>PnL SEUMUR HIDUP</b> · ${esc(CHAIN_NAME)}${px && !NAT_IS_USD ? ` · ${NAT_SYM} $${px.toFixed(0)}` : ""}\n` +
+    `📊 <b>LIFETIME PnL</b> · ${esc(CHAIN_NAME)}${px && !NAT_IS_USD ? ` · ${NAT_SYM} $${px.toFixed(0)}` : ""}\n` +
       pre(T.join("\n")) +
-      `<i>⚠️ Net wallet nyampur flow arb — angka LP akurat = "LP realized".</i>` +
+      `<i>⚠️ Net wallet mixes arb flows — accurate LP figure = "LP realized".</i>` +
       (r.capKnown
         ? ""
-        : `\n<i>ℹ️ ${esc(CHAIN_NAME)} belum punya indexer buat arus wallet (setor/tarik/net = n/a). Nilai sekarang &amp; "LP realized" tetep akurat.</i>`) +
-      (r.partial ? `\n<i>ℹ️ Histori dibatesin window scan (RH_INDEX_HOURS), bukan seumur hidup beneran.</i>` : "") +
+        : `\n<i>ℹ️ ${esc(CHAIN_NAME)} does not have an indexer for wallet flows (deposited/withdrawn/net = n/a). Current value &amp; "LP realized" remain accurate.</i>`) +
+      (r.partial ? `\n<i>ℹ️ History limited to scan window (RH_INDEX_HOURS), not truly lifetime.</i>` : "") +
       grave,
   );
 }
@@ -1897,15 +1897,15 @@ export async function onSell(): Promise<void> {
   // The proceeds currency is the chain's DEFAULT QUOTE (WETH here, the USDC ERC-20 on Arc), which
   // is what sellAllTokens now reports back as `quoteSym`. The opener said "→ ETH" while the total
   // underneath said "WETH" — one flow, two currencies, neither of them wrong enough to notice.
-  await send(`🔄 <b>Menjual semua token nyangkut → ${WRAP_SYM}…</b>\n(skip yang rug/pool kering)`);
+  await send(`🔄 <b>Selling all stuck tokens → ${WRAP_SYM}…</b>\n(skipping rugged/dry pools)`);
   try {
     const r = await sellAllTokens((msg) => {
       void send(msg).catch(() => {});
     });
     await sendMenu(
       [
-        `🏁 <b>Selesai jual</b> — ${r.sold} token → ${esc(r.quoteSym)}${r.skipped ? `, ${r.skipped} di-skip (rug)` : ""}`,
-        `💰 Total dapet: <b>+${r.soldEth.toFixed(6)} ${esc(r.quoteSym)} ($${r.soldUsd.toFixed(2)})</b>`,
+        `🏁 <b>Sell complete</b> — ${r.sold} token → ${esc(r.quoteSym)}${r.skipped ? `, ${r.skipped} skipped (rug)` : ""}`,
+        `💰 Total received: <b>+${r.soldEth.toFixed(6)} ${esc(r.quoteSym)} ($${r.soldUsd.toFixed(2)})</b>`,
       ].join("\n"),
     );
   } catch (e) {
@@ -1923,10 +1923,10 @@ export async function onWallet(): Promise<void> {
       [
         `👛 <b>${esc(CHAIN_NAME)}</b>  <code>${b.address}</code>`,
         `${NAT_SYM}: ${Number(b.eth).toFixed(5)}${hasWrapped() ? ` · ${WRAP_SYM}: ${Number(b.weth).toFixed(5)}` : ""}`,
-        `bisa di-LP: <b>${usableEth(b).toFixed(5)} ${NAT_SYM}</b> <i>(cadangan gas ${gasReserve()} ditahan)</i>`,
+        `LP-able: <b>${usableEth(b).toFixed(5)} ${NAT_SYM}</b> <i>(gas reserve ${gasReserve()} held back)</i>`,
         hasWrapped()
           ? ""
-          : `<i>⚠️ Di ${esc(CHAIN_NAME)} gas &amp; modal LP itu saldo yang SAMA — cadangan gas di atas yang bikin posisi tetep bisa ditutup.</i>`,
+          : `<i>⚠️ On ${esc(CHAIN_NAME)} gas &amp; LP capital share the SAME balance — the gas reserve above ensures positions can still be closed.</i>`,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -1942,7 +1942,7 @@ export async function onSettings(): Promise<void> {
     `${padR("slippage", 12)} ${cfg.lp.slippagePct}%`,
     `${padR("fee floor LP", 12)} ${(cfg.lp.minFeePpm / 10000).toFixed(2)}%`,
     `${padR("gas target", 12)} ${cfg.lp.nativeTargetEth}${NAT_TAG}`,
-    `${padR("cadangan gas", 12)} ${gasReserve()}${NAT_TAG} ${hasWrapped() ? "" : "(= modal LP juga!)"}`,
+    `${padR("gas reserve", 12)} ${gasReserve()}${NAT_TAG} ${hasWrapped() ? "" : "(= LP capital too!)"}`,
     `${padR("auto-wrap", 12)} ${cfg.lp.autoWrap ? "on" : "off"}`,
     ``,
     `${padR("radar LLM", 12)} ${cfg.radar.enabled ? "on" : "off"}`,
@@ -1952,8 +1952,8 @@ export async function onSettings(): Promise<void> {
   ];
   await sendMenu(
     `⚙️ <b>Setting</b> · ${esc(CHAIN_NAME)}${pre(T.join("\n"))}` +
-      `Ubah: <code>/set width 40</code> · <code>/set slippage 5</code> · <code>/set gastarget 0.015</code>\n` +
-      `<i>Watch/Feed/Auto/Radar diatur di menu masing-masing. Cadangan gas dari chains/${CHAIN.key}.json (native.gasReserve), bukan /set.</i>`,
+      `Change: <code>/set width 40</code> · <code>/set slippage 5</code> · <code>/set gastarget 0.015</code>\n` +
+      `<i>Watch/Feed/Auto/Radar configured in their respective menus. Gas reserve from chains/${CHAIN.key}.json (native.gasReserve), not /set.</i>`,
   );
 }
 
@@ -2013,7 +2013,7 @@ const SCAN_NUM_MAP: Record<string, keyof typeof cfg.scan> = {
   huntpoolliq: "minPoolLiqUsd", // anti-wash: pool liquidity floor ($)
   huntmaxratio: "maxVolLiqRatio", // anti-wash: max vol/liq ratio (0 = off)
   huntspike: "minSpikeX", // #1 volume-spike: min recent-hour vs 24h-avg (0 = off)
-  huntcooldown: "cooldownMin", // menit sebelum token yg udah di-alert boleh muncul lagi (rotasi cepet = kecil)
+  huntcooldown: "cooldownMin", // minutes before a previously-alerted token may reappear (fast rotation = small)
 };
 const SET_HELP =
   "LP: width, deposit, slippage, gastarget\nWatch: vol5m, vol1h, rise, liq, tax, cooldown, interval\nFeed: minseed, activity, feedcooldown · toggle: newtoken/posmon/autoclose (0/1)\nRadar: radar/gmgn (0/1)\nHunt: huntvol, huntfees, huntyield, huntscore, huntmcapmin, huntmcapmax, huntpoolliq, huntmaxratio, huntspike, huntcooldown\nAuto-LP: alpsize, alpscore, alpmaxopen, alpperhour, alpdaily, alpminliq, alpmaxtax, alpgrace, alpoorcount, alpoorhours, alpcompoundmin, alpvolfade, alpvfadeage, alpminfeeh, alpfeegrace · alpmode single|inrange · alpclose 0/1 · alprebalance close|rebalance · alpcompound 0/1";
@@ -2023,48 +2023,48 @@ export async function onSet(text: string): Promise<void> {
   // ── enum / string auto-LP settings (handled BEFORE the numeric guard below) ──
   if (k === "alpmode") {
     if (v !== "single" && v !== "inrange") {
-      await send("Pilih: <code>/set alpmode single</code> (rug-safe, parkir quote) atau <code>/set alpmode inrange</code> (both-sided, fee langsung).");
+      await send("Choose: <code>/set alpmode single</code> (rug-safe, park quote) or <code>/set alpmode inrange</code> (both-sided, fee immediately).");
       return;
     }
     cfg.autoLp.mode = v;
     persist();
     await send(
-      `✓ autoLp.mode → <b>${v}</b> ${v === "inrange" ? "(both-sided — fee LANGSUNG, tapi pegang token → rug=rugi)" : "(single-side — parkir quote asset, rug-safe)"}`,
+      `✓ autoLp.mode → <b>${v}</b> ${v === "inrange" ? "(both-sided — fee IMMEDIATELY, but holds token → rug=loss)" : "(single-side — park quote asset, rug-safe)"}`,
     );
     return;
   }
   if (k === "alpclose") {
     if (v !== "0" && v !== "1") {
-      await send("Toggle: <code>/set alpclose 1</code> (tutup OOR) / <code>/set alpclose 0</code> (biarin jalan)");
+      await send("Toggle: <code>/set alpclose 1</code> (close OOR) / <code>/set alpclose 0</code> (left running)");
       return;
     }
     cfg.autoLp.closeOor = v === "1";
     persist();
-    await send(`✓ autoLp.closeOor → ${v === "1" ? "on (tutup posisi OOR)" : "off (posisi dibiarin jalan)"}`);
+    await send(`✓ autoLp.closeOor → ${v === "1" ? "on (close OOR positions)" : "off (positions left running)"}`);
     return;
   }
   if (k === "alprebalance" || k === "alprebal") {
     if (v !== "close" && v !== "rebalance") {
       await send(
-        `Pilih: <code>/set alprebalance rebalance</code> (posisi OOR di-recenter ke harga baru) atau <code>/set alprebalance close</code> (default — tutup ke ${NAT_SYM}).\n<i>butuh /set alpclose 1</i>`,
+        `Choose: <code>/set alprebalance rebalance</code> (OOR position re-centered at new price) or <code>/set alprebalance close</code> (default — close to ${NAT_SYM}).\n<i>needs /set alpclose 1</i>`,
       );
       return;
     }
     cfg.autoLp.oorAction = v;
     persist();
     await send(
-      `✓ autoLp.oorAction → <b>${v}</b> ${v === "rebalance" ? "(OOR → tutup + buka ulang recentered, modal terus kerja)" : `(OOR ditutup ke ${NAT_SYM})`}${v === "rebalance" && !cfg.autoLp.closeOor ? "\n⚠️ nyalain dulu: <code>/set alpclose 1</code>" : ""}`,
+      `✓ autoLp.oorAction → <b>${v}</b> ${v === "rebalance" ? "(OOR → close + reopen recentered, capital keeps working)" : `(OOR closed to ${NAT_SYM})`}${v === "rebalance" && !cfg.autoLp.closeOor ? "\n⚠️ enable first: <code>/set alpclose 1</code>" : ""}`,
     );
     return;
   }
   if (k === "alpcompound") {
     if (v !== "0" && v !== "1") {
-      await send("Toggle: <code>/set alpcompound 1</code> (fee di-compound balik) / <code>/set alpcompound 0</code> (off)");
+      await send("Toggle: <code>/set alpcompound 1</code> (fee compounded back) / <code>/set alpcompound 0</code> (off)");
       return;
     }
     cfg.autoLp.compound = v === "1";
     persist();
-    await send(`✓ autoLp.compound → ${v === "1" ? `on (fee ≥ $${cfg.autoLp.compoundMinUsd} di-harvest & di-add balik)` : "off"}`);
+    await send(`✓ autoLp.compound → ${v === "1" ? `on (fee ≥ $${cfg.autoLp.compoundMinUsd} harvested & added back)` : "off"}`);
     return;
   }
   if (!k || v == null || isNaN(Number(v))) {
@@ -2099,7 +2099,7 @@ export async function onSet(text: string): Promise<void> {
   if (RADAR_BOOL_MAP[k]) {
     (cfg.radar[RADAR_BOOL_MAP[k]] as boolean) = Number(v) !== 0;
     persist();
-    const warn = k === "radar" && Number(v) !== 0 && !env.openrouterKey ? " ⚠️ RH_OPENROUTER_KEY belum diset" : "";
+    const warn = k === "radar" && Number(v) !== 0 && !env.openrouterKey ? " ⚠️ RH_OPENROUTER_KEY not set" : "";
     await send(`✓ radar.${k} → ${Number(v) !== 0 ? "on" : "off"}${warn}`);
     return;
   }
@@ -2115,7 +2115,7 @@ export async function onSet(text: string): Promise<void> {
     await send(`✓ hunt.${k} → ${v}`);
     return;
   }
-  await send(`Key nggak dikenal.\n${SET_HELP}`);
+  await send(`Unknown key.\n${SET_HELP}`);
 }
 
 export async function onHelp(): Promise<void> {
@@ -2123,33 +2123,33 @@ export async function onHelp(): Promise<void> {
     // The chain is in the FIRST line of /start: the operator runs two of these in two chats and
     // this is the message that tells them which one they just tapped.
     `🤖 <b>LP Bot · ${esc(CHAIN_NAME)}</b>  <i>v2 · Uniswap v2+v3+v4 · native ${NAT_SYM}</i>`,
-    `Paste <b>CA token</b> (0x…) → pilih pool (v2/v3/v4) → jumlah ${NAT_SYM} → LP.`,
+    `Paste <b>CA token</b> (0x…) → pick pool (v2/v3/v4) → amount ${NAT_SYM} → LP.`,
     // Conditional SPREAD, not a "" + filter(Boolean): the `` entries below are deliberate
     // blank-line separators, and filtering falsy values would collapse the whole help screen.
     ...(hasWrapped()
       ? []
-      : [`<i>⚠️ Di sini gas &amp; modal LP itu saldo ${NAT_SYM} yang SAMA — bot selalu nahan ${gasReserve()} ${NAT_SYM} biar posisi tetep bisa ditutup.</i>`]),
+      : [`<i>⚠️ Here gas &amp; LP capital share the same ${NAT_SYM} balance — bot always holds back ${gasReserve()} ${NAT_SYM} to ensure positions can be closed.</i>`]),
     ``,
-    `<b>━━━ 📊 POSISI ━━━</b>`,
-    `📋 /list — posisi terbuka + PnL + close`,
-    `📒 /ledger — riwayat ditutup (realized)`,
-    `💰 /pnl — PnL seumur hidup`,
-    `📸 /card — kartu profit shareable`,
+    `<b>━━━ 📊 POSITIONS ━━━</b>`,
+    `📋 /list — open positions + PnL + close`,
+    `📒 /ledger — closed history (realized)`,
+    `💰 /pnl — lifetime PnL`,
+    `📸 /card — shareable profit card`,
     ``,
     `<b>━━━ 🎯 RADAR & AUTO ━━━</b>`,
     `🧪 /screen — screening GMGN 24h (mcap&gt;500k, vol&gt;1M, no flap, util&gt;meme)`,
-    sequencerEnabled() ? `📡 /feed — monitor sequencer real-time` : `📡 /feed — <i>n/a (${esc(CHAIN_NAME)} tanpa sequencer)</i>`,
-    `👁 /watch — scanner volume nanjak`,
-    `🔍 /scan — cek volume sekarang`,
-    `🤖 /auto — auto-LP (radar → buka sendiri)`,
-    `🦄 /v4 <code>&lt;ca&gt;</code> — cek pool v4 fee-tinggi`,
+    sequencerEnabled() ? `📡 /feed — real-time sequencer monitor` : `📡 /feed — <i>n/a (${esc(CHAIN_NAME)} without sequencer)</i>`,
+    `👁 /watch — volume spike scanner`,
+    `🔍 /scan — check volume now`,
+    `🤖 /auto — auto-LP (radar → auto-open)`,
+    `🦄 /v4 <code>&lt;ca&gt;</code> — check high-fee v4 pools`,
     ``,
-    `<b>━━━ ⚡ AKSI ━━━</b>`,
-    `🔄 /swap <code>&lt;jml&gt; &lt;dari&gt; &lt;ke&gt;</code> — swap via ${ROUTER_LABEL}`,
+    `<b>━━━ ⚡ ACTIONS ━━━</b>`,
+    `🔄 /swap <code>&lt;amt&gt; &lt;from&gt; &lt;to&gt;</code> — swap via ${ROUTER_LABEL}`,
     `🗑 /closeall · 💸 /sell · 👛 /wallet`,
     `⚙️ /settings · /set <code>&lt;k&gt; &lt;v&gt;</code>`,
     ``,
-    `<i>Menu cepat ada di bawah 👇 — nggak perlu ngetik.</i>`,
+    `<i>Quick menu below 👇 — no need to type.</i>`,
   ].join("\n");
   await sendMenu(body);
 }
@@ -2161,8 +2161,8 @@ export async function onAddAsk(tokenId: string, version: "v3" | "v4"): Promise<v
   pending = null; // drop any open-flow so a stray number doesn't mis-route
   pendingAdd = { tokenId, version };
   await send(
-    `➕ <b>Tambah liq ke posisi #${tokenId}</b> [${version}]\n` +
-      `Ketik jumlah <b>${NAT_SYM}</b> yang mau ditambahin (contoh: <code>0.005</code>). Bot auto split ½ token + ½ ${STABLE_SYM} → masuk ke posisi itu (bukan buka baru).`,
+    `➕ <b>Add liquidity to position #${tokenId}</b> [${version}]\n` +
+      `Type <b>${NAT_SYM}</b> amount to add (e.g.: <code>0.005</code>). Bot auto-splits ½ token + ½ ${STABLE_SYM} → adds to that position (not a new one).`,
   );
 }
 
@@ -2170,23 +2170,23 @@ export async function onAddAmount(text: string): Promise<void> {
   if (!pendingAdd) return;
   const eth = parseFloat(text);
   if (!(eth > 0)) {
-    await send(`Masukin angka ${NAT_SYM} yang bener, contoh: 0.005`);
+    await send(`Enter a valid ${NAT_SYM} amount, e.g.: 0.005`);
     return;
   }
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
-    await send(`⚠️ Kegedean. Yang bisa di-LP cuma ${usableEth(b).toFixed(5)} ${NAT_SYM}.`);
+    await send(`⚠️ Too much. LP-able balance is only ${usableEth(b).toFixed(5)} ${NAT_SYM}.`);
     return;
   }
   if (b && Number(b.eth) < gasReserve()) {
-    await send(`⚠️ ${NAT_SYM} native cuma ${Number(b.eth).toFixed(5)} — kurang buat gas (min ${gasReserve()}).`);
+    await send(`⚠️ ${NAT_SYM} native only ${Number(b.eth).toFixed(5)} — not enough for gas (min ${gasReserve()}).`);
     return;
   }
   const { tokenId, version } = pendingAdd;
   pendingAdd = null;
   const amt = toEthStr(eth) ?? String(eth);
   invalidateListCache();
-  const m = await send(`⏳ <b>Nambah ${amt} ${NAT_SYM} ke posisi #${tokenId}…</b> (swap ½+½ → increase)`);
+  const m = await send(`⏳ <b>Adding ${amt} ${NAT_SYM} to position #${tokenId}…</b> (swap ½+½ → increase)`);
   const mid = m?.result?.message_id;
   try {
     if (version === "v4") {
@@ -2195,23 +2195,23 @@ export async function onAddAmount(text: string): Promise<void> {
       await edit(
         mid,
         [
-          `✅ <b>Liq masuk ke #${tokenId}</b> [v4] · pool fee ${(r.fee / 10000).toFixed(2)}%`,
+          `✅ <b>Liquidity added to #${tokenId}</b> [v4] · pool fee ${(r.fee / 10000).toFixed(2)}%`,
           r.swapHash ? `swap ½+½: <a href="${explorerTx(r.swapHash)}">tx</a>` : "",
-          `deposit <b>+${amt}${NAT_TAG}</b> (masuk ke posisi lama, bukan #baru)`,
+          `deposit <b>+${amt}${NAT_TAG}</b> (added to existing position, not a new #)`,
           `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
         ]
           .filter(Boolean)
           .join("\n"),
       );
     } else {
-      await edit(mid, "increase v3 belum didukung (baru v4).");
+      await edit(mid, "increase v3 not yet supported (v4 only).");
     }
   } catch (e) {
     const msg = (e as Error).message || String(e);
     const friendly = /revert|settle|slippage|CurrencyNotSettled/i.test(msg)
-      ? `harga pool gerak pas settle (pool volatil / fee tinggi). <b>Coba tap ➕ Add lagi</b> — token/${STABLE_SYM} yang keburu kebeli di-reuse, biasanya berhasil percobaan ke-2.`
+      ? `pool price moved during settle (volatile pool / high fee). <b>Try tapping ➕ Add again</b> — token/${STABLE_SYM} already bought will be reused, usually succeeds on 2nd attempt.`
       : short(e, 160);
-    await edit(mid, `❌ Gagal nambah liq: ${friendly}`);
+    await edit(mid, `❌ Failed to add liquidity: ${friendly}`);
   }
 }
 
@@ -2228,7 +2228,7 @@ export async function onCalendar(year?: number, month0?: number): Promise<void> 
     const png = await renderCalendar(y, m);
     const prev = m === 0 ? [y - 1, 11] : [y, m - 1];
     const next = m === 11 ? [y + 1, 0] : [y, m + 1];
-    await sendPhoto(png, "📅 <b>Profit Calendar</b> — tiap kotak = PnL posisi yang di-close hari itu (fee included). Reset 07:00 WIB.", {
+    await sendPhoto(png, "📅 <b>Profit Calendar</b> — each cell = PnL of positions closed that day (fee included). Resets 07:00.", {
       reply_markup: {
         inline_keyboard: [
           [
@@ -2239,7 +2239,7 @@ export async function onCalendar(year?: number, month0?: number): Promise<void> 
       },
     });
   } catch (e) {
-    await send(`❌ Calendar gagal: ${short(e, 120)}`);
+    await send(`❌ Calendar failed: ${short(e, 120)}`);
   }
 }
 

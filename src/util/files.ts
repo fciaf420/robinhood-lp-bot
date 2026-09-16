@@ -28,7 +28,7 @@ export const DEFAULT_CHAIN = "robinhood";
 export const CHAIN_KEY = ((): string => {
   const raw = (process.env.RH_CHAIN || "").trim().toLowerCase();
   if (!raw) return DEFAULT_CHAIN;
-  if (!/^[a-z0-9-]+$/.test(raw)) throw new Error(`RH_CHAIN "${raw}" invalid — cuma huruf kecil, angka, strip.`);
+  if (!/^[a-z0-9-]+$/.test(raw)) throw new Error(`RH_CHAIN "${raw}" invalid — only lowercase letters, digits, hyphens.`);
   return raw;
 })();
 
@@ -81,7 +81,7 @@ export function acquireLock(name = "bot.lock"): () => void {
   const existing = readJson<{ pid: number } | null>(file, null);
   if (existing && isAlive(existing.pid) && existing.pid !== process.pid) {
     throw new Error(
-      `Instance lain lagi jalan (pid ${existing.pid}). Matiin dulu, atau hapus ${file} kalau yakin mati.`,
+      `Another instance is running (pid ${existing.pid}). Stop it first, or delete ${file} if you're sure it's dead.`,
     );
   }
   fs.writeFileSync(file, JSON.stringify({ pid: process.pid, at: Date.now() }));

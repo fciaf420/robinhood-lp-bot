@@ -79,7 +79,7 @@ export async function llmScore(system: string, user: string): Promise<LlmVerdict
       // reasoning models sometimes leave content null and put the answer in `reasoning`
       return parseVerdict(msg.content || msg.reasoning || "");
     } catch (e) {
-      log.warn(`openrouter gagal: ${(e as Error).message}`);
+      log.warn(`openrouter failed: ${(e as Error).message}`);
       return null;
     }
   }

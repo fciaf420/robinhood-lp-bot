@@ -226,7 +226,7 @@ export async function poolVolume(poolIdOrAddr: string, token: string, now: numbe
     if (SOURCE === "dexscreener") return await dexVolume(poolIdOrAddr, token, now);
     return await onchainVolume(poolIdOrAddr, token, now, opts);
   } catch (e) {
-    log.warn(`poolVolume ${poolIdOrAddr.slice(0, 12)}… gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`poolVolume ${poolIdOrAddr.slice(0, 12)}… failed: ${(e as Error).message.slice(0, 80)}`);
     return zero();
   }
 }
@@ -278,7 +278,7 @@ async function onchainVolume(poolIdOrAddr: string, token: string, now: number, o
       // A hole in the window makes every derived number wrong-low. Drop the aggregate rather than
       // keep a corrupted one — the next call starts clean — and report "no data".
       aggs.delete(key);
-      log.warn(`volume ${key.slice(0, 12)}… scan kepotong (${scan.from}..${scan.to}) — dianggap nggak ada data`);
+      log.warn(`volume ${key.slice(0, 12)}… scan truncated (${scan.from}..${scan.to}) — treated as no data`);
       return zero();
     }
     const dataTypes = isPoolId(poolIdOrAddr) ? V4_SWAP_DATA : V3_SWAP_DATA;
@@ -345,7 +345,7 @@ export async function tokenVolume(token: string, now: number): Promise<PoolVolum
   try {
     v = SOURCE === "dexscreener" ? await dexTokenVolume(token, now) : await onchainTokenVolume(token, now);
   } catch (e) {
-    log.warn(`tokenVolume ${token.slice(0, 10)}… gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`tokenVolume ${token.slice(0, 10)}… failed: ${(e as Error).message.slice(0, 80)}`);
     v = zero();
   }
   tokenCache.set(key, { at: now, v });

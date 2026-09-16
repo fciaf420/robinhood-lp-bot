@@ -168,7 +168,7 @@ export async function sellAllTokens(
       sold++;
       onProgress?.(`✅ ${t.symbol} → +${out.toFixed(6)} ${qSym} ($${(out * px).toFixed(2)})`);
     } catch {
-      onProgress?.(`⚠️ ${t.symbol} gagal ($${(q.out * px).toFixed(2)}) — skip`);
+      onProgress?.(`⚠️ ${t.symbol} failed ($${(q.out * px).toFixed(2)}) — skip`);
       skipped++;
     }
   }

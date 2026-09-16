@@ -33,7 +33,7 @@ export interface Candidate {
  *   "unavailable" → covered chain, but the CLI is missing / throttled / errored on this call
  *   "off"         → cfg.radar.useGmgn is false (operator's choice)
  * The last three all mean UNCHECKED. `unchecked` names the specific gates so the alert can say
- * "tax belum dicek" instead of rendering nothing — an empty GMGN block reads as "no flags = safe",
+ * "tax not checked" instead of rendering nothing — an empty GMGN block reads as "no flags = safe",
  * which is exactly the inference that must not be made.
  */
 export type GmgnStatus = "ok" | "unsupported" | "unavailable" | "off";

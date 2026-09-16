@@ -85,7 +85,7 @@ export function indexerNote(f: IndexerFeature, why: string): void {
   const k = `${f}:${why}`;
   if (noted.has(k)) return;
   noted.add(k);
-  log.warn(`fitur "${f}" jalan terbatas di chain ${CHAIN.key} (indexer ${KIND}): ${why}`);
+  log.warn(`feature "${f}" running with limitations on chain ${CHAIN.key} (indexer ${KIND}): ${why}`);
 }
 
 export function indexerSummary(): string {
@@ -294,7 +294,7 @@ const lower = (a: unknown): string => String(a ?? "").toLowerCase();
  */
 export async function txHistory(address: string): Promise<IndexedTx[] | null> {
   if (!indexerHas("txHistory")) {
-    indexerNote("txHistory", "transfer native nggak ninggalin log — butuh explorer/indexer, RPC doang nggak cukup");
+    indexerNote("txHistory", "native transfers do not leave logs — requires explorer/indexer, RPC alone is not enough");
     return null;
   }
   const r = await bsFetch<{ result?: any[] }>(
@@ -354,7 +354,7 @@ export async function tokenTransfers(address: string, contract?: string): Promis
   // A truncated window is "unknown", not "few transfers" — see the null contract. Strict on
   // purpose: this feeds capital-flow accounting, where a missing deposit reads as pure profit.
   if (out.partial || inc.partial) {
-    indexerNote("tokenTransfers", `window ${HISTORY_HOURS}h kepotong (RPC nolak range?) — riwayat transfer dianggap nggak kebaca`);
+    indexerNote("tokenTransfers", `window ${HISTORY_HOURS}h truncated (RPC rejected range?) — transfer history treated as unreadable`);
     return null;
   }
   const rows: IndexedTransfer[] = [];
@@ -425,7 +425,7 @@ export async function addressTokens(address: string): Promise<IndexedTokenBalanc
     if (!scan.logs.length) return null;
     // Partial here can only make the list SHORT, never a balance wrong (every balance below is a
     // balanceOf). Under-reporting holdings under-states wallet value — the safe direction.
-    indexerNote("addressTokens", "scan transfer kepotong — daftar token bisa kurang lengkap (saldo yang kebaca tetap akurat)");
+    indexerNote("addressTokens", "transfer scan truncated — token list may be incomplete (readable balances remain accurate)");
   }
   // Newest chunk first (getLogsChunked is descending), so the cap keeps the most RECENT tokens.
   const cands: string[] = [];

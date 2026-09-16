@@ -115,7 +115,7 @@ export function stableQuoteSym(): string {
  * returns (the real depth lands in `usdgInPool`), so ranking on wethInPool alone made every
  * stable-quoted pool look bone dry. pickLpPool's `wethInPool > 0` filter then rejected all of
  * them, which on a chain where token/<stable> is the ONLY possible pool shape (Arc) meant auto-LP
- * reported "tidak ada pool" for tokens with a deep, live v3 pool — the whole branch was dead.
+ * reported "no pool found" for tokens with a deep, live v3 pool — the whole branch was dead.
  * Rows from findPools() carry no `quote`, so they still rank on wethInPool exactly as before.
  */
 const quoteDepth = (p: PoolInfo): number => (p.quote === "usd" ? (p.usdgInPool ?? 0) : p.wethInPool);

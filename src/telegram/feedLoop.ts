@@ -21,7 +21,7 @@ export async function startFeed(): Promise<void> {
   // hand-edited `config.<chain>.json` with feed.enabled:true would take — guard it here too, or
   // the process spends every restart failing to dial an endpoint that does not exist.
   if (!sequencerEnabled()) {
-    log.info(`nggak jalan — ${CHAIN.name} nggak punya sequencer (feed itu khusus stream sequencer). Pakai /watch + /hunt.`);
+    log.info(`not running — ${CHAIN.name} has no sequencer (feed is sequencer-stream only). Use /watch + /hunt.`);
     return;
   }
   monitor = new FeedMonitor({
@@ -31,7 +31,7 @@ export async function startFeed(): Promise<void> {
   try {
     await monitor.start();
   } catch (e) {
-    log.error(`gagal start: ${(e as Error).message}`);
+    log.error(`failed to start: ${(e as Error).message}`);
     monitor = null;
   }
 }

@@ -72,10 +72,10 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
     }
     if (!map.size && foreign && !warnedNoChain) {
       warnedNoChain = true;
-      log.warn(`DexScreener jawab tapi nggak punya baris chain "${DS_CHAIN}" — volume jatuh ke sumber ${CHAIN.data.volumeSource}.`);
+      log.warn(`DexScreener responded but has no rows for chain "${DS_CHAIN}" — volume falling back to ${CHAIN.data.volumeSource} source.`);
     }
   } catch (e) {
-    log.warn(`dexPairs gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`dexPairs failed: ${(e as Error).message.slice(0, 80)}`);
   }
   cache.set(key, { at: now, map });
   return map;

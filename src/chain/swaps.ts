@@ -190,7 +190,7 @@ export async function swapTokenToQuote(
   const quote = quoteAddr ?? defaultQuoteAddr();
   const q = await quoteTokenToQuote(tokenAddr, amountRaw, quote);
   if (q.amountOut <= 0n) {
-    log.warn(`v3 nggak punya rute ${tokenAddr} → ${quoteSymbol(quote) ?? "quote"} — lempar ke router`);
+    log.warn(`v3 has no route ${tokenAddr} → ${quoteSymbol(quote) ?? "quote"} — passing to router`);
     return swapBest(tokenAddr, quote, amountRaw, { feeHint });
   }
   const w = wallet();
@@ -250,7 +250,7 @@ export async function swapQuoteToToken(
   // specific pool, and if the Quoter cannot price that pool there is nothing to protect the swap
   // with. (swapQuoteToTokenBest has no such problem: it searches, so it always has a real quote.)
   if (quoted.amountOut <= 0n) {
-    throw new Error(`nggak ada quote ${quoteSymbol(quote) ?? "quote"}→token di fee ${fee} — swap tanpa floor slippage ditolak.`);
+    throw new Error(`no quote ${quoteSymbol(quote) ?? "quote"}→token at fee ${fee} — swap without slippage floor rejected.`);
   }
   const params = {
     tokenIn: quote,

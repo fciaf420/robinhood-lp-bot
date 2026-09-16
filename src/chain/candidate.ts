@@ -238,7 +238,7 @@ export async function scanNewPools(opts: NewPoolOpts = {}): Promise<PoolSighting
   try {
     latest = await provider.getBlockNumber();
   } catch (e) {
-    log.warn(`scanNewPools: getBlockNumber gagal — ${(e as Error).message.slice(0, 70)}`);
+    log.warn(`scanNewPools: getBlockNumber failed — ${(e as Error).message.slice(0, 70)}`);
     return [];
   }
   // Window = max(saved cursor + 1, latest − lookback), then clamped to maxBlocks. Resuming from the
@@ -299,11 +299,11 @@ export async function scanNewPools(opts: NewPoolOpts = {}): Promise<PoolSighting
   // Only advance the cursor when BOTH venue queries actually answered. A half-served window left
   // behind is the difference between "missed a pool for 3 minutes" and "missed it permanently".
   if (v4Logs !== null && v3Logs !== null) u.lastBlock = latest;
-  else log.warn(`getLogs gagal (${v4Logs === null ? "v4" : ""}${v3Logs === null ? " v3" : ""}) — cursor blok ${u.lastBlock} nggak dimajuin, window diulang scan berikutnya`);
+  else log.warn(`getLogs failed (${v4Logs === null ? "v4" : ""}${v3Logs === null ? " v3" : ""}) — block cursor ${u.lastBlock} not advanced, window retried on next scan`);
   pruneUniverse(u, now);
   saveUniverse(u);
   fresh.sort((a, b) => b.block - a.block);
-  if (fresh.length) log.info(`pool baru: ${fresh.length} (blok ${from}-${latest}, universe ${Object.keys(u.pools).length})`);
+  if (fresh.length) log.info(`new pools: ${fresh.length} (blocks ${from}-${latest}, universe ${Object.keys(u.pools).length})`);
   return fresh;
 }
 

@@ -35,7 +35,7 @@ export const sequencerEnabled = (): boolean => !!env.sequencerUrl;
 /** POST one JSON-RPC payload to the sequencer. Rejects only on transport failure (and on a chain
  *  that has no sequencer, which the caller treats as exactly that: use the normal RPC). */
 export function seqCall(payload: RpcPayload): Promise<RpcResponse> {
-  if (!env.sequencerUrl) return Promise.reject(new Error("chain ini nggak punya sequencer"));
+  if (!env.sequencerUrl) return Promise.reject(new Error("this chain has no sequencer"));
   const url = new URL(env.sequencerUrl);
   const body = JSON.stringify({ jsonrpc: "2.0", ...payload });
   const options: https.RequestOptions = {
