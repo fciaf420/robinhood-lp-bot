@@ -432,6 +432,23 @@ Check it arrived with `/wallet` on the Arc bot.
 RH_CHAIN=arc npm run probe:arc
 ```
 
+**Step 2 — dry-run the decision path (still read-only, still free):**
+
+```bash
+RH_CHAIN=arc npm run dryrun -- 0xTokenAddress 25
+```
+
+Where `probe:arc` asks *"is this chain what we think it is"*, `dryrun` asks the question after it:
+**would this bot actually open a position on this token, and what would it pick?** It walks the
+real path — discovery → pool choice → routing quote → buy/sell round trip (the honeypot test) →
+range maths → sizing after the gas reserve → approval state — by importing the same functions
+`/lp` calls. Nothing is sent, nothing is approved, so it is safe against a funded production
+wallet. A red line here is an integration bug caught *before* a mint spends money.
+
+**Step 3 — one real position.** Open the smallest size you are willing to lose from Telegram,
+confirm it appears in `/list` with sane numbers, then close it and check the ledger PnL. Only
+after that round trip works should `/auto` go anywhere near Arc.
+
 Read-only — **no transaction is ever sent and the private key never signs anything**. The full report lands in `data/arc/arc-probe.json`.
 
 What it answers, and which flag in `chains/arc.json` each result flips:
@@ -533,6 +550,7 @@ src/
 │   ├── automanage.ts     auto-close TP/SL/OOR (restart-proof grace)
 │   └── oorcool.ts        OOR cooldown (blacklist tokens that never enter range)
 ├── scripts/probe-arc.ts  ⭐ READ-ONLY Arc preflight (npm run probe:arc) — never sends a tx
+├── scripts/dryrun.ts     ⭐ READ-ONLY LP dry run (npm run dryrun) — drives the real modules
 ├── watch/scanner.ts      volume scan + on-chain honeypot test
 └── util/                 log, atomic file write + lock, formatters (+ per-chain CHAIN_KEY, DATA_DIR)
 ```

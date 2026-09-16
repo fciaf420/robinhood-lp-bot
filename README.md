@@ -434,6 +434,24 @@ Cek udah nyampe apa belum: `/wallet` di bot Arc.
 RH_CHAIN=arc npm run probe:arc
 ```
 
+**Langkah 2 — dry-run jalur keputusan (masih read-only, masih gratis):**
+
+```bash
+RH_CHAIN=arc npm run dryrun -- 0xTokenAddress 25
+```
+
+Kalau `probe:arc` nanya *"chain-nya beneran kayak yang kita kira?"*, `dryrun` nanya pertanyaan
+sesudahnya: **bot ini bakal beneran buka posisi di token ini nggak, dan bakal milih pool yang
+mana?** Dia jalanin jalur aslinya — discovery → pilih pool → quote routing → round-trip beli/jual
+(uji honeypot) → itung range → sizing setelah cadangan gas → status approval — pakai fungsi yang
+SAMA dengan yang dipanggil `/lp`. Nggak ada tx yang dikirim, nggak ada approve, jadi aman
+dijalanin pakai wallet produksi yang udah ada isinya. Baris merah di sini = bug integrasi yang
+ketangkep SEBELUM mint ngabisin duit.
+
+**Langkah 3 — satu posisi beneran.** Buka ukuran paling kecil yang lo rela ilang lewat Telegram,
+pastiin muncul di `/list` dengan angka masuk akal, terus tutup dan cek PnL di ledger. Baru setelah
+round-trip itu jalan, `/auto` boleh nyentuh Arc.
+
 Read-only — **nggak ada tx yang dikirim, private key nggak dipake nandatangan**. Laporan lengkapnya mendarat di `data/arc/arc-probe.json`.
 
 Yang dia jawab, dan flag apa yang di-flip di `chains/arc.json`:
@@ -535,6 +553,7 @@ src/
 │   ├── automanage.ts     auto-close TP/SL/OOR (grace restart-proof)
 │   └── oorcool.ts        OOR cooldown (blacklist token yang gak pernah masuk range)
 ├── scripts/probe-arc.ts  ⭐ preflight Arc READ-ONLY (npm run probe:arc) — nggak ngirim tx
+├── scripts/dryrun.ts     ⭐ dry-run buka LP READ-ONLY (npm run dryrun) — pakai modul asli
 ├── watch/scanner.ts      scan volume + uji honeypot on-chain
 └── util/                 log, atomic file write + lock, formatter (+ CHAIN_KEY, DATA_DIR per chain)
 ```
